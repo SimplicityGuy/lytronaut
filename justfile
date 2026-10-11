@@ -25,6 +25,7 @@ build:
     cargo build --locked --workspace --all-targets --all-features
 
 wasm-build:
+    cargo check --locked -p lytronaut-format --target wasm32-unknown-unknown
     cargo build --locked -p lytronaut-client --target wasm32-unknown-unknown
     test "$(wasm-bindgen --version)" = "wasm-bindgen 0.2.129"
     wasm-bindgen --target web --out-dir dist target/wasm32-unknown-unknown/debug/lytronaut_client.wasm
