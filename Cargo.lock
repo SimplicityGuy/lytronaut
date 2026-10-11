@@ -1269,6 +1269,7 @@ dependencies = [
  "getrandom",
  "lytronaut-contracts",
  "serde",
+ "serde_json",
  "sha2",
  "sqlx",
  "tokio",
