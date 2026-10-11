@@ -12,6 +12,10 @@ lytronaut-contracts.workspace = true
 lytronaut-storage.workspace = true
 axum.workspace = true
 tokio.workspace = true
-[dev-dependencies]
-tower = { version = "=0.5.3", features = ["util"] }
+sqlx.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+argon2 = "=0.5.3"
+getrandom = "=0.4.3"
+sha2 = "=0.10.9"
+subtle = "=2.6.1"

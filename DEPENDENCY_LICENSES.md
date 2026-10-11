@@ -11,6 +11,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
 | any_spawner | 0.3.0 | MIT |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
+| argon2 | 0.5.3 | MIT OR Apache-2.0 |
 | async-lock | 3.4.2 | Apache-2.0 OR MIT |
 | async-once-cell | 0.5.4 | MIT OR Apache-2.0 |
 | async-trait | 0.1.92 | MIT OR Apache-2.0 |
@@ -23,7 +24,9 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | axum-core | 0.5.6 | MIT |
 | base16 | 0.2.1 | CC0-1.0 |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
+| base64ct | 1.8.3 | Apache-2.0 OR MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
+| blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 |
 | bytes | 1.12.1 | MIT |
@@ -132,6 +135,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | parking | 2.2.1 | Apache-2.0 OR MIT |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
+| password-hash | 0.5.0 | MIT OR Apache-2.0 |
 | paste | 1.0.15 | MIT OR Apache-2.0 |
 | pathdiff | 0.2.3 | MIT/Apache-2.0 |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
@@ -148,6 +152,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | quote-use | 0.9.0 | MIT |
 | quote-use-macros | 0.9.0 | MIT |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
+| rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | reactive_graph | 0.2.15 | MIT |
 | reactive_stores | 0.4.4 | MIT |
 | reactive_stores_macro | 0.4.4 | MIT |
@@ -187,6 +192,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | sqlx-macros-core | 0.9.0 | MIT OR Apache-2.0 |
 | sqlx-sqlite | 0.9.0 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
+| subtle | 2.6.1 | BSD-3-Clause |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.8 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |
