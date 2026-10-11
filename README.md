@@ -8,7 +8,9 @@ Illum, promoted one verified file variant at a time.
 
 ## Status
 
-The application has not been implemented. Beadhive research molecule
+The implementation epic `lytronaut-re8` is filed and kickoff is approved.
+Foundation development is active; the usable library explorer is still under
+construction. Beadhive research molecule
 `lytronaut-ck2` is complete: its four spikes and scope decision are reviewed and
 landed. Evidence supports a preservation-first original-camera
 MVP: schema-23 library import, all 109 archived thumbnails, and discrete JPEG
@@ -17,8 +19,7 @@ integration have explicit runtime gates. Calibrated raw synthesis and Illum
 compatibility remain unverified.
 
 See [the evidence and scope decision](docs/design/001-lytronaut.md) and the
-[implementation plan preview](plans/implementation.yaml). The preview is
-validated but has no filed implementation beads or kickoff approval. This repo
+[approved implementation plan](plans/implementation.yaml). This repo
 remains private; no release or image publication is enabled.
 
 ## Intended experience
@@ -45,9 +46,13 @@ mise exec -- just setup
 mise exec -- just check
 ```
 
-`just test` runs Rust tests; `just build` builds the scaffold. There is no
-application development server or deployment image yet. CI invokes the same
-formatting, Clippy, test, and build gates with the committed Cargo lockfile.
+`just test` runs contract, live SQLite and HTTP tests. `just check` also builds
+the Leptos WASM client and matching wasm-bindgen glue and checks dependency
+boundaries and redistribution notices. `just serve` starts the native foundation
+on 127.0.0.1:3000 with a redacted health endpoint at `/healthz`; import and asset
+routes await authentication and the downstream implementation beads. Set
+`LYTRONAUT_CATALOG` to the application database path (never a source library).
+There is no deployment image yet. See [workspace contracts](docs/architecture/contracts.md).
 
 ## Architecture direction
 
@@ -73,7 +78,8 @@ No automated publishing is enabled. Preserve merge commits for Beadhive work.
 
 Lytronaut's original code is [MIT licensed](LICENSE). Reference projects and
 sample assets retain their own licenses; acknowledgement does not grant reuse
-rights. Third-party notices will accompany any permitted redistribution.
+rights. The [resolved inventory](DEPENDENCY_LICENSES.md) and
+[third-party notices](THIRD_PARTY_NOTICES.md) cover the locked workspace graph.
 
 ## Acknowledgement
 

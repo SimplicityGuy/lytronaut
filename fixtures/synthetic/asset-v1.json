@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "synthetic-original-1",
+  "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "representation": "opaque",
+  "encoded_bytes": 16,
+  "decoded_bytes": null,
+  "dimensions": null,
+  "color_space": "not_applicable",
+  "chunks": [{"offset": 0, "length": 16}],
+  "capabilities": {
+    "version": 1,
+    "originals": {"state": "preserved_only"},
+    "static_preview": {"state": "unavailable", "reason": "unsupported_format"},
+    "discrete_focus": {"state": "disabled"},
+    "calibrated_synthesis": {"state": "unverified"},
+    "optional_renderer": {"state": "unverified"},
+    "optional_codec": {"state": "unverified"},
+    "legacy_edits": {"state": "preserved_only"}
+  }
+}

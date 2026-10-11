@@ -1,6 +1,6 @@
 # Lytronaut: evidence-led scope and implementation roadmap
 
-Status: **GO for a preservation-first MVP; implementation preview only**.
+Status: **Approved implementation epic lytronaut-re8; kickoff approved; delivery active**.
 Decision bead: **lytronaut-zxk — Scope verdict and next implementation plan**.
 Evidence date: 2026-10-11. Research epic: **lytronaut-ck2 — Lytronaut: prove
 library compatibility and Rust rendering architecture**.
@@ -17,10 +17,11 @@ Support both original Lytro and Illum over time through independently verified
 variants; this decision does not advertise Illum support or calibrated synthesis.
 
 The research molecule is complete: all four spike reports and this scope
-decision have been reviewed and landed. `plans/implementation.yaml` is a validated dry-run preview, **not a filed
-molecule**. The operator reviews it separately before actual filing/kickoff.
-No application code, new implementation bead, implementation dispatch, release,
-image publication or private data publication is authorized by this preview.
+decision have been reviewed and landed. `plans/implementation.yaml` is filed as implementation epic `lytronaut-re8`.
+The operator approved filing, kickoff, delivery, review and landing of its 13
+tasks. Foundation bead `lytronaut-922` establishes the compiled workspace and
+contracts; product capabilities remain gated by each downstream acceptance.
+Release, image publication and private data publication remain disabled.
 
 The baseline is useful without a GPU, camera calibration or browser video codec:
 all 109 private reference captures have Rust-decodable thumbnails. The 58 LFE-11
@@ -174,7 +175,8 @@ they must never make baseline browsing unavailable.
 ## Supported implementation phases and measurable acceptance
 
 The complete runnable dependency DAG is [plans/implementation.yaml](../../plans/implementation.yaml).
-It links provenance to research epic `lytronaut-ck2` and remains a preview.
+It links provenance to research epic `lytronaut-ck2`; implementation epic
+`lytronaut-re8` is now filed and approved for delivery.
 
 1. **Foundations and safe intake.** Separate native and WASM dependencies, validate
    licenses and contracts, then add authentication before uploads. Implement
@@ -226,7 +228,7 @@ picking needs verified coordinates and confidence interpretation. Perspective,
 aperture and stereo require geometry, occlusion and rendering references.
 Imported edit parity needs independently measured transfer functions and
 transform precedence. Browser expansion requires actual platform runtime tests.
-These capabilities have no speculative implementation beads in this preview.
+These deferred capabilities have no implementation beads in the approved MVP.
 
 ## Reference evidence and MIT boundary
 
