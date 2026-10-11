@@ -1,0 +1,373 @@
+# PREVIEW ONLY: no implementation beads have been filed and kickoff is not approved.
+# Provenance: lytronaut-ck2; scope decision: lytronaut-zxk.
+epic:
+  complexity: COMPLEX
+  title: "Lytronaut: deliver a preservation-first Rust library explorer"
+  tag: feature
+  description: >-
+    Preview prepared from reviewed research epic lytronaut-ck2 and scope decision
+    lytronaut-zxk. Deliver private self-hosted schema-23 original-F01 library
+    preservation, albums and JPEG browsing, verified discrete JPEG focus stacks,
+    gated browser H.264 and optional Rust/wgpu derivative presentation, exports,
+    backup and CPU-only Linux containers. Application logic remains Rust/WASM,
+    original code MIT. No new calibrated synthesis, Illum claim, native C++/FFmpeg
+    codec runtime, guessed Desktop edit parity or automated publication. This spec
+    creates nothing until separately reviewed and filed through bh plan file.
+  design: >-
+    docs/design/001-lytronaut.md and the four docs/spikes reports define the support
+    matrix, privacy and acceptance boundaries. Dependency roots establish target
+    separation and lawful fixtures; authentication precedes exposed uploads.
+    Preserve immutable originals and unknown fields/files independently of
+    decoding. Optional GPU/codec failure retains usable static/CPU previews.
+    Public CI uses synthetic data; the private 109-capture corpus is validated
+    locally with its ignored mode-0600 manifest and never uploaded to CI.
+issues:
+  - handle: foundation
+    complexity: MEDIUM
+    title: "Establish target-separated Rust workspace and compatibility contracts"
+    type: task
+    priority: 1
+    tag: feature
+    size: m
+    harness: claude
+    component: architecture
+    description: >-
+      Create format/shared DTO, storage/catalog/jobs, service/diagnostics and
+      Leptos client crate boundaries with native versus WASM dependency separation.
+      Pin verified candidate versions and resolve SQLx/Tokio/tooling versions with
+      actual build and license evidence, not guessed compatibility.
+    acceptance: >-
+      Native service and wasm32-unknown-unknown client compile with mise Rust 1.99,
+      locked dependencies, Axum 0.8.9, Leptos 0.8.22 CSR and matching wasm-bindgen
+      CLI/crate. SQLite/SQLx and Tokio compile natively; native targets exclude
+      browser/wgpu and WASM excludes SQLite/native codec dependencies. Define
+      versioned import/job/asset/capability/error DTOs with explicit preserved-only
+      and optional renderer/codec states. Add meaningful cross-target CI and
+      independently authored synthetic fixture provenance. Audit the complete
+      resolved license graph and notices; no GPL/unlicensed ports or processing
+      subprocesses. Keep existing MIT license, tagline and Acknowledgement.
+  - handle: auth
+    complexity: MEDIUM
+    title: "Secure first-run setup, sessions and authenticated asset access"
+    type: task
+    priority: 1
+    tag: feature
+    size: m
+    harness: claude
+    component: service
+    deps: [foundation]
+    description: >-
+      Establish local first-run credentials and an authenticated HTTP boundary
+      before any upload or original/derivative access; historical album sharing
+      must never alter access control.
+    acceptance: >-
+      First run requires a local one-time setup secret or equivalent authenticated
+      bootstrap and persists securely hashed credentials; no unauthenticated
+      public account takeover is possible. Test login/logout/session expiry,
+      failed-login rate limits, constant credential error responses, CSRF on
+      state changes, secure cookie settings and documented reverse-proxy trust.
+      Unauthenticated asset/download/upload/job requests reveal neither pixels
+      nor metadata/source paths. Reject cross-origin unauthorized mutations and
+      traversal. Legacy public=1 never grants access. Redact credentials, serials,
+      identifiers and source paths from routine logs; no external telemetry.
+  - handle: storage
+    complexity: COMPLEX
+    title: "Implement bounded uploads, immutable storage and recoverable import jobs"
+    type: task
+    priority: 1
+    tag: feature
+    size: l
+    harness: claude
+    component: import
+    deps: [auth]
+    description: >-
+      Support a bounded ZIP library upload and validated relative-path directory
+      upload into immutable staging/content storage, with durable progress,
+      cancellation, retry and transactional recovery. TAR and camera USB are not
+      needed for this slice; preserve unsupported files inside accepted intake.
+    acceptance: >-
+      Enforce actual uncompressed totals, disk reservation and proposed defaults
+      20 GiB/upload, 100,000 files, 512 MiB/file, 4 KiB path, depth 32 with explicit admin
+      configuration. Stream rather than buffer whole libraries. Reject absolute
+      paths, traversal, NULs, symlink/hardlink/device entries, archive collisions,
+      recursive archives, decompression bombs and quota overflow. Hash with SHA-256
+      plus length, verify candidate dedup bytes and retain logical source manifests.
+      Source content is never opened writable. Fault-inject interruption before
+      and after write/fsync/rename/job transaction; recovery exposes only complete
+      verified blobs or explicit retryable errors, never partial originals.
+      Repeated identical intake does not duplicate blobs; altered bytes cannot
+      overwrite prior originals. Bounded cancellation/staging cleanup and progress
+      survive restart. Upload routes remain authenticated and CSRF-protected.
+  - handle: catalog
+    complexity: COMPLEX
+    title: "Map schema-23 libraries into a lossless persistent catalog"
+    type: task
+    priority: 1
+    tag: feature
+    size: l
+    harness: claude
+    component: catalog
+    deps: [storage]
+    description: >-
+      Import the verified offline Desktop adapter while preserving original typed
+      records, all file associations and unknown fields/files. Separate physical
+      dedup from logical albums and captures; never trust empty legacy hashes.
+    acceptance: >-
+      Read staged source SQLite read-only/query-only without extension loading,
+      source triggers or attachments; reject live/incomplete WAL/journal snapshots
+      and unknown active schemas for semantic import while preserving originals.
+      Private report reconciles exactly 109 pictures, 109 metadata rows, 3 albums,
+      109 ordered memberships, 2 bins and 3 events and preserves names/captions,
+      dates/status codes, picture lists, backup bytes, unknown files and original
+      sidecar types. Album picture_index and sort_order are retained separately.
+      Synthetic fixtures cover Unicode, nonempty captions, nonzero ratings/flags,
+      cross-album membership, unknown fields, orphan FKs, duplicate IDs, missing
+      companions and malformed databases. Missing optional LFE 10 stacklq is not
+      corruption. Conflicting source IDs with different bytes are explicit
+      versions/quarantines. Reimport/restart does not duplicate logical records;
+      transactional visibility never points at unfinished blobs. Migration and
+      rollback tests preserve previous data; source-manifest hashes stay unchanged.
+  - handle: formats
+    complexity: COMPLEX
+    title: "Implement bounded independent F01 containers and pure-Rust JPEG assets"
+    type: task
+    priority: 1
+    tag: feature
+    size: l
+    harness: claude
+    component: decoder
+    deps: [foundation]
+    description: >-
+      Independently validate observed LFP sections/references and F01 packed 12-bit
+      metadata/sensor extraction, plus JPEG thumbnail/stack derivatives. Preserve
+      raw/unknown assets without treating sensor mosaics as scene photographs.
+    acceptance: >-
+      Validate magic/version, length arithmetic, payload bounds, 16-byte alignment,
+      SHA-1 reference identities and duplicate/missing references without scanning
+      arbitrary payload magic; distinguish external processed references from
+      required local sections. Metadata drives dimensions/CFA/packing and unknown
+      versions are preserved-only. Byte-exact synthetic 12-bit vectors and private
+      109-capture roundtrips pass; no calibration guesses or rendered raw claim.
+      image 0.25.9 JPEG-only path decodes all 109 thumbnails and 420 JPEG planes with
+      native pure-Rust dependencies; bound dimensions/decoded allocation before
+      decompression. Preserve recipes/depth/confidence bytes and typed originals;
+      finite little-endian map inspection must not claim metres or correct picking.
+      Tests/fuzz targets reject truncation, overflow, hostile JSON, nonfinite maps,
+      impossible extents, oversized images and reference mismatches under fixed
+      resource budgets. Public fixtures are lawful synthetic data; private data
+      stays local. Expose honest per-asset capabilities and normalized errors.
+  - handle: api
+    complexity: MEDIUM
+    title: "Connect import jobs, catalog browsing and authenticated asset manifests"
+    type: task
+    priority: 1
+    tag: feature
+    size: m
+    harness: claude
+    component: service
+    deps: [catalog, formats, auth]
+    description: >-
+      Provide the usable server/CLI flow: import progress, library/album queries,
+      capture details and bounded immutable assets with capabilities and errors.
+    acceptance: >-
+      An authenticated integration test uploads a synthetic library, observes
+      durable progress, lists ordered albums/captures and retrieves only authorized
+      previews/originals; missing/malformed items produce per-item actionable
+      status without losing valid originals. Implement search/sort/pagination with
+      bounded request sizes and stable contracts. Asset manifests contain version,
+      content IDs, dimensions, color space, representation, encoded/decoded sizes and
+      checked chunk ranges, never source paths/serials. Enforce 256 KiB manifest,
+      8 MiB chunk, 48 MiB viewer asset and at most two concurrent transfers by default.
+      Inspect/import diagnostics CLI provides a redacted machine-readable support
+      report. Restart retains jobs and catalog; cancellation leaves consistent
+      state. Unknown camera/schema assets remain downloadable preservation-only.
+  - handle: browser
+    complexity: COMPLEX
+    title: "Build the accessible graphite-and-cyan Rust library browser"
+    type: task
+    priority: 1
+    tag: feature
+    size: l
+    harness: claude
+    component: viewer
+    deps: [api]
+    description: >-
+      Implement Leptos CSR authentication/import progress, album rail, photo grid,
+      filmstrip, capture stage and inspector using the reviewed mid-2010s concept.
+      Browsing must work without WebGPU, WebCodecs, calibration or external services.
+    acceptance: >-
+      Real Rust/WASM browser flow logs in, uploads a bounded library, shows progress,
+      browses all 109 private thumbnails and 3 ordered albums and displays explicit
+      capabilities/preserved-only legacy fields. Loading/error/cancellation and
+      unsupported variants have usable states. Application logic is Rust; only
+      CSS/WGSL/generated binding assets are non-Rust. Validate DOM labels, keyboard
+      navigation/range values, visible focus, 4.5:1 text/3:1 control contrast,
+      200% zoom, screen-reader/forced-colors behavior, reduced motion and
+      responsive layout with a concrete screenshot/demo. Browser without GPU or
+      codec still browses every capture. Authenticate requests and abort/release
+      stale assets on capture changes; no private fixtures/screenshots enter Git.
+  - handle: jpeg_focus
+    complexity: MEDIUM
+    title: "Add verified discrete JPEG focus selection and derivative orientation"
+    type: task
+    priority: 1
+    tag: feature
+    size: m
+    harness: claude
+    component: interoperability
+    deps: [browser, formats]
+    description: >-
+      Use LFE 11 low-quality stacks for explicit nearest-stored-plane refocus;
+      apply tested standard EXIF orientation to verified derivative pixels only.
+    acceptance: >-
+      All 58 stacks/420 planes and strictly increasing lambdas validate; selection
+      clamps to stored range, chooses deterministic nearest plane and labels the
+      feature discrete focus with 360 × 360 source resolution. LFE 10 without a
+      working browser codec remains preview-only with disabled explanatory
+      controls. Synthetic EXIF 1–8 corner/color patterns validate rotation and
+      reflection, visible geometry and transform precedence; catalog orientation 0
+      is never treated as an equivalent EXIF value. Do not reapply complete baked
+      recipes or pretend to apply aperture, perspective, tone, denoise/animation.
+      Preserve original fields/recipes unchanged and disclose preserved-only edits.
+      WASM JPEG decode or authenticated native-generated image flow is actually
+      exercised. Enforce frame/cache budgets, request cancellation and CPU/static
+      interaction p95 ≤100 ms at ≤512 × 512 on declared reference hardware.
+  - handle: gpu_presentation
+    complexity: COMPLEX
+    title: "Integrate optional Rust wgpu derivative presentation with safe fallback"
+    type: task
+    priority: 2
+    tag: feature
+    size: l
+    harness: claude
+    component: viewer
+    deps: [jpeg_focus]
+    description: >-
+      Exercise actual Rust/WASM wgpu texture-to-canvas presentation for verified
+      derivative orientation/scaling. This is optional display acceleration, not
+      synthetic raw refocus, viewpoint or aperture reconstruction.
+    acceptance: >-
+      wgpu 30.0.1 webgpu/wgsl integration runs through Rust/WASM on declared browser
+      and hardware with uploaded synthetic textures and the real canvas; numerical
+      integer transforms agree with CPU fixtures and visible geometry is correct.
+      Inspect device limits before allocation and enforce ≤1024 × 1024 interactive
+      previews, 2048 × 2048 hard decoded cap then downsample/tile, 64 MiB explicit GPU
+      and 96 MiB counted CPU/WASM per viewer including staging/intermediates. Measure
+      actual warm submit-to-present p95 against 16.7 ms target, clearly separating
+      headless compute completion, mapped readback and presentation; unmet target
+      reduces optional quality and is reported rather than invented as a guarantee.
+      Inject missing API, absent adapter, rejected device, pipeline failure, oversized assets and device loss
+      and repeated capture switches; resources release, no uncaught rejections,
+      controls and last frame remain usable, fallback indication≤1 second. No-GPU
+      browser/native server remains functional; untested platforms are labelled.
+  - handle: browser_h264
+    complexity: COMPLEX
+    title: "Gate Rust browser H.264 refocus on full corpus decoding and recovery"
+    type: task
+    priority: 2
+    tag: feature
+    size: l
+    harness: claude
+    component: interoperability
+    deps: [jpeg_focus]
+    description: >-
+      Add optional WebCodecs via Rust/web-sys for standard archived Annex-B refocus
+      only. A support query is insufficient; require actual decode and software
+      retry. No native FFmpeg/C++ decoder or perspective playback is introduced.
+    acceptance: >-
+      Integrated Rust/WASM flow derives SPS codec/access units/IDR boundaries,
+      preserves SPS/PPS and omits AVCC description for Annex-B. Reproduce both
+      observed five-frame representatives; separate private validation must decode
+      all 109 standard blocks/654 frames before enabling corpus-wide capability
+      on a tested browser. Derive each asset's coded dimensions from its validated
+      stream/metadata and visible crop/display dimensions from VideoFrame; reject
+      inconsistent extents and never hardcode the representative 1080 × 1080
+      display versus 1088 × 1090 coded geometry. Validate frame lambdas and close
+      VideoFrames on every path. Test
+      absent WebCodecs, unsupported config, no-preference actual decode failure, software
+      retry, late errors, reset/cancel, context loss and bounded frame queues; every
+      failure cleanly retains JPEG/static preview without claiming refocus.
+      If full corpus/platform gate fails, feature remains disabled/preview-only
+      and records the failure; baseline still ships. Report Chrome/reference OS
+      versions and leave untested platforms unverified. No hardware codec claim,
+      no 296-frame perspective playback, no public private data or GPL runtime.
+  - handle: export_backup
+    complexity: MEDIUM
+    title: "Export verified derivatives and restore lossless library bundles"
+    type: task
+    priority: 1
+    tag: feature
+    size: m
+    harness: claude
+    component: export
+    deps: [jpeg_focus, catalog, api]
+    description: >-
+      Export supported JPEG/static focus pixels as flattened JPEG/PNG with clear
+      provenance, and backup/restore immutable originals plus catalog associations.
+      Unsupported imported edits must never be silently claimed applied.
+    acceptance: >-
+      Export tests verify source variant, plane/lambda, orientation, visible geometry,
+      dimensions, color policy and deterministic pixels on synthetic fixtures;
+      flattening explicitly discards refocus capability. No unverified imported
+      adjustment is applied; unsupported operations return actionable errors.
+      Include a Lytronaut recipe/provenance record separate from unchanged legacy
+      sidecars. Authenticated cancellable bounded export jobs never overwrite
+      sources. Lossless archive-original and catalog backup/restore retain all 728
+      source-file hashes, unknown fields/files, albums/order/events and metadata in
+      private validation; public synthetic restore verifies the same invariants.
+      Interrupted restore and conflicting bytes fail safely. Browser-video export
+      is not promised by this bead; preserve H.264 originals unmodified.
+  - handle: containers
+    complexity: COMPLEX
+    title: "Package CPU-only Linux self-hosting on amd64 and arm64"
+    type: task
+    priority: 1
+    tag: feature
+    size: m
+    harness: claude
+    component: deployment
+    deps: [browser, export_backup]
+    description: >-
+      Build non-root Linux images and a Compose example with explicit original,
+      catalog, staging/cache volumes, CPU/memory/storage budgets and operator setup.
+      Keep browser GPU optional and server independent of GPU devices.
+    acceptance: >-
+      Locked native/client builds produce Linux amd64 and arm64 images without
+      Python/C#/FFmpeg runtime or server GPU requirement. Actually execute startup,
+      authentication, synthetic import, browse, shutdown/restart and backup/restore
+      smokes on both architectures, natively or declared emulation; build alone is
+      not runtime evidence. Nonroot/read-only-root operation uses documented writable
+      volumes and least privileges; readiness/health/graceful worker shutdown and
+      resource caps tested. Demonstrate offline CPU-only operation after local
+      installation, first-run setup and HTTPS/reverse-proxy secure-context guidance.
+      Apply Dependabot and repo-ci setup skills to new Docker/Compose/workflows,
+      keep actions SHA-pinned and transitive notices/SBOM reviewable. CI may build
+      artifacts but no registry push, release publication or public visibility change.
+  - handle: acceptance
+    complexity: MEDIUM
+    title: "Validate the supported MVP and document private self-hosted operation"
+    type: task
+    priority: 1
+    tag: feature
+    size: m
+    harness: claude
+    component: quality
+    deps: [gpu_presentation, browser_h264, export_backup, containers]
+    description: >-
+      Produce the final supported-variant matrix, operator guides and acceptance
+      evidence across preservation, browsing, optional features and recovery.
+      Gates that fail narrow optional capability rather than falsify support.
+    acceptance: >-
+      Meaningful public synthetic CI passes native/WASM builds, untrusted parser
+      negatives/fuzz smoke, auth failures, quota/crash/dedup, album order and restore.
+      Separate local private report verifies 109 pictures / 3 albums / 109 memberships,
+      all 109 thumbnails/420 JPEG planes and 728 unchanged source hashes through
+      import/restart/export/restore. Browser H.264 claims are limited to actual 654
+      frame acceptance results; GPU claims distinguish full Rust presentation from
+      earlier direct-WebGPU kernel experiments and list measured/unverified hosts.
+      No-GPU/no-codec baseline and Linux amd64/arm64 runtime reports pass. README
+      and docs cover installation, credentials, uploads, quotas, backups, recovery,
+      upgrade rollback, supported variants, preserved-only edits, privacy and known
+      calibration/Illum exclusions; retain tagline, MIT, Acknowledgement. Dependency
+      license/notices and redacted logs reviewed. Operator receives runnable demo,
+      current limitations and next evidence prerequisites; publication disabled.

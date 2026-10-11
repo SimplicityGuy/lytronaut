@@ -1,3 +1,5 @@
+# HISTORICAL FILED SPEC: lytronaut-ck2. Beadhive beads own current lifecycle.
+# Original pending-kickoff text records the state at initial filing.
 epic:
   title: "Lytronaut: prove library compatibility and Rust rendering architecture"
   tag: spike
