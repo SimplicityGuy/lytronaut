@@ -120,6 +120,8 @@ Each phase will be filed through `bh plan file` after its prerequisites are know
 
 - Split crate boundaries: container/metadata decoder, calibration and CPU render,
   persistent catalog/jobs, service/API, shared DTOs, Rust/WASM WebUI, CLI diagnostics.
+- Establish first-run local credentials, authenticated browse/upload/download,
+  session/CSRF controls and safe reverse-proxy behavior before exposing imports.
 - Define bounded library-directory, ZIP/TAR and individual-file import with
   resumable upload, checksum/dedup, progress, per-file errors, crash recovery,
   staging cleanup, and transactional catalog visibility.
