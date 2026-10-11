@@ -29,6 +29,8 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 |
+| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
+| byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | camino | 1.2.6 | MIT OR Apache-2.0 |
 | cc | 1.8.0 | MIT OR Apache-2.0 |
@@ -103,6 +105,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | icu_provider | 2.3.1 | Unicode-3.0 |
 | idna | 1.1.0 | MIT OR Apache-2.0 |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT |
+| image | 0.25.9 | MIT OR Apache-2.0 |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT |
 | interpolator | 0.5.0 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
@@ -127,6 +130,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | memchr | 2.8.3 | Unlicense OR MIT |
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | mio | 1.2.4 | MIT |
+| moxcms | 0.7.11 | BSD-3-Clause OR Apache-2.0 |
 | next_tuple | 0.1.0 | MIT |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | oco_ref | 0.2.1 | MIT |
@@ -148,6 +152,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | proc-macro-utils | 0.10.0 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
 | proc-macro2-diagnostics | 0.11.0 | MIT/Apache-2.0 |
+| pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
 | quote | 1.0.47 | MIT OR Apache-2.0 |
 | quote-use | 0.9.0 | MIT |
 | quote-use-macros | 0.9.0 | MIT |
@@ -178,6 +183,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | server_fn | 0.8.13 | MIT |
 | server_fn_macro | 0.8.12 | MIT |
 | server_fn_macro_default | 0.8.6 | MIT |
+| sha1 | 0.10.6 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
@@ -253,3 +259,5 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | zerovec | 0.11.8 | Unicode-3.0 |
 | zerovec-derive | 0.11.6 | Unicode-3.0 |
 | zmij | 1.0.23 | MIT |
+| zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
+| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib |

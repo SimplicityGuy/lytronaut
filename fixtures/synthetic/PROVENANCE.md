@@ -9,3 +9,11 @@ No private library was accessed to author these fixtures.
 
 Future format vectors must record their independent construction and license
 here; private corpus evidence is never a public fixture.
+
+`crates/lytronaut-format/tests/formats.rs` independently constructs MIT test
+vectors in memory: the packed bytes `ab cd ef`, invented minimal F01/unknown
+metadata, synthetic SHA1-framed sections, two tiny RGB JPEG pixels encoded by
+`image`, and explicit finite/NaN/infinity scalar arrays. They are mathematical
+examples with no camera or capture identifiers. Malformed fixtures mutate only
+these invented bytes. No photographic pixels or reference implementation code
+were reused. `examples/fuzz_input.rs` accepts bounded synthetic stdin seeds.
