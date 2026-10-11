@@ -2,6 +2,7 @@ default:
     @just --list
 
 setup:
+    rustup component add rustfmt clippy
     cargo fetch --locked
 
 check: fmt lint test build
