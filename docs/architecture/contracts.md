@@ -104,3 +104,6 @@ see notices/README.md and its pinned retrieval provenance.
 SPDX expressions and complete texts are retained in DEPENDENCY_LICENSES.md and
 THIRD_PARTY_NOTICES.md. Development tool binaries are not redistributed with the
 application. Fixture provenance lives in fixtures/synthetic/PROVENANCE.md.
+
+The authenticated browsing, semantic import phases, typed original roles, bounded
+search/pagination and immutable transfer contracts are documented in [api.md](api.md).

@@ -3,7 +3,7 @@ use crate::{AppState, Authenticated, error};
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::Path,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -56,25 +56,58 @@ async fn begin(
         Err(e) => failure(e),
     }
 }
-async fn job(Extension(store): Extension<Store>, Path(id): Path<String>) -> Response {
-    match store.job(&id).await {
+async fn job(
+    State(state): State<AppState>,
+    Extension(store): Extension<Store>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let Ok(Path(id)) = path else {
+        return failure(StorageError::Invalid);
+    };
+    match crate::api::progress(&state.catalog, &store, &id).await {
         Ok(report) => Json(report).into_response(),
         Err(e) => failure(e),
     }
 }
-async fn finish(Extension(store): Extension<Store>, Path(id): Path<String>) -> Response {
-    match store.finish(&id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+async fn finish(
+    State(state): State<AppState>,
+    Extension(store): Extension<Store>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let Ok(Path(id)) = path else {
+        return failure(StorageError::Invalid);
+    };
+    let finished = match store.job(&id).await {
+        Ok(job) if job.state == lytronaut_contracts::JobState::Succeeded => Ok(()),
+        _ => store.finish(&id).await,
+    };
+    match finished {
+        Ok(()) => match crate::api::adapt(&state.catalog, &store, &id).await {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(_) => failure(StorageError::Unavailable),
+        },
         Err(e) => failure(e),
     }
 }
-async fn cancel(Extension(store): Extension<Store>, Path(id): Path<String>) -> Response {
+async fn cancel(
+    Extension(store): Extension<Store>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let Ok(Path(id)) = path else {
+        return failure(StorageError::Invalid);
+    };
     match store.cancel(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => failure(e),
     }
 }
-async fn retry(Extension(store): Extension<Store>, Path(id): Path<String>) -> Response {
+async fn retry(
+    Extension(store): Extension<Store>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let Ok(Path(id)) = path else {
+        return failure(StorageError::Invalid);
+    };
     match store.retry(&id).await {
         Ok(id) => (StatusCode::CREATED, Json(Started { version: 1, id })).into_response(),
         Err(e) => failure(e),
@@ -161,10 +194,13 @@ async fn stream(
 }
 async fn file(
     Extension(store): Extension<Store>,
-    Path(id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let Ok(Path(id)) = path else {
+        return failure(StorageError::Invalid);
+    };
     let result = async {
         if header(&headers, "x-lytronaut-entry-type")? != "file" {
             return Err(StorageError::Invalid);
@@ -187,14 +223,21 @@ async fn file(
     }
 }
 async fn zip(
+    State(state): State<AppState>,
     Extension(store): Extension<Store>,
-    Path(id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let Ok(Path(id)) = path else {
+        return failure(StorageError::Invalid);
+    };
     let result = async {
         let spool = stream(&store, &id, &headers, body, store.limits().encoded_bytes).await?;
-        store.import_zip(&id, spool).await
+        store.import_zip(&id, spool).await?;
+        crate::api::adapt(&state.catalog, &store, &id)
+            .await
+            .map_err(|_| StorageError::Unavailable)
     }
     .await;
     match result {
