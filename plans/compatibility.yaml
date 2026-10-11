@@ -19,7 +19,6 @@ issues:
     priority: 1
     tag: spike
     size: m
-    model: opus
     harness: claude
     component: import
     description: >-
@@ -42,7 +41,6 @@ issues:
     priority: 1
     tag: spike
     size: l
-    model: opus
     harness: claude
     component: decoder
     description: >-
@@ -64,7 +62,6 @@ issues:
     priority: 1
     tag: spike
     size: m
-    model: opus
     harness: claude
     component: interoperability
     description: >-
@@ -86,7 +83,6 @@ issues:
     priority: 1
     tag: spike
     size: l
-    model: opus
     harness: claude
     component: viewer
     description: >-
@@ -109,7 +105,6 @@ issues:
     priority: 1
     tag: decision
     size: m
-    model: opus
     harness: claude
     component: architecture
     deps: [corpus, calibration, stacks, gpu]
