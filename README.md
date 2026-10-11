@@ -8,10 +8,18 @@ Illum, promoted one verified file variant at a time.
 
 ## Status
 
-This repository is a validated Rust development scaffold. The application has
-not been implemented. Beadhive compatibility molecule `lytronaut-ck2` is filed
-and verified, with `kickoff=pending` for operator review.
-See [the design and roadmap](docs/design/001-lytronaut.md).
+The application has not been implemented. Beadhive research molecule
+`lytronaut-ck2` is complete: its four spikes and scope decision are reviewed and
+landed. Evidence supports a preservation-first original-camera
+MVP: schema-23 library import, all 109 archived thumbnails, and discrete JPEG
+focus stacks for the 58 verified LFE-11 captures. Browser H.264 and Rust/wgpu
+integration have explicit runtime gates. Calibrated raw synthesis and Illum
+compatibility remain unverified.
+
+See [the evidence and scope decision](docs/design/001-lytronaut.md) and the
+[implementation plan preview](plans/implementation.yaml). The preview is
+validated but has no filed implementation beads or kickoff approval. This repo
+remains private; no release or image publication is enabled.
 
 ## Intended experience
 
@@ -43,11 +51,14 @@ formatting, Clippy, test, and build gates with the committed Cargo lockfile.
 
 ## Architecture direction
 
-An independent Rust implementation: a native decoder and CPU reference
-renderer, a Rust HTTP service with persistent import jobs and a local catalog,
-and a Rust/WASM WebUI. GPU rendering and browser compatibility will be measured
-before selecting the final renderer. Full Desktop library fidelity, calibration,
-and processed-stack support require verified samples.
+An independent Rust implementation using Axum/Tokio, SQLite with durable jobs,
+and Leptos client-side Rust/WASM. Pure Rust JPEG decoding provides the native
+preview baseline. Optional browser wgpu/WebGPU presentation and WebCodecs
+through Rust bindings require successful runtime probes and retain static/CPU
+fallbacks. The server requires no GPU. Existing derivatives support discrete
+focus selection; new calibrated light-field reconstruction is a later evidence
+gate. Imported edits are preserved, with only independently verified transforms
+applied and no claim of Desktop appearance parity.
 
 Private photographs and camera serial numbers stay outside source control.
 Import will preserve originals and will never edit an uploaded source library.

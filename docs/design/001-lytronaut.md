@@ -1,229 +1,245 @@
-# Lytronaut: architecture, compatibility gates, and roadmap
+# Lytronaut: evidence-led scope and implementation roadmap
 
-Status: filed and verified; initial research molecule awaits operator review and kickoff.
+Status: **GO for a preservation-first MVP; implementation preview only**.
+Decision bead: **lytronaut-zxk — Scope verdict and next implementation plan**.
+Evidence date: 2026-10-11. Research epic: **lytronaut-ck2 — Lytronaut: prove
+library compatibility and Rust rendering architecture**.
 Name: **Lytronaut**. Repository: `SimplicityGuy/lytronaut` (private).
 Tagline: **an explorer for your light-field library**.
 
-## Intent and scope
+## Decision and scope
 
-Build an MIT-licensed, self-hostable Rust application that imports old Lytro
-Desktop libraries and individual captures, preserves the originals and library
-organization, and lets people browse, refocus, change perspective and aperture,
-make non-destructive adjustments, and export useful photographs.
+Implement an MIT-licensed, self-hostable Rust application that uploads an offline
+Desktop library, preserves every original byte and library association, browses
+verified derivatives and supports explicitly labelled discrete focus selection.
+The first supported semantic adapter is **Desktop schema 23, original F01**.
+Support both original Lytro and Illum over time through independently verified
+variants; this decision does not advertise Illum support or calibrated synthesis.
 
-Support both original Lytro and Illum through independently verified variants.
-Every capture exposes capabilities: archival-only, embedded preview, processed
-focus stack, calibrated light field, imported depth. Missing calibration and
-unknown sections must never become silent data loss or claims of full support.
+The research molecule is complete: all four spike reports and this scope
+decision have been reviewed and landed. `plans/implementation.yaml` is a validated dry-run preview, **not a filed
+molecule**. The operator reviews it separately before actual filing/kickoff.
+No application code, new implementation bead, implementation dispatch, release,
+image publication or private data publication is authorized by this preview.
 
-The initial project is a toolchain/CI scaffold, not an implemented product.
-Setup is authorized; application implementation and dispatch require the user's
-later approval. No publication, cloud account, external telemetry, or server
-GPU is required. New depth estimation, camera USB control, native mobile apps,
-cloud sync, and reconstruction of lost source data are outside the first MVP.
+The baseline is useful without a GPU, camera calibration or browser video codec:
+all 109 private reference captures have Rust-decodable thumbnails. The 58 LFE-11
+captures additionally have 420 decoded JPEG focus planes. Original files remain
+downloadable even if a feature is unsupported. Preserve unknown formats without
+running them through a guessed adapter. No cloud service or external telemetry
+is required. Camera USB control, native mobile apps, cloud sync, new depth
+estimation, metric stereo reconstruction and lost-data recovery are outside this MVP.
 
-## Evidence gathered on 2026-10-11
+## Reviewed evidence
 
-Read-only inspection of an operator-supplied private Desktop library found:
+| Research bead | Report | Finding that changes the plan |
+|---|---|---|
+| lytronaut-7w9 — Desktop fidelity and authorized corpus | [Library corpus](../spikes/lytronaut-7w9-library-corpus.md) | 109 pictures, 3 albums, 109 ordered memberships, 2 bins, 3 events; all companions reconcile; 728 files/2,001,830,074 bytes unchanged across SHA-256 checks; legacy picture hashes empty |
+| lytronaut-4li — Native decoding and calibration | [Decoder/calibration](../spikes/lytronaut-4li-decode-calibration.md) | All 109 actual camera models F01; 3280 × 3280 packed 12-bit; 1,172,665,600 samples roundtrip exactly; local calibration exists but lens selection/quality is unverified |
+| lytronaut-w6z — Processed stacks, depth and edits | [Interoperability](../spikes/lytronaut-w6z-processed-interop.md) | All 109 thumbnails + 420 JPEG planes decoded in native Rust; 654 standard H.264 frames verified only by external research reference; two five-frame browser representatives pass only with software preference |
+| lytronaut-0mz — Rust WebUI and GPU budgets | [GPU/CPU and design](../spikes/lytronaut-0mz-rust-gpu.md) | Rust dependencies compile; physical direct-WebGPU synthetic compute is measured, but full Rust/wgpu presentation remains unverified; concrete graphite/cyan concept and keyboard checks available |
 
-- SQLite `lytrolibrary.db`, library metadata version **23**.
-- **109 pictures, three albums, two image bins**, album membership and order,
-  event records, captions, ratings, flags, and picture metadata tables.
-- **109 raw LFPs, 109 depth-map LFPs, 109 view-stack LFPs, 109 stack LFPs,
-  58 low-quality stacks, 109 JPEGs**, plus JSON edit sidecars and backup material.
-- Camera model identifier `1` for the cataloged pictures; this identifier needs
-  cross-checking against capture metadata before classifying the model.
-- Light-field engine major versions 10 and 11. Edit keys include crop, focus,
-  tilt, aperture, perspective, exposure, white balance, tone, noise reduction,
-  sharpening, saturation, and orientation.
+The catalog has LFE 10/0 for 51 captures and LFE 11/0 for 58, 109 raw/depth/stack/view
+companions, 58 optional low-quality stacks, 109 JPEG thumbnails, 109 version-4 edit
+sidecars and 2 opaque animation sidecars. All 385 processed containers’ 1,307
+section digests verified. Standard stacks contain 109 H.264 blocks/654 frames;
+eight additional perspective blocks contain 296 frames. The 58 low-quality stacks
+contain 420 JPEG planes, 360 × 360. Thumbnail dimensions vary: 85 at 300 × 300 and 24
+at 1080 × 1080. View-stack companions contain JSON, not image planes. Depth and
+confidence are 328 × 328 little-endian f32 here, not the 330 × 330 historical example.
+They are relative focus data, not metres; confidence slightly exceeds 1 in one
+floating-point range, so preserve originals and use justified tolerance.
 
-Only schema, counts, file headers, and sidecar key names were inspected. The
-source stays read-only. No personal images, UUIDs, serial numbers, or database
-rows are committed or uploaded. Private fixtures remain operator-local.
-This establishes a useful original-library corpus, not Illum compatibility.
+The inspected library is private and authorized for local validation only.
+No captures, calibration bundles, names, dates, source UUIDs/serials, row values or
+individual content hashes may enter Git or public CI. The durable manifest is
+`fixtures/private/library-corpus-manifest.json` in the operator's main clone,
+mode 0600 and Git-ignored. Disposable probes under `/private/tmp` are temporary;
+the spike reports retain commands, algorithms and hashes. Public automated tests
+use independently authored synthetic fixtures with provenance/license records.
+Private corpus validation is reported separately, never represented as public CI.
 
-### Reference evidence and reuse policy
+## Per-feature GO / NO-GO
 
-| Reference | Useful research | Implementation boundary |
-| --- | --- | --- |
-| [lytro-py](https://github.com/yamada-sexta/lytro-py) | Extracted RAW/TXT, packed 12-bit pixels, calibration, subapertures | Does not parse LFP; no root license observed at reviewed revision |
-| [lytro-lumi](https://github.com/hypothete/lytro-lumi) | Browser GPU refocus, viewpoint, aperture | Experimental preprocessing and camera-specific constants; no root license observed |
-| [Jaramilloh](https://github.com/Jaramilloh/Process-Light-Fields-Captured-With-Lytro-Camera) | Original camera rectification, color and sample captures | CC-BY-4.0 project; bundled MATLAB toolbox has separate terms |
-| [plenopticam](https://github.com/hahnec/plenopticam) | Illum decoding, calibration, refocus, depth | GPL-3.0; reference only, no copied or translated code |
-| [Lytro.Net](https://github.com/mscappini/Lytro.Net) | LFP sections, metadata, focused JPEGs | Older format evidence; no root license observed |
+GO below means sufficient evidence to implement under the stated acceptance,
+not that the product already works. Conditional features must fail visibly into
+the supported baseline when their runtime/release gate fails.
 
-Reviewed source HEAD prefixes: `dcd1c106`, `d5f1eafc`, `aae3d3c2`, `24bb5237`,
-and `55dc84ba`, respectively. Verify licenses again before any reuse.
-Independent format and algorithm implementations are MIT; attribution alone
-does not authorize copying code or redistributing images. Fixture provenance
-and redistribution rights must be recorded individually.
+| Capability | Verdict | Boundary |
+|---|---|---|
+| Schema 23 import, albums/order/events/metadata and original preservation | GO | Stage immutable offline snapshot; preserve unknown fields/files/status codes; synthetic nonzero ratings/flags/captions require tests |
+| Static JPEG browsing and original download | GO | All 109 thumbnails decoded natively; authenticate every asset/download; bound decoded dimensions |
+| F01 container/reference validation and lossless 12-bit extraction | GO | All 109 verified; sensor samples are not photographs; unknown variants preserved-only |
+| LFE 11 JPEG-stack focus selection | GO | 58 stacks / 420 planes; explicit discrete nearest-plane controls using validated lambdas, no continuous optical refocus claim |
+| Standard derivative EXIF orientation | GO with transform tests | Sidecar codes 1/8; preserve catalog code 0 independently and avoid double-applying baked transforms |
+| Browser H.264 standard refocus | Conditional GO | Chrome 154 two five-frame representatives measured with prefer-software; full 654-frame gate and integrated Rust/WASM runtime required; actual decode failure falls back to JPEG/static |
+| Native pure-Rust H.264 decoder | NO-GO | No proven published decoder for this corpus; no FFmpeg/C++ runtime added |
+| Optional Rust/wgpu derivative presentation | Conditional GO | Dependency compilation and direct-WebGPU compute evidence; require real Rust/WASM texture-to-canvas correctness, budget, loss and presentation tests |
+| GPU kernel performance guarantee / cross-browser parity | NO-GO as current claim | Headless compute is not submit-to-present timing; Safari/Firefox/mobile/Windows/Linux clients unmeasured |
+| Preserve depth/confidence and recipe artifacts | GO | Preserve raw bytes/types; bounded finite-map inspection; no metric depth inference |
+| Depth picking, perspective/stereo/tilt, aperture synthesis | NO-GO | Coordinate/mapping/occlusion semantics and output quality unverified |
+| Imported legacy edit appearance parity | NO-GO | Matching stored values do not establish processing transfer functions; preserve unknown edits rather than silently render guesses |
+| Flattened verified derivative export / original bundle backup | GO to implement | Explicit plane/orientation/provenance and loss of refocus ability; byte-exact originals and album metadata survive restore |
+| Calibrated F01 synthesis | NO-GO | Four local data.C bundles have 195 valid sections, 191 references, 63 sensor payloads but 62 MOD records; 46-character trailers unverified; 31 lens-setting pairs have zero exact matches with 60 capture pairs |
+| Illum or other active Desktop schema semantic support | NO-GO | Zero authorized local samples, paired calibration or alternate active-schema fixtures |
+| Linux amd64/arm64 self-hosted operation | GO to implement, unverified now | CPU-only nonroot builds and actual startup/import/backup tests on both architectures required before claiming support |
 
-References indicate original-camera 3280 × 3280 packed 12-bit Bayer and Illum
-7728 × 5368 packed 10-bit Bayer with different metadata/CFA. Treat these as
-sample hypotheses, not hardcoded rules. LFP is a section container that can hold
-raw data or derived content. Processed stacks may contain JPEG or H.264;
-calibration bundles differ by generation and camera serial/zoom/focus.
+## Chosen architecture
 
-## Decisions proposed for review
+**Rust throughout application logic.** Native independent container/metadata
+handling and pure-Rust JPEG decoding; Rust HTTP service and persistent jobs;
+Leptos Rust/WASM client. CSS, WGSL and generated browser glue are permitted web
+assets. Browser platform codec/DOM APIs are called through Rust bindings. No
+Python/C#/FFmpeg processing service or C++ H.264 decoder is introduced. Research
+scripts and the local GPL-enabled FFmpeg reference are not runtime dependencies.
 
-1. **Rust throughout:** native parsing and image processing; a Rust HTTP service;
-   Rust/WASM application logic in the browser. CSS, WGSL shaders, and generated
-   WASM bindings are necessary web assets. No Python/C# processing subprocesses.
-2. **Independent decoder with CPU authority:** checked section lengths,
-   references and metadata; exact pixel unpacking; calibrated CPU reconstruction
-   as the correctness baseline. GPU work must agree within measured tolerances.
-3. **Self-hosted default:** one service/image with SQLite catalog and durable
-   jobs, immutable originals on a mounted local volume, and generated assets in
-   a separate cache. Candidate stack: Axum/Tokio, SQLx/SQLite, Leptos/WASM,
-   wgpu/WebGPU. Final versions and GPU strategy follow the spike results.
-4. **Browser acceleration first:** decode and calibrate in bounded native jobs;
-   transfer normalized, resolution-aware assets for interactive GPU refocus,
-   perspective and aperture. A server GPU is optional future work. Fall back
-   to CPU-generated/precomputed assets when GPU support or memory is insufficient.
-5. **Preserve first:** copy originals into content-addressed storage, hash and
-   validate before catalog commit, deduplicate safely, retain provenance and
-   unknown files, and recover imports across interruption. Never open source
-   library databases writable or execute uploaded database content.
-6. **Honest edit support:** preserve every original edit field, but apply only
-   verified semantics. Distinguish preserved-only edits from rendered edits.
-   Do not claim parity with proprietary Desktop algorithms.
-7. **Research before implementation filing:** complete a small spike molecule
-   for corpus/layout, calibration, processed stacks, and browser GPU feasibility.
-   A decision bead depends on all four. Its GO result re-enters Beadhive planning
-   to file the supported implementation slices; a NO-GO narrows scope explicitly.
+Use target-separated workspace crates for format/metadata, shared contracts,
+storage/catalog/jobs, native service/diagnostics and client/viewer. Native targets
+must not depend on browser or GPU APIs. Browser targets must not pull in SQLite
+or native codecs. Preserve a deterministic CPU/image baseline; GPU is optional.
 
-## First Beadhive molecule: compatibility and architecture evidence
+| Layer | Selection and validation status |
+|---|---|
+| Toolchain | Existing mise Rust 1.99.0/just 1.58.0; preserve lockfiles and update pins deliberately |
+| Service | Axum 0.8.9/Tokio; exact Axum native API compilation passed; persistent HTTP/auth behavior remains implementation work |
+| Catalog/jobs | SQLite with SQLx; selected persistence direction, exact SQLx/Tokio versions and host/WASM separation must pass foundation compile/license audit; migrations/rollback tests required |
+| Browser DOM | Leptos 0.8.22 `csr`, no required SSR; static assets served by Axum |
+| JPEG | image 0.25.9 with jpeg feature / zune-jpeg 0.5.15; actual native decoding 529/529 images; WASM decode path still needs acceptance |
+| Browser bridge | wasm-bindgen 0.2.129, web-sys/js-sys 0.3.106, wasm-bindgen-futures 0.4.79; match CLI to resolved crate; WebCodecs features/unstable cfg compile-tested separately |
+| Optional canvas renderer | wgpu 30.0.1, WASM default features disabled with webgpu/wgsl; real integration gate, CPU/static fallback |
+| Optional browser video | WebCodecs Annex-B via Rust; derive SPS codec/keyframe/access-unit boundaries, close VideoFrames and respect visible crop; no native codec fallback promised |
 
-Epic: **lytronaut-ck2 — Lytronaut: prove library compatibility and Rust rendering
-architecture**. All five tasks are open; `kickoff=pending`. Four human gates
-block the independent research roots. The scope decision depends on all four.
+Pin the actual implementation lockfile after compilation and a complete
+transitive license audit. Version evidence and direct dependency licenses are
+linked in the spike reports; no future dependency graph is claimed audited yet.
+Retain required MIT/Apache or other permitted notices. Validate ordinary storage
+and authentication dependencies before acceptance; do not assume platform
+compilation merely because their API is familiar.
 
-| Bead | Task |
-| --- | --- |
-| `lytronaut-7w9` | Desktop library fidelity and authorized corpus |
-| `lytronaut-4li` | Native decoding and calibration feasibility |
-| `lytronaut-w6z` | Processed stacks, depth, and legacy edits |
-| `lytronaut-0mz` | Rust WebUI, GPU budget, and fallback |
-| `lytronaut-zxk` | Scope verdict and next implementation plan |
+### Preservation, authentication and capability rules
 
-`bh plan verify lytronaut-ck2` passes. No kickoff approval or dispatch has run.
+First-run setup is local and explicitly authenticated before upload/asset access.
+Use secure credential hashing, sessions/CSRF, bounded requests and documented
+reverse-proxy trust; historical album `public=1` is metadata, never permission to
+publish. Originals are immutable content-addressed files on an operator volume,
+with separate staging, SQLite catalog and disposable derivative cache. Hash and
+verify before exposing transactional catalog records. Uploaded SQLite is data:
+read-only/query-only staged offline snapshot, no extension loading/attachments,
+no execution of source triggers or imported code. Reject unhandled WAL/journals.
 
-Four independent research tasks converge on one decision. Each produces
-`docs/spikes/<bead-id>-<slug>.md` with Question, Method, Evidence, Verdict
-(GO/NO-GO), and Recommendation. Research probes may be disposable, but no product
-application code or private fixture data lands in this milestone.
+Use independent SHA-256+length and byte verification for dedup; all observed
+`picture.hash` fields are empty. Preserve logical albums/capture associations
+separately from physical-byte reuse. Conflicting IDs/new bytes create explicit
+versions or quarantine, never overwrite. Unknown source files and fields remain
+in the preservation manifest. Durable jobs recover after interruption without
+committed rows pointing to incomplete originals. Proposed defaults: 20 GiB actual
+uncompressed upload, 100,000 files, 512 MiB/file, 4 KiB path, depth 32, with streaming
+limits and disk reservation; these are targets, not measured large-library claims.
 
-| Task | Evidence needed before implementation |
-| --- | --- |
-| Corpus and Desktop library fidelity | Version-23 mapping of all 109 pictures, three albums and order; raw/derived/sidecar associations; permissions and hashes; availability of Illum samples; unsupported versions policy |
-| Decode and calibration | Original/Illum section and pixel variants; calibration location/association; sample-based expected images; missing-calibration behavior; independent implementation feasibility |
-| Processed stacks and original edits | JPEG/H.264/depth variants; WebCodecs or other Rust-accessible decode options; browser support and server fallback; exact versus preserved-only edit semantics; licensing constraints |
-| Rust WebUI and GPU budget | Rust/WASM build strategy; GPU versus CPU correctness; measured asset/VRAM/latency budget; no-GPU behavior; context loss; responsive mid-2010s visual direction |
-| Scope verdict and implementation planning | Per-feature GO/NO-GO matrix, chosen stack, limitations, revised ADR, supported-variant acceptance criteria and next implementation molecule preview |
+Expose separate capability states for original preserved, preview available,
+JPEG stack available, browser codec validated, sensor decoded and calibrated
+synthesis unavailable. Never turn missing calibration/codec into data loss or a
+misleading control. Do not double-apply complete imported recipes to processed
+pixels. Only explicit plane selection and tested standard orientation are initial
+rendered transforms; other legacy edit fields remain preserved-only.
 
-The available Desktop library satisfies initial private sample intake. Illum
-and per-camera calibration coverage still need evidence. Missing Illum samples
-must not block a verified original-camera MVP or be mistaken for proven support.
+### Viewer and design
 
-## Full product roadmap after the GO verdict
+Use the [synthetic design concept](../spikes/assets/lytronaut-0mz-concept.png):
+graphite shell, cyan links/focus, subtle beveled header/gradients, compact controls,
+album rail, filmstrip, large photo stage and small-radius panels. Real application
+screens must retain keyboard navigation, labelled numeric ranges, visible focus,
+readable contrast, 200% zoom, screen-reader/forced-colors checks and reduced motion.
+The concept screenshot is a design artifact, not a running product.
 
-This is the proposed destination, not speculative implementation beads.
-Each phase will be filed through `bh plan file` after its prerequisites are known.
+Static/CPU image display is authoritative. Optional GPU presentation of verified
+derivatives may perform bounded orientation/scaling; it must not invent
+light-field geometry. Select GPU only after device/pipeline/limits success,
+release resources on loss and retain usable controls/last frame with fallback.
+At most 2 asset requests, 8 MiB/chunk, 256 KiB manifest, 48 MiB encoded viewer asset;
+≤1024² interactive previews, 2048² hard representation cap then downsample/tile;
+≤64 MiB explicit GPU and ≤96 MiB counted CPU/WASM working allocations. These proposed
+caps must be enforced/tested; measured total browser RSS/driver residency is separate.
 
-### Phase 1 — preservation and usable library browsing
+The synthetic GPU benchmark measured 1024² completion median 1.2 ms / p95 2.2 ms,
+versus Rust/WASM CPU 6.2/6.5 ms, with exact integer agreement. It excludes real textures,
+optical/color processing and onscreen presentation. Target actual warm GPU
+submit-to-present p95 ≤16.7 ms on declared reference hardware, CPU/precomputed
+interaction p95 ≤100 ms at ≤512², and fallback indication ≤1 s after observed loss.
+Actual texture orientation/scaling must match CPU fixtures exactly for integer
+operations; justified float color tolerance ≤1 eight-bit code / RMSE ≤0.5 may apply only
+when a defined float pipeline exists. Failed budgets reduce optional quality;
+they must never make baseline browsing unavailable.
 
-- Split crate boundaries: container/metadata decoder, calibration and CPU render,
-  persistent catalog/jobs, service/API, shared DTOs, Rust/WASM WebUI, CLI diagnostics.
-- Establish first-run local credentials, authenticated browse/upload/download,
-  session/CSRF controls and safe reverse-proxy behavior before exposing imports.
-- Define bounded library-directory, ZIP/TAR and individual-file import with
-  resumable upload, checksum/dedup, progress, per-file errors, crash recovery,
-  staging cleanup, and transactional catalog visibility.
-- Block traversal, absolute paths, symlink escapes, decompression bombs,
-  inconsistent lengths, excessive dimensions, and untrusted SQLite attachments.
-- Import verified Desktop schema 23: pictures, albums/order, events, captions,
-  ratings/flags, timestamps, original metadata, edit sidecars, and associations.
-  Preserve unknown files and fields in an import manifest.
-- Extract embedded previews and metadata; support thumbnails, albums, search,
-  sorting, capture detail, capability badges and original download/export.
-- Add native inspect/import CLI and a machine-readable support report.
+## Supported implementation phases and measurable acceptance
 
-Acceptance: the private reference library imports all 109 records and three
-albums without modifying source hashes; interrupted and repeated imports recover
-without duplicate records; malformed input tests fail safely; browsing/export
-work without calibration, internet access, or GPU.
+The complete runnable dependency DAG is [plans/implementation.yaml](../../plans/implementation.yaml).
+It links provenance to research epic `lytronaut-ck2` and remains a preview.
 
-### Phase 2 — calibrated independent decoding
+1. **Foundations and safe intake.** Separate native and WASM dependencies, validate
+   licenses and contracts, then add authentication before uploads. Implement
+   bounded ZIP and directory upload, immutable storage, durable jobs and a
+   schema-23 catalog adapter. Acceptance includes traversal, symlink, archive
+   bomb, collision, quota and WAL rejection. Inject failures around writes,
+   fsync, rename and catalog commits. Repeated imports must deduplicate safely;
+   altered files create explicit conflicts. Source hashes stay unchanged.
+2. **Usable library browsing.** Add bounded format/JPEG parsing, authenticated
+   asset APIs and the graphite/cyan Rust client. Validate all 109 pictures,
+   three albums and 109 ordered memberships, including events, metadata and
+   unknown files. Decode every thumbnail. Test Unicode and nonzero status fields
+   with synthetic fixtures, keyboard access, contrast, zoom and reduced motion.
+   The browser must work without GPU or video codecs.
+3. **Verified derivative interactions.** Support the 58 JPEG stacks and their
+   420 planes using explicit nearest-lambda selection and tested orientation.
+   Optional Rust/wgpu presentation and browser H.264 have separate runtime gates.
+   Validate actual Rust/WASM flows, visible crop, bounded memory, frame cleanup
+   and failure recovery. Decode all 654 standard H.264 frames in a private
+   browser report before claiming corpus-wide compatibility. The 296 perspective
+   frames remain preserved-only. New calibrated synthesis is deferred.
+4. **Export and CPU-only self-hosting.** Add verified flattened JPEG/PNG export,
+   original bundles and catalog backup/restore. Build non-root Linux amd64/arm64
+   containers with persistent volumes, readiness and graceful shutdown. Check
+   original hashes, albums and unknown fields through restoration. Run startup,
+   import, restart and restore smoke tests on both architectures without GPU
+   devices. Document memory limits and offline operation after installation.
+5. **Acceptance and handoff.** Run meaningful public synthetic CI and a separate
+   private corpus report. Review transitive licenses, notices, authentication,
+   redacted diagnostics, quotas and recovery. Provide operator guides and a
+   verified support matrix. CI may build containers; release and image publishing
+   remain disabled pending separate authorization.
 
-- Implement section/reference validation, exact packed pixel variants, metadata
-  normalization, CFA/black-level/white-balance/color transform handling.
-- Resolve factory calibration and per-camera/zoom/focus matching, microlens
-  geometry, rectification and lens correction; retain provenance and uncertainty.
-- Build a bounded deterministic CPU pipeline for central/subaperture views and
-  refocus, with cached derivatives and visual/golden tests on authorized fixtures.
-- Add each original-camera and Illum variant only after verified samples pass.
+## Future evidence prerequisites, not implementation promises
 
-Acceptance: exact unpacking tests, malformed-section and oversized-input tests,
-calibration mismatch diagnostics, reproducible CPU outputs and measured quality
-at multiple capture settings. No silent guessed calibration.
+Calibrated F01 synthesis needs the MOD wrapper identified, complete paired
+sensor metadata, independent camera/lens selection or interpolation, and measured
+microlens grid, flat-field and color quality against permitted reference exports.
+Proposed held-out center residual targets are median ≤0.25 sensor pixel and
+p95 ≤0.5 pixel; a proposed central white-field coefficient of variation target is
+≤5%. These are provisional scientific targets, not measured product quality.
+Confirm that they predict visible artifacts before adopting them as guarantees.
+Metric rectification additionally needs checkerboard captures.
 
-### Phase 3 — interactive light-field workspace
+Illum needs authorized LFR/RAW/processed/Desktop samples, matching pairing
+archives or XRAW, verified 10-bit packing and CFA, and measured calibrated
+outputs. Other Desktop schemas need versioned adapters and fixtures. Depth
+picking needs verified coordinates and confidence interpretation. Perspective,
+aperture and stereo require geometry, occlusion and rendering references.
+Imported edit parity needs independently measured transfer functions and
+transform precedence. Browser expansion requires actual platform runtime tests.
+These capabilities have no speculative implementation beads in this preview.
 
-- Produce a versioned tiled/multiresolution normalized asset format, bounded
-  downloads and GPU texture residency; invalidation follows source/calibration edits.
-- Implement Rust-driven GPU refocus/viewpoint/aperture, progressive loading,
-  request cancellation and quality controls against the CPU reference.
-- Handle absent adapters, context loss, oversized assets and mobile limits with
-  useful preview/precomputed fallback; measure focus-drag responsiveness.
-- Build the graphite/cyan workspace: album sidebar, photo grid, filmstrip,
-  large viewer, compact inspector, focal/aperture dials and restrained animation.
-  Include keyboard operation, focus states, readable contrast, reduced motion
-  and responsive layouts. Validate a concrete visual prototype before polish.
+## Reference evidence and MIT boundary
 
-Acceptance: numerical GPU/CPU tolerance and fixed benchmark scene set established
-by the spike; accessible controls; useful operation on a browser without GPU;
-no need for server hardware acceleration.
+| Reference | Research contribution | Reuse boundary |
+|---|---|---|
+| [lytro-py](https://github.com/yamada-sexta/lytro-py) | Extracted RAW/TXT, 12-bit packing and calibration | No root license observed at reviewed revision; no port |
+| [lytro-lumi](https://github.com/hypothete/lytro-lumi) | Experimental browser GPU viewer | Camera-specific preprocessing; no root license observed; no port |
+| [Jaramilloh](https://github.com/Jaramilloh/Process-Light-Fields-Captured-With-Lytro-Camera) | Original calibration/rectification | CC-BY-4.0 project; MATLAB toolbox separate terms; no copied code/fixtures |
+| [plenopticam](https://github.com/hahnec/plenopticam) | Illum/calibration/refocus research | GPL-3.0 reference only; no translated code |
+| [Lytro.Net](https://github.com/mscappini/Lytro.Net) | Older container/metadata exploration | No root license observed; no port |
 
-### Phase 4 — edits, interoperability, and export
-
-- Persist non-destructive Lytronaut edit recipes and undo/revert; preserve
-  Desktop originals and clearly identify unsupported legacy adjustments.
-- Apply verified crop/orientation/exposure/white-balance/refocus controls;
-  handle processed focus stacks and imported depth where the spike permits.
-- Export JPEG/PNG plus metadata/edit recipe, unmodified original bundles and
-  lossless catalog backups. Add cancellable batch exports and integrity reports.
-- Extend library adapters only through versioned compatibility fixtures.
-
-Acceptance: edit round trips preserve unknown fields; rendered exports match
-the reference pipeline; imported metadata and album order survive backup/restore;
-exports never overwrite source captures.
-
-### Phase 5 — self-hosting, hardening, and first release
-
-- Build non-root Linux amd64/arm64 images and Compose example with explicit
-  original/catalog/cache volumes, resource budgets, health/readiness and shutdown.
-- Add local first-run credentials, authenticated uploads/downloads, CSRF/session
-  controls, safe reverse-proxy configuration and no unauthenticated public setup.
-- Add storage quotas, retention of derivatives, backup/restore, migration rollback,
-  worker concurrency limits, redacted logs and optional local metrics.
-- Add fuzzing/property tests for untrusted parsers, end-to-end import/render/export
-  fixtures, browser fallback tests, release checks, SBOM/notices, Conventional
-  Commit version tooling and independent image/release publication approval.
-- Document setup, calibration acquisition, supported variants, private fixture
-  handling, troubleshooting, upgrade/recovery and honest quality limitations.
-- Extend Dependabot to Docker/Compose when those manifests exist.
-
-Acceptance: fresh Compose install and offline processing, authenticated
-unauthorized-access tests, low-memory/CPU-only operation, backup restoration,
-passing Linux platform builds and release gates, verified licenses/notices.
-
-## Dependency and review gates
-
-Research → scope verdict → import/catalog + decoder foundations → CPU calibrated
-assets → GPU viewer → edit/export → packaging/release. Preservation browsing may
-ship before calibrated synthesis; Illum may follow original-camera coverage.
-
-The first molecule stays `kickoff=pending`. The user reviews this ADR and the
-filed research plan, then explicitly approves kickoff before any dispatch.
-The implementation molecule is separately reviewed after the evidence verdict.
-New disparity/depth estimation is a later, explicitly experimental milestone.
+Reviewed HEAD prefixes respectively dcd1c106, d5f1eafc, aae3d3c2, 24bb5237, 55dc84ba.
+The README retains their Acknowledgement links. Attribution is not reuse
+permission. Independent original application code is MIT; third-party code,
+assets and private samples retain their own rights. Review licenses/provenance
+at the exact future dependency/fixture revision before redistribution.
