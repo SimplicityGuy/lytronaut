@@ -1,0 +1,15 @@
+[package]
+name = "lytronaut"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+description = "an explorer for your light-field library"
+repository = "https://github.com/SimplicityGuy/lytronaut"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

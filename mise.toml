@@ -1,0 +1,4 @@
+[tools]
+rust = "1.99.0"
+just = "1.58.0"
+gitleaks = "8.30.1"

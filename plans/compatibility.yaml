@@ -1,0 +1,128 @@
+epic:
+  title: "Lytronaut: prove library compatibility and Rust rendering architecture"
+  tag: spike
+  description: >-
+    Establish evidence for an MIT Rust self-hosted Lytro library explorer before
+    filing application implementation. Support original Lytro and Illum by
+    verified variants. The operator supplied a private Desktop library with
+    schema version 23, 109 pictures and three albums. Keep it read-only and
+    outside Git. Setup is complete; this molecule awaits operator review and kickoff.
+  design: >-
+    See docs/design/001-lytronaut.md. Four independent research beads converge
+    on one scope verdict. Each spike produces Question / Method / Evidence /
+    Verdict GO|NO-GO / Recommendation, with no product code. Independent MIT
+    implementations only; references do not establish source or asset reuse rights.
+issues:
+  - handle: corpus
+    title: "Spike: map Desktop library fidelity and establish authorized sample corpus"
+    type: task
+    priority: 1
+    tag: spike
+    size: m
+    model: opus
+    harness: claude
+    component: import
+    description: >-
+      Map private library schema 23 and capture directory associations; establish
+      independent original/Illum sample coverage and fixture rights. Unknown
+      Desktop versions and absent Illum samples must remain explicit limitations.
+    acceptance: >-
+      docs/spikes/<bead-id>-library-corpus.md exists with Question, Method,
+      Evidence, Verdict GO|NO-GO and Recommendation. It reconciles the operator
+      library's 109 pictures, three albums and order, image bins, events,
+      metadata, ratings/flags, raw/derived files and edit sidecars using
+      read-only probes. Record fixture hashes/provenance/rights in a local private
+      manifest and commit only a sanitized support matrix. Identify missing
+      files and unsupported schemas, Illum sample availability, importer
+      limits and crash/dedup acceptance requirements. Source hashes stay
+      unchanged. No personal data or product code is committed.
+  - handle: calibration
+    title: "Spike: validate native format decoding and camera calibration feasibility"
+    type: task
+    priority: 1
+    tag: spike
+    size: l
+    model: opus
+    harness: claude
+    component: decoder
+    description: >-
+      Establish independently implementable LFP/LFR/RAW section, pixel and
+      calibration paths for original and Illum variants. Confirm calibration
+      availability and avoid treating sensor demosaic as a reconstructed photograph.
+    acceptance: >-
+      docs/spikes/<bead-id>-decode-calibration.md has the required five sections,
+      a per-model/per-variant GO|NO-GO matrix, source-linked section/reference and
+      bit-packing evidence, metadata/CFA requirements, calibration acquisition
+      and matching rules and missing/mismatched-calibration behavior. Establish
+      reproducible CPU output and quality-test criteria on authorized samples
+      where available, and list unresolved evidence explicitly. Distinguish
+      archival preview from calibrated synthesis. Do not translate GPL or
+      unlicensed code, mutate source files or commit product code/private fixtures.
+  - handle: stacks
+    title: "Spike: resolve processed stacks, depth maps and legacy edit interoperability"
+    type: task
+    priority: 1
+    tag: spike
+    size: m
+    model: opus
+    harness: claude
+    component: interoperability
+    description: >-
+      Inspect processed stack/depth/view sidecars and determine which can be
+      rendered from Rust/WASM or native Rust without Python/C# processing services.
+      Browser platform codec APIs may be bound through Rust; record any limitation.
+    acceptance: >-
+      docs/spikes/<bead-id>-processed-interop.md has the required five sections;
+      classifies actual JPEG/H.264/depth stack variants and LFE versions 10/11;
+      records browser/native decoder options, license and platform constraints,
+      no-GPU/no-codec fallbacks, and independently verified edit-field semantics.
+      Separate rendered controls from preserved-only sidecars and explicitly
+      decline unverified Desktop visual parity. Give GO|NO-GO per capability,
+      export criteria and preservation behavior. No product code or private
+      fixture content is committed.
+  - handle: gpu
+    title: "Spike: measure Rust WebUI and GPU rendering with accessible fallback"
+    type: task
+    priority: 1
+    tag: spike
+    size: l
+    model: opus
+    harness: claude
+    component: viewer
+    description: >-
+      Validate candidate Axum/Leptos/WASM and wgpu/WebGPU architecture using
+      disposable experiments and lawful synthetic data. Establish asset,
+      memory, texture and latency budgets before promising interactive refocus.
+    acceptance: >-
+      docs/spikes/<bead-id>-rust-gpu.md has the required five sections and
+      records candidate versions/compatibility, Rust browser binding strategy,
+      actual GPU/CPU comparison method and measured error/latency/memory on
+      declared hardware/browser versions. Include absence/context-loss and
+      oversized-asset fallback, native CPU/server-without-GPU operation, proposed
+      bounded asset protocol and acceptance budgets. Provide a concrete
+      mid-2010s graphite/cyan visual concept plus keyboard/contrast/reduced-motion
+      checks. Classify unmeasured platforms as unverified. Experiments remain
+      disposable; no application implementation or private data is committed.
+  - handle: verdict
+    title: "Decision: approve supported scope and prepare the implementation molecule"
+    type: task
+    priority: 1
+    tag: decision
+    size: m
+    model: opus
+    harness: claude
+    component: architecture
+    deps: [corpus, calibration, stacks, gpu]
+    description: >-
+      Read all spike evidence and select achievable preservation/refocusing
+      scope. A supported original-camera MVP may proceed while unproven Illum
+      support stays deferred. Do not file speculative implementation work.
+    acceptance: >-
+      All four spike documents are reviewed; docs/design/001-lytronaut.md is
+      amended with a per-feature GO|NO-GO matrix, chosen Rust stack, sample
+      coverage, licensing boundaries, calibration/codec/GPU constraints, phases
+      and measurable acceptance. On GO re-enter bh:replan for this epic and
+      prepare/validate/preview the supported implementation molecule for
+      separate operator approval. On NO-GO record the ADR and close with the
+      verdict and reason. Never approve kickoff, dispatch, merge or publish on
+      behalf of the operator. No product implementation in this molecule.
