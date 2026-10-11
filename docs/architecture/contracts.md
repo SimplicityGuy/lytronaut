@@ -63,8 +63,10 @@ that the foundation has already imported originals or edit sidecars.
 
 `ApiError` contains only version, code and retryability. Services map internal
 errors to codes and keep filesystem paths, credentials and serials out of the
-wire and routine logs. Only `/healthz` exists before the auth bead; it performs
-an actual catalog query and returns 503 on catalog failure, with no source metadata.
+wire and routine logs. Public `GET /healthz` performs an actual catalog query and returns 503 on
+catalog failure, with no source metadata. The service authentication boundary
+protects every application route and fallback; see
+[authentication and extension contracts](authentication.md).
 
 ## Reproducible toolchain and provenance
 
@@ -74,9 +76,15 @@ graph. The bare `just check` entry point invokes `mise exec` itself before
 running every check, so clean Beadhive review/merge checkouts do not depend on
 the caller having wasm-bindgen or other pinned tools on PATH. Install mise and
 the configured tools first; individual development recipes run in `mise exec`.
+`CARGO_TARGET_DIR` may point to an absolute shared Cargo artifact cache for
+command-local validation; `wasm-build` resolves its wasm-bindgen input through
+that directory, falling back to `target` when unset. Source checkouts remain
+pristine and all locked native/WASM, boundary and license checks still run.
+Keep `CARGO_BUILD_JOBS=2` on constrained shared hosts.
 SQLx uses bundled SQLite (a public-domain database engine); no native image
-or video codec is included. The service binds loopback and uses only its own
-application database. The next auth bead owns exposed deployment configuration.
+or video codec is included. The service binds loopback and uses only its own application database.
+The authentication contract defines private local bootstrap state and the
+exact-origin/TLS reverse-proxy deployment policy.
 
 API sources checked against upstream crate code/docs:
 [Axum Router/serve](https://docs.rs/axum/0.8.9/axum/),
