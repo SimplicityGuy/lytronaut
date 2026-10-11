@@ -1,6 +1,8 @@
 //! Native HTTP boundary. All application routes and fallbacks inherit authentication.
 #![cfg(not(target_arch = "wasm32"))]
+pub mod api;
 pub mod auth;
+pub mod diagnostics;
 pub mod local;
 pub mod uploads;
 use auth::{AuthStore, Session};
@@ -258,6 +260,13 @@ async fn authorize(boundary: BoundaryState, mut request: Request, next: Next) ->
         }
         request.extensions_mut().insert(session);
         request.extensions_mut().insert(Authenticated);
+    }
+    if request
+        .uri()
+        .query()
+        .is_some_and(|query| query.len() > 1024)
+    {
+        return error(StatusCode::BAD_REQUEST, ErrorCode::InvalidInput);
     }
     if path.contains(['%', '\\']) || path.split('/').any(|segment| matches!(segment, "." | "..")) {
         return error(StatusCode::BAD_REQUEST, ErrorCode::InvalidInput);

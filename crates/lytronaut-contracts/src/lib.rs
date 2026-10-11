@@ -299,6 +299,103 @@ impl From<ContentDigest> for String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportPhase {
+    Intake,
+    CatalogPending,
+    CatalogComplete,
+    CatalogFailed,
+    Failed,
+    Cancelled,
+    Cancelling,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginalRole {
+    Raw,
+    Depth,
+    RefocusStack,
+    JpegFocusStack,
+    ViewStack,
+    Thumbnail,
+    LegacyEdits,
+    Catalog,
+    Other,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemError {
+    pub role: OriginalRole,
+    pub error: ApiError,
+}
+/// Semantic readiness is distinct from durable intake success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryState {
+    Ready,
+    PreservedOnly,
+    Quarantined,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportProgress {
+    #[serde(flatten)]
+    pub intake: JobReport,
+    pub phase: ImportPhase,
+    pub library: Option<OpaqueId>,
+    pub catalog_state: Option<LibraryState>,
+    pub catalog_error: Option<ApiError>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Page<T> {
+    pub version: WireVersion,
+    pub items: Vec<T>,
+    pub offset: u32,
+    pub next_offset: Option<u32>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarySummary {
+    pub id: OpaqueId,
+    pub state: LibraryState,
+    pub captures: u32,
+    pub albums: u32,
+    pub files: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlbumSummary {
+    pub id: OpaqueId,
+    pub name: String,
+    pub name_truncated: bool,
+    pub sort_order: i64,
+    pub captures: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureSummary {
+    pub id: OpaqueId,
+    pub name: String,
+    pub name_truncated: bool,
+    pub rating: i64,
+    pub flag_status: i64,
+    pub picture_index: Option<i64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreservedFile {
+    pub id: OpaqueId,
+    pub encoded_bytes: u64,
+    pub role: OriginalRole,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureDetail {
+    pub version: WireVersion,
+    pub capture: CaptureSummary,
+    pub caption: String,
+    pub caption_truncated: bool,
+    pub capabilities: CapabilityReport,
+    pub preview: Option<OpaqueId>,
+    pub preview_error: Option<ApiError>,
+    pub item_errors: Vec<ItemError>,
+    pub originals: Vec<PreservedFile>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

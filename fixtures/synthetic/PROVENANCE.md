@@ -28,3 +28,9 @@ specification without copying its text or another implementation. No private
 library, photographic image, camera ID, capture ID, calibration or reference
 project implementation was used. Random test object/job identifiers are generated
 only at runtime and are not committed as fixtures.
+
+Service API/diagnostics tests independently author schema-23 Unicode records,
+nonzero ratings/flags and synthetic preservation bytes. JPEG pixels are simple
+red/green RGB samples encoded at test time with the audited pure-Rust image crate.
+ZIP framing is independently authored stored-entry framing; no personal capture,
+GPL port or third-party image is used. All original test code/data is MIT.
