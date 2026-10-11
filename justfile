@@ -6,7 +6,9 @@ setup:
     rustup target add wasm32-unknown-unknown
     cargo fetch --locked
 
-check: fmt lint test build wasm-build dependencies licenses
+# Beadhive runs this bare from clean checkouts; enter the pinned environment here.
+check:
+    mise exec -- just fmt lint test build wasm-build dependencies licenses
 
 fmt:
     cargo fmt --all -- --check

@@ -70,7 +70,11 @@ an actual catalog query and returns 503 on catalog failure, with no source metad
 
 Rust 1.99.0, Axum 0.8.9, Leptos 0.8.22 CSR, SQLx 0.9.0 (SQLite only), Tokio 1.53.2,
 and wasm-bindgen crate/CLI 0.2.129 are pinned. Cargo.lock records the resolved
-graph. SQLx uses bundled SQLite (a public-domain database engine); no native image
+graph. The bare `just check` entry point invokes `mise exec` itself before
+running every check, so clean Beadhive review/merge checkouts do not depend on
+the caller having wasm-bindgen or other pinned tools on PATH. Install mise and
+the configured tools first; individual development recipes run in `mise exec`.
+SQLx uses bundled SQLite (a public-domain database engine); no native image
 or video codec is included. The service binds loopback and uses only its own
 application database. The next auth bead owns exposed deployment configuration.
 
