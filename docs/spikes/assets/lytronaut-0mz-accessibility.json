@@ -1,0 +1,55 @@
+{
+  "tabs": [
+    {
+      "tag": "BUTTON",
+      "label": "Import library",
+      "outline": "3px"
+    },
+    {
+      "tag": "BUTTON",
+      "label": "All captures",
+      "outline": "3px"
+    },
+    {
+      "tag": "BUTTON",
+      "label": "Albums",
+      "outline": "3px"
+    },
+    {
+      "tag": "BUTTON",
+      "label": "Favorites",
+      "outline": "3px"
+    },
+    {
+      "tag": "INPUT",
+      "label": "focus",
+      "outline": "3px"
+    },
+    {
+      "tag": "INPUT",
+      "label": "aperture",
+      "outline": "3px"
+    },
+    {
+      "tag": "BUTTON",
+      "label": "Reset view",
+      "outline": "3px"
+    },
+    {
+      "tag": "BUTTON",
+      "label": "Export",
+      "outline": "3px"
+    },
+    {
+      "tag": "A",
+      "label": "Capture details",
+      "outline": "3px"
+    }
+  ],
+  "arrowRightFocus": "0.1",
+  "reduced": {
+    "matches": true,
+    "transition": "0s",
+    "animation": "none"
+  }
+}
