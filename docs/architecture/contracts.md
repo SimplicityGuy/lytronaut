@@ -76,6 +76,11 @@ graph. The bare `just check` entry point invokes `mise exec` itself before
 running every check, so clean Beadhive review/merge checkouts do not depend on
 the caller having wasm-bindgen or other pinned tools on PATH. Install mise and
 the configured tools first; individual development recipes run in `mise exec`.
+`CARGO_TARGET_DIR` may point to an absolute shared Cargo artifact cache for
+command-local validation; `wasm-build` resolves its wasm-bindgen input through
+that directory, falling back to `target` when unset. Source checkouts remain
+pristine and all locked native/WASM, boundary and license checks still run.
+Keep `CARGO_BUILD_JOBS=2` on constrained shared hosts.
 SQLx uses bundled SQLite (a public-domain database engine); no native image
 or video codec is included. The service binds loopback and uses only its own application database.
 The authentication contract defines private local bootstrap state and the
