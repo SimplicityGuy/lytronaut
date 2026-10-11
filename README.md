@@ -9,7 +9,8 @@ Illum, promoted one verified file variant at a time.
 ## Status
 
 This repository is a validated Rust development scaffold. The application has
-not been implemented. Beadhive planning is pending review and kickoff approval.
+not been implemented. Beadhive compatibility molecule `lytronaut-ck2` is filed
+and verified, with `kickoff=pending` for operator review.
 See [the design and roadmap](docs/design/001-lytronaut.md).
 
 ## Intended experience

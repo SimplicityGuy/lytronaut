@@ -1,6 +1,6 @@
 # Lytronaut: architecture, compatibility gates, and roadmap
 
-Status: proposed; initial research molecule awaits operator review and kickoff.
+Status: filed and verified; initial research molecule awaits operator review and kickoff.
 Name: **Lytronaut**. Repository: `SimplicityGuy/lytronaut` (private).
 Tagline: **an explorer for your light-field library**.
 
@@ -93,6 +93,20 @@ calibration bundles differ by generation and camera serial/zoom/focus.
    to file the supported implementation slices; a NO-GO narrows scope explicitly.
 
 ## First Beadhive molecule: compatibility and architecture evidence
+
+Epic: **lytronaut-ck2 — Lytronaut: prove library compatibility and Rust rendering
+architecture**. All five tasks are open; `kickoff=pending`. Four human gates
+block the independent research roots. The scope decision depends on all four.
+
+| Bead | Task |
+| --- | --- |
+| `lytronaut-7w9` | Desktop library fidelity and authorized corpus |
+| `lytronaut-4li` | Native decoding and calibration feasibility |
+| `lytronaut-w6z` | Processed stacks, depth, and legacy edits |
+| `lytronaut-0mz` | Rust WebUI, GPU budget, and fallback |
+| `lytronaut-zxk` | Scope verdict and next implementation plan |
+
+`bh plan verify lytronaut-ck2` passes. No kickoff approval or dispatch has run.
 
 Four independent research tasks converge on one decision. Each produces
 `docs/spikes/<bead-id>-<slug>.md` with Question, Method, Evidence, Verdict
