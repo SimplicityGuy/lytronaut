@@ -17,3 +17,14 @@ metadata, synthetic SHA1-framed sections, two tiny RGB JPEG pixels encoded by
 examples with no camera or capture identifiers. Malformed fixtures mutate only
 these invented bytes. No photographic pixels or reference implementation code
 were reused. `examples/fuzz_input.rs` accepts bounded synthetic stdin seeds.
+
+`crates/lytronaut-storage/tests/intake.rs`, its publication race unit test, and
+`crates/lytronaut-service/tests/uploads.rs` independently create MIT preservation
+fixtures in memory and temporary private test directories: invented unknown
+file bytes and Unicode logical names, empty files, classic/ZIP64 framing, stored
+and DEFLATE data, path/type/count/size/CRC mutations, interrupted publication
+files, and synthetic credentials. ZIP framing follows the linked PKWARE
+specification without copying its text or another implementation. No private
+library, photographic image, camera ID, capture ID, calibration or reference
+project implementation was used. Random test object/job identifiers are generated
+only at runtime and are not committed as fixtures.

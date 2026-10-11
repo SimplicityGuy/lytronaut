@@ -7,6 +7,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 
 | Package | Version | SPDX license |
 |---|---|---|
+| adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
 | any_spawner | 0.3.0 | MIT |
@@ -48,6 +49,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | crc | 3.4.0 | MIT OR Apache-2.0 |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.0 | MIT OR Apache-2.0 |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
@@ -64,9 +66,11 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | event-listener | 5.4.2 | Apache-2.0 OR MIT |
 | event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT |
 | find-msvc-tools | 0.1.14 | MIT OR Apache-2.0 |
+| flate2 | 1.1.10 | MIT OR Apache-2.0 |
 | flume | 0.12.0 | Apache-2.0/MIT |
 | foldhash | 0.2.0 | Zlib |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
+| fs2 | 0.4.3 | MIT/Apache-2.0 |
 | futures | 0.3.34 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 |
@@ -129,6 +133,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
 | memchr | 2.8.3 | Unlicense OR MIT |
 | mime | 0.3.17 | MIT OR Apache-2.0 |
+| miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.4 | MIT |
 | moxcms | 0.7.11 | BSD-3-Clause OR Apache-2.0 |
 | next_tuple | 0.1.0 | MIT |
@@ -187,6 +192,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
+| simd-adler32 | 0.3.10 | MIT |
 | slab | 0.4.12 | MIT |
 | slotmap | 1.1.1 | Zlib |
 | smallvec | 1.16.3 | MIT OR Apache-2.0 |
@@ -245,7 +251,10 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | wasm_split_helpers | 0.2.3 | MIT OR Apache-2.0 |
 | wasm_split_macros | 0.2.2 | MIT OR Apache-2.0 |
 | web-sys | 0.3.106 | MIT OR Apache-2.0 |
+| winapi | 0.3.9 | MIT/Apache-2.0 |
+| winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
 | winapi-util | 0.1.11 | Unlicense OR MIT |
+| winapi-x86_64-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
 | windows-link | 0.2.1 | MIT OR Apache-2.0 |
 | windows-sys | 0.61.2 | MIT OR Apache-2.0 |
 | winnow | 1.0.4 | MIT |
