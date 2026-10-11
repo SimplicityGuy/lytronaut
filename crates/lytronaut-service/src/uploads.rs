@@ -46,8 +46,11 @@ pub fn routes(store: Store) -> Router<AppState> {
 async fn begin(
     Extension(store): Extension<Store>,
     Extension(_): Extension<Authenticated>,
-    Json(request): Json<ImportRequest>,
+    payload: Result<Json<ImportRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
+    let Ok(Json(request)) = payload else {
+        return failure(StorageError::Invalid);
+    };
     match store.begin(&request).await {
         Ok(id) => (StatusCode::CREATED, Json(Started { version: 1, id })).into_response(),
         Err(e) => failure(e),

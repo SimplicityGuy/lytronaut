@@ -279,3 +279,23 @@ async fn actual_stream_overflow_content_encoding_and_unsafe_name_are_rejected() 
         assert!(!s.store.job(&id).await.unwrap().error.unwrap().retryable);
     }
 }
+#[tokio::test]
+async fn malformed_and_overlarge_declarations_never_echo_private_input() {
+    let s = Server::new().await;
+    let (_, mutation) = s.session().await;
+    let marker = "synthetic-sensitive-source-name";
+    let unknown=json!({"version":1,"kind":"directory","declared_bytes":1,"declared_files":1,marker:"private"}).to_string();
+    for body in [
+        unknown,
+        format!("{{\"{marker}\":\"{}\"}}", "x".repeat(5000)),
+    ] {
+        let response = s
+            .request("POST", "/imports", &mutation, body.as_bytes(), false)
+            .await;
+        assert_eq!(response.0, 400);
+        let value: Value = serde_json::from_str(&response.2).unwrap();
+        assert_eq!(value["code"], "invalid_input");
+        assert!(!response.2.contains(marker));
+        assert!(!response.2.contains("private"));
+    }
+}
