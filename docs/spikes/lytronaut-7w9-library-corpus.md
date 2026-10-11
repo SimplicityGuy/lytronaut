@@ -30,13 +30,14 @@ and the shape/version of JSON edit sidecars. SHA-256 was streamed in 1 MiB chunk
 over **every file twice**, before and after the read-only probes. Relative paths,
 bytes, modification times and hashes were compared exactly.
 
-A mode-0600 private manifest is retained locally at
-`/private/tmp/lytronaut-provisioning/library-corpus-manifest.json`, with the
-source path, observation time, provenance, rights restriction, all file hashes
-and sanitized aggregate results. The disposable probe is beside it as
-`corpus_probe.py`. These temporary files are outside Git and may be deleted by
-OS cleanup; retain the manifest in operator-controlled private storage before
-using it as a long-lived compatibility fixture. Neither artifact is a product
+A mode-0600 private manifest is retained durably, outside Git, at
+`fixtures/private/library-corpus-manifest.json` in the operator's main clone
+(`/Users/Robert/workspaces/github/SimplicityGuy/lytronaut`). It contains the source
+path, observation time, provenance, rights restriction, all file hashes and
+sanitized aggregate results. Its original scratch copy and the disposable
+`corpus_probe.py` remain under `/private/tmp/lytronaut-provisioning/`; temporary
+probe files may be removed by OS cleanup. The durable manifest is ignored and
+must never be attached to public reports or CI. Neither artifact is a product
 dependency. The committed tables below are the sanitized support matrix.
 
 The exact disposable command was
