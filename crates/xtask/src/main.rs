@@ -33,6 +33,32 @@ fn boundaries() -> Result<()> {
         .ok_or("missing host target")?;
     for (package, target, denied) in [
         (
+            "lytronaut-format",
+            host,
+            &[
+                "ffmpeg",
+                "ffmpeg-sys-next",
+                "opencv",
+                "openh264",
+                "cxx",
+                "bindgen",
+            ][..],
+        ),
+        (
+            "lytronaut-format",
+            "wasm32-unknown-unknown",
+            &[
+                "ffmpeg",
+                "ffmpeg-sys-next",
+                "opencv",
+                "openh264",
+                "cxx",
+                "bindgen",
+                "sqlx",
+                "libsqlite3-sys",
+            ][..],
+        ),
+        (
             "lytronaut-service",
             host,
             &["leptos", "wasm-bindgen", "web-sys", "js-sys", "wgpu"][..],
@@ -154,8 +180,15 @@ fn licenses(write: bool) -> Result<()> {
             | "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT" => "MIT",
             "(MIT OR Apache-2.0) AND Unicode-3.0" => "MIT AND Unicode-3.0",
             "MIT AND BSD-3-Clause" => "MIT AND BSD-3-Clause",
-            "MIT OR Apache-2.0" | "Apache-2.0 OR MIT" | "Apache-2.0/MIT" | "MIT/Apache-2.0"
-            | "Unlicense OR MIT" | "Unlicense/MIT" => "MIT",
+            "BSD-3-Clause OR Apache-2.0" => "BSD-3-Clause",
+            "MIT OR Apache-2.0"
+            | "Apache-2.0 OR MIT"
+            | "Apache-2.0/MIT"
+            | "MIT/Apache-2.0"
+            | "Unlicense OR MIT"
+            | "Unlicense/MIT"
+            | "Zlib OR Apache-2.0 OR MIT"
+            | "MIT OR Apache-2.0 OR Zlib" => "MIT",
             value if allowed.contains(&value) => value,
             _ => return Err(format!("unaudited license {license} for {name}").into()),
         };
