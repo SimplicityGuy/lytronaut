@@ -1,0 +1,94 @@
+# Workspace and version 1 contracts
+
+The operator approved implementation epic `lytronaut-re8`, including kickoff,
+delivery, review and landing. Foundation bead `lytronaut-922` implements these
+boundaries; it does not advertise usable import, browsing, decoding or refocus.
+
+| Crate | Responsibility | Target |
+|---|---|---|
+| lytronaut-contracts | Versioned serde DTOs and input invariants | Native and WASM |
+| lytronaut-format | Independent bounded format implementations | Platform neutral |
+| lytronaut-storage | Application SQLite catalog and durable jobs | Native |
+| lytronaut-service | Axum HTTP and redacted diagnostics | Native |
+| lytronaut-client | Leptos CSR application entry point | WASM |
+| xtask | Dependency boundaries and license evidence | Development host |
+
+Native default members exclude the client. Client platform dependencies are
+WASM-specific; SQLite is native-specific. `just dependencies` checks actual
+normal/build dependency trees for the service and client. CI independently
+compiles/tests the native service and compiles and binds the WASM artifact.
+Do not use `--workspace --target wasm32-unknown-unknown`: the native service is
+intentionally a separate target. Optional GPU/codec dependencies will belong
+only to the client, when their own acceptance gates pass.
+
+## Contract rules
+
+JSON `version` is numeric `1`. Unsupported versions and enum variants fail
+closed; adding incompatible fields requires a new wire version. Unknown fields
+are rejected in DTOs, independently of source formats where unknown fields must
+be preserved. `OpaqueId` permits 1–128 ASCII alphanumeric, hyphen or underscore
+characters and is never a filesystem path or camera identity. `ContentDigest`
+is exactly 64 lowercase hexadecimal SHA-256 characters; identifiers/digests
+from private sources must not appear in routine logs.
+
+`ImportRequest` declares ZIP-library or directory intake, nonzero file count and
+bytes. Declarations do not establish trust: storage must enforce actual streamed
+sizes against explicit admin configuration (defaults: 20 GiB and 100,000 files).
+Those configurable admission limits are separate from structural DTO validity.
+
+`JobReport` represents queued/running/cancelling/cancelled/succeeded/failed states.
+Completed bytes cannot exceed total; success requires completion, failure requires
+an `ApiError`, and other states cannot carry an error. This is a snapshot contract;
+durable transitions, cancellation and persistence belong to storage.
+
+`AssetManifest` carries opaque ID, SHA-256, representation, dimensions, color
+space, encoded/decoded sizes, checked contiguous chunk ranges and capabilities.
+Viewer JPEGs are capped at 2048 × 2048, 48 MiB encoded and exact RGBA allocation.
+Viewer JPEGs require nonempty chunk coverage. Chunks are at most 8 MiB, checked for overflow, ordered without gaps/overlap and
+cover the full offered asset. At most 1024 ranges are allowed. Empty ranges permit
+large preserved originals to remain outside the bounded viewer. API handlers must
+also enforce the 256 KiB serialized manifest budget and concurrent-transfer
+limits; these are transport rules, not permissions granted by a valid DTO.
+
+Deserialization validates these invariants. Public struct fields allow construction
+by Rust producers; producers must call `validate()` before persisting/sending.
+`Dimensions` describes encoded geometry; decoder-specific allocation limits must
+be checked before decompression even when a generic asset has valid dimensions.
+
+`CapabilityState` distinguishes available, preserved-only, unverified, disabled
+and unavailable with a normalized reason. Optional renderer/codec states are
+independent. Foundation reports import/static/focus disabled, synthesis/GPU/codec
+unverified and legacy edits preserved-only as a policy. This policy does not claim
+that the foundation has already imported originals or edit sidecars.
+
+`ApiError` contains only version, code and retryability. Services map internal
+errors to codes and keep filesystem paths, credentials and serials out of the
+wire and routine logs. Only `/healthz` exists before the auth bead; it performs
+an actual catalog query and returns 503 on catalog failure, with no source metadata.
+
+## Reproducible toolchain and provenance
+
+Rust 1.99.0, Axum 0.8.9, Leptos 0.8.22 CSR, SQLx 0.9.0 (SQLite only), Tokio 1.53.2,
+and wasm-bindgen crate/CLI 0.2.129 are pinned. Cargo.lock records the resolved
+graph. SQLx uses bundled SQLite (a public-domain database engine); no native image
+or video codec is included. The service binds loopback and uses only its own
+application database. The next auth bead owns exposed deployment configuration.
+
+API sources checked against upstream crate code/docs:
+[Axum Router/serve](https://docs.rs/axum/0.8.9/axum/),
+[Leptos mount](https://docs.rs/leptos/0.8.22/leptos/mount/),
+[SQLx SQLite](https://docs.rs/sqlx/0.9.0/sqlx/sqlite/), and
+[wasm-bindgen tooling](https://wasm-bindgen.github.io/wasm-bindgen/reference/cli.html).
+The dependency source manifests and successful target builds provide exact-version
+evidence; no reference-project implementation is translated.
+
+Run `just licenses-update` only after auditing graph changes. `just licenses`
+checks every external resolved workspace package, including browser, build and
+test dependencies, against the permissive SPDX policy and committed upstream
+license/notice texts. Missing/unknown licenses or missing evidence fail closed. The three upstream
+packages with no separate license file retain their explicit original manifest
+declarations and standard MIT terms without inventing copyright notices;
+see notices/README.md and its pinned retrieval provenance.
+SPDX expressions and complete texts are retained in DEPENDENCY_LICENSES.md and
+THIRD_PARTY_NOTICES.md. Development tool binaries are not redistributed with the
+application. Fixture provenance lives in fixtures/synthetic/PROVENANCE.md.

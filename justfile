@@ -3,22 +3,41 @@ default:
 
 setup:
     rustup component add rustfmt clippy
+    rustup target add wasm32-unknown-unknown
     cargo fetch --locked
 
-check: fmt lint test build
+check: fmt lint test build wasm-build dependencies licenses
 
 fmt:
     cargo fmt --all -- --check
 
 lint:
-    cargo clippy --locked --all-targets --all-features -- -D warnings
+    cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --locked -p lytronaut-client --target wasm32-unknown-unknown -- -D warnings
 
 test:
-    cargo test --locked --all-targets --all-features
-    cargo test --locked --doc
+    cargo test --locked --workspace --all-targets --all-features
+    cargo test --locked --workspace --doc
 
 build:
-    cargo build --locked --all-targets --all-features
+    cargo build --locked --workspace --all-targets --all-features
+
+wasm-build:
+    cargo build --locked -p lytronaut-client --target wasm32-unknown-unknown
+    test "$(wasm-bindgen --version)" = "wasm-bindgen 0.2.129"
+    wasm-bindgen --target web --out-dir dist target/wasm32-unknown-unknown/debug/lytronaut_client.wasm
+
+dependencies:
+    cargo run --locked -p xtask -- boundaries
+
+licenses:
+    cargo run --locked -p xtask -- licenses
+
+licenses-update:
+    cargo run --locked -p xtask -- licenses --write
+
+serve:
+    cargo run --locked -p lytronaut-service
 
 format:
     cargo fmt --all
