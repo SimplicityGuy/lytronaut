@@ -1,5 +1,8 @@
 //! Native catalog and durable job boundary. Foundation opens only the application's DB.
 #![cfg(not(target_arch = "wasm32"))]
+pub mod intake;
+mod zip;
+pub use intake::{FaultPoint, Limits, SourceEntry, StorageError, Store};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions};
 use std::path::Path;
 

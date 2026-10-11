@@ -181,7 +181,9 @@ fn licenses(write: bool) -> Result<()> {
             "(MIT OR Apache-2.0) AND Unicode-3.0" => "MIT AND Unicode-3.0",
             "MIT AND BSD-3-Clause" => "MIT AND BSD-3-Clause",
             "BSD-3-Clause OR Apache-2.0" => "BSD-3-Clause",
-            "MIT OR Apache-2.0"
+            "0BSD OR MIT OR Apache-2.0"
+            | "MIT OR Zlib OR Apache-2.0"
+            | "MIT OR Apache-2.0"
             | "Apache-2.0 OR MIT"
             | "Apache-2.0/MIT"
             | "MIT/Apache-2.0"
