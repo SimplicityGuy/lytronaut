@@ -1,0 +1,244 @@
+{
+  "mode": "synthetic",
+  "revision": "821727e46fa2ccda5c68618ff99d1551eed01411",
+  "artifactProfiles": "macOS native debug; Linux-built Rust/WASM release",
+  "performanceGateEnabled": false,
+  "startupMs": 275,
+  "gpuProof": {
+    "hardware": {
+      "info": {
+        "vendor": "apple",
+        "architecture": "metal-3",
+        "device": ""
+      },
+      "maxTextureDimension2D": 16384
+    },
+    "transforms": [
+      {
+        "orientation": 1,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 2,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 3,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 4,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 5,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 6,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 7,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 8,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      }
+    ],
+    "scaling": {
+      "maximum": 0,
+      "rmse": 0,
+      "width": 170,
+      "height": 256,
+      "cpuBytes": 55205376,
+      "gpuBytes": 1213456
+    },
+    "timings": {
+      "samples": 30,
+      "p50SubmitToPostFrameCallbackMs": 95.5,
+      "p95SubmitToPostFrameCallbackMs": 136.30000007152557,
+      "maxMs": 142.70000004768372,
+      "linearMemoryBytesAtStart": 1966080,
+      "linearMemoryBytesAtEnd": 1966080,
+      "physicalPresentationMeasured": false
+    },
+    "lossFallbackMs": 65,
+    "oversizeFallbackMs": 7,
+    "faults": [
+      {
+        "fault": "missing-api",
+        "fallbackMs": 43.200000047683716,
+        "reloadThroughFallbackMs": 426,
+        "devices": {
+          "created": 0,
+          "destroyed": 0
+        }
+      },
+      {
+        "fault": "adapter",
+        "fallbackMs": 75.29999995231628,
+        "reloadThroughFallbackMs": 476,
+        "devices": {
+          "created": 0,
+          "destroyed": 0
+        }
+      },
+      {
+        "fault": "device",
+        "fallbackMs": 86.70000004768372,
+        "reloadThroughFallbackMs": 499,
+        "devices": {
+          "created": 0,
+          "destroyed": 0
+        }
+      },
+      {
+        "fault": "pipeline",
+        "fallbackMs": 34.60000002384186,
+        "reloadThroughFallbackMs": 485,
+        "devices": {
+          "created": 1,
+          "destroyed": 1
+        }
+      },
+      {
+        "fault": "late-device",
+        "fallbackMs": 800.1000000238419,
+        "reloadThroughFallbackMs": 2540,
+        "devices": {
+          "created": 1,
+          "destroyed": 1
+        }
+      }
+    ],
+    "released": {
+      "created": 1,
+      "destroyed": 1
+    },
+    "finalDevices": {
+      "created": 7,
+      "destroyed": 6
+    },
+    "repeatedSwitches": 12,
+    "physicalPresentation": "unmeasured; post-frame callback does not certify scanout",
+    "target": "16.7ms compositor submit-to-present unverified"
+  },
+  "preZoomGPUDevices": {
+    "created": 0,
+    "destroyed": 0
+  },
+  "focusProof": {
+    "stacks": 1,
+    "planes": 3,
+    "maxSourceBytes": 14560,
+    "p95NativeHttpDecodeMs": 49.199999928474426
+  },
+  "focusUiLoadContendedTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 0,
+    "p50InputToDecodedFrameReadyMs": 104.09999990463257,
+    "p95InputToDecodedFrameReadyMs": 171,
+    "maxInputToDecodedFrameReadyMs": 178.69999992847443
+  },
+  "focusUiTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 0,
+    "p50InputToDecodedFrameReadyMs": 121.29999995231628,
+    "p95InputToDecodedFrameReadyMs": 157,
+    "maxInputToDecodedFrameReadyMs": 163.69999992847443
+  },
+  "faultSuite": true,
+  "videoHttpRustUi": true,
+  "videoUiProof": {
+    "actualRustHttp": true,
+    "visibleVideo": true,
+    "oldGpuHidden": true,
+    "obsoleteDeviceReleased": true,
+    "gpuVideoFailureRecovery": {
+      "priorGpuPreserved": true,
+      "lossRecoveryMs": 109,
+      "verifiedImageFallback": true
+    },
+    "flattenedButtonsDisabled": true,
+    "injectedFlattenedExportPosts": 0,
+    "backupAvailable": true,
+    "nonmonotonicSelectedBlue": true,
+    "corruptOriginalRetainsFrame": true,
+    "staleCaptureIgnored": true,
+    "absentCodecStaticFallback": true,
+    "retryRecovered": true
+  },
+  "keyboardNavigation": true,
+  "contrast": {
+    "text": 15.465817170572732,
+    "control": 4.046600406095304
+  },
+  "preZoomURLsReleasedExceptCurrentStage": true,
+  "captures": 30,
+  "albums": 3,
+  "orderedMemberships": [
+    10,
+    10,
+    10
+  ],
+  "assets429": 0,
+  "blobURLsReleased": true,
+  "absentGPUAndCodecInjected": false,
+  "pageErrors": 0,
+  "reducedMotion": true,
+  "forcedColors": true,
+  "AXTree": true,
+  "responsive": true,
+  "zoom": {
+    "inner": 720,
+    "outer": 756,
+    "dpr": 2
+  },
+  "browser": "Chrome/154.0.8037.98",
+  "screenReader": "AX inspection only; VoiceOver not manually certified",
+  "applicationWasmSha256": "a637493a123b5aba188d4eb41dc63e88f2eedd567598cdf5874769274f8ca728",
+  "generatedGlueSha256": "572c69c3720503365fc8d9f05fda1f8ab96f30d0f6574bce7bc840fc160c3948",
+  "nativeServiceSha256": "609e05adcd303b6d851c762792288948c40cd5175453c2301a45186cef2cad2b"
+}

@@ -8,8 +8,14 @@ was terminal. The guest filesystem still had about 66 GiB available, while the
 host had substantial swap usage; the peak's cause remains unproven. Rebuilding
 requires verified host headroom. After recovery to 11 GiB free, a second build
 started in a new isolated builder with verified 3 GiB memory, zero guest swap
-and two CPU limits. The product Dockerfile is unchanged. This bead remains in
-progress; that build and the amd64 runtime are not yet proven.
+and two CPU limits. That build failed while installing wasm-bindgen: GCC crashed
+with SIGSEGV compiling ring's public x86_64 assembly. Its cgroup recorded no OOM
+or OOM kill. The exact compiler command subsequently passed three times in an
+isolated container with the same pinned base and limits; the original failure's
+cause remains unproven. No emulated amd64 runtime pass is claimed. The product
+Dockerfile is unchanged. Native amd64 and arm64 GitHub runners are now building
+and testing the exact leaf source through a private draft PR, without registry
+publication. This bead remains in progress until those reports are verified.
 
 The application and container configuration were built from
 `4950b8a4b9001c22eeb77f7d44b7d682104025dd`, based on integration/design commit
@@ -18,16 +24,18 @@ not change those application sources. The architecture reports bind the image
 revision, actual binary, generated Rust/WASM, glue and Cargo.lock SHA256s.
 All committed fixtures and reports are independently generated synthetic data.
 The [completed arm64 report](assets/lytronaut-j2u-arm64.json) records all 15
-passing runtime checks. Final browser release-client binding, amd64 execution and
-the pristine gate receipt must be added before submission.
+passing runtime checks. Fresh native CI image/runtime reports and the final
+pristine submission receipt must be added before submission.
 The [source manifest](assets/lytronaut-j2u-source.json) binds application and
 container configuration files. The [cancelled-build checkpoint](assets/lytronaut-j2u-cancelled-build.json)
 records the resource observations separately from successful runtime evidence.
 
 Rust 1.99.0, wasm-bindgen 0.2.129 and locked dependencies build inside each
 Linux architecture. The local engine is Colima Docker 29.5.2 on aarch64 with
-BuildKit 0.30. Arm64 runs natively; the pending amd64 run will use declared
-emulation.
+BuildKit 0.30 was the initial engine inventory; the later isolated bounded
+builder reports BuildKit 0.33.1. The historical arm64 smoke runs natively;
+failed local amd64 builds used declared emulation. The replacement CI matrix
+uses native Ubuntu runners for each architecture.
 No registry publication is part of this validation. Compiled programs, raw and
 generated WASM, glue, image archives and provenance are retained outside the
 disposable developer worktree before handoff.
@@ -75,7 +83,25 @@ artifact handling, strict untrusted backup schemas, bundle restore, request
 boundaries and interrupted snapshot recovery. Earlier debug-WASM browser checks exercised direct
 entry and import/browse/focus/export/restore without an authentication UI, plus
 automatic GPU/static fallback, video joins, cancellation and owned URL cleanup.
-Final release-client browser binding is still pending.
+The final functional browser checks passed CPU and GPU modes with the frozen
+Linux release WASM/glue and a macOS debug service compiled from identical
+application sources. Their reports bind the actual native service, WASM and
+generated glue hashes: [CPU](assets/lytronaut-j2u-browser-cpu.json) and
+[GPU](assets/lytronaut-j2u-browser-gpu.json). All eight GPU orientation comparisons
+have zero pixel difference, injected failures recover, video joins pass and
+owned Blob URLs are released. These mixed-profile checks have the performance
+gate disabled; their focus p95 measurements exceed 100 ms. Fresh CI client
+artifacts still require comparison against the exercised client hashes.
+
+At clean source `821727e46fa2ccda5c68618ff99d1551eed01411`, the canonical
+`bh work check` completed successfully: native and WASM lint, native tests,
+workspace builds, generated debug WASM, dependency boundaries and notices for
+292 resolved packages. Its exact programs, raw/generated WASM and log are frozen
+outside the worktree. This check is not the final pristine submission receipt.
+The first private container workflow failed parsing before any jobs ran because
+`runner.temp` was used in job-level environment configuration. The corrected
+workflow initializes the directory from `RUNNER_TEMP` in its first step and
+passes actionlint; native CI run `38204634077` exercises the corrected source.
 The operations guide documents concrete host bind mounts, UID/GID permissions,
 reverse-proxy Host/Origin handling, explicit credentialless CLI mutation intent,
 offline image retention and stopped-service backups.
