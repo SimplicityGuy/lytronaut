@@ -23,16 +23,35 @@ pub enum Backend {
 pub enum DatabaseConfig {
     Sqlite(PathBuf),
     Postgres(String),
+    PostgresSchema { url: String, schema: String },
 }
 impl fmt::Debug for DatabaseConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Sqlite(_) => f.write_str("DatabaseConfig::Sqlite(<application path>)"),
             Self::Postgres(_) => f.write_str("DatabaseConfig::Postgres(<redacted>)"),
+            Self::PostgresSchema { .. } => {
+                f.write_str("DatabaseConfig::PostgresSchema(<redacted>)")
+            }
         }
     }
 }
 impl DatabaseConfig {
+    /// Explicit deployment namespace; never accept a name supplied by an archive.
+    /// A generated isolated-restore descriptor can name its owned namespace, but
+    /// deployment credentials must still be supplied independently at startup.
+    pub fn with_schema(self, schema: &str) -> Result<Self, DatabaseError> {
+        if !valid_schema(schema) {
+            return Err(DatabaseError::Configuration);
+        }
+        match self {
+            Self::Postgres(url) | Self::PostgresSchema { url, .. } => Ok(Self::PostgresSchema {
+                url,
+                schema: schema.to_owned(),
+            }),
+            Self::Sqlite(_) => Err(DatabaseError::Configuration),
+        }
+    }
     pub fn from_deployment(sqlite_path: &Path, url: Option<&str>) -> Result<Self, DatabaseError> {
         match url {
             None => Ok(Self::Sqlite(sqlite_path.to_owned())),
@@ -81,6 +100,17 @@ impl DatabaseConfig {
     }
 }
 
+fn valid_schema(schema: &str) -> bool {
+    !schema.is_empty()
+        && schema.len() <= 63
+        && schema
+            .bytes()
+            .enumerate()
+            .all(|(i, c)| c.is_ascii_lowercase() || c == b'_' || (i > 0 && c.is_ascii_digit()))
+        && !schema.starts_with("pg_")
+        && schema != "information_schema"
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatabaseError {
     Configuration,
@@ -107,6 +137,13 @@ pub(crate) struct ApplicationDatabase {
 impl ApplicationDatabase {
     pub(crate) async fn open(config: DatabaseConfig) -> Result<Self, DatabaseError> {
         sqlx::any::install_default_drivers();
+        let namespace = match &config {
+            DatabaseConfig::PostgresSchema { schema, .. } if valid_schema(schema) => {
+                Some(schema.clone())
+            }
+            DatabaseConfig::PostgresSchema { .. } => return Err(DatabaseError::Configuration),
+            _ => None,
+        };
         let (backend, options, sqlite_options) = match config {
             DatabaseConfig::Sqlite(path) => {
                 // The previous typed SQLite connector also rejects non-UTF8 paths.
@@ -146,7 +183,7 @@ impl ApplicationDatabase {
                     AnyConnectOptions::from_str(&url).map_err(|_| DatabaseError::Configuration)?;
                 (Backend::Sqlite, any_options, Some(options))
             }
-            DatabaseConfig::Postgres(url) => {
+            DatabaseConfig::Postgres(url) | DatabaseConfig::PostgresSchema { url, .. } => {
                 DatabaseConfig::from_deployment(Path::new("unused"), Some(&url))?;
                 let options =
                     AnyConnectOptions::from_str(&url).map_err(|_| DatabaseError::Configuration)?;
@@ -157,7 +194,9 @@ impl ApplicationDatabase {
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(5))
             .idle_timeout(Duration::from_secs(60))
-            .after_connect(move |connection, _| Box::pin(async move {
+            .after_connect(move |connection, _| {
+                let namespace = namespace.clone();
+                Box::pin(async move {
                 match backend {
                     Backend::Sqlite => {
                         sqlx::raw_sql("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA trusted_schema=OFF;")
@@ -165,11 +204,22 @@ impl ApplicationDatabase {
                     }
                     Backend::Postgres => {
                         sqlx::raw_sql("SET statement_timeout='10s'; SET lock_timeout='5s'; SET idle_in_transaction_session_timeout='10s';")
-                            .execute(connection).await?;
+                            .execute(&mut *connection).await?;
+                        if let Some(namespace) = namespace {
+                            // A bound value avoids identifier interpolation. pg_catalog
+                            // remains implicitly searched; public is never a fallback.
+                            sqlx::query("SELECT pg_catalog.set_config('search_path',$1,false)")
+                                .bind(&namespace).execute(&mut *connection).await?;
+                            let selected: Option<String> = sqlx::query_scalar("SELECT current_schema()::text")
+                                .fetch_one(&mut *connection).await?;
+                            if selected.as_deref() != Some(namespace.as_str()) {
+                                return Err(sqlx::Error::Protocol("configured application schema is unavailable".into()));
+                            }
+                        }
                     }
                 }
                 Ok(())
-            }))
+            })})
             .connect_with(options.disable_statement_logging())
             .await
             .map_err(|_| DatabaseError::Connection)?;
@@ -306,6 +356,32 @@ pub(crate) enum JobKind {
 mod tests {
     use super::*;
     use sqlx::Row;
+
+    #[test]
+    fn explicit_schema_configuration_cannot_select_a_fallback_or_log_credentials() {
+        let postgres = || DatabaseConfig::Postgres("postgres://user:secret@localhost/app".into());
+        let config = postgres().with_schema("lytronaut_restore_123abc").unwrap();
+        assert!(!format!("{config:?}").contains("secret"));
+        assert!(!format!("{config:?}").contains("123abc"));
+        for invalid in [
+            "",
+            "a,public",
+            "a;DROP SCHEMA public",
+            "pg_catalog",
+            "information_schema",
+            "1schema",
+            "雪",
+            "A",
+            &"a".repeat(64),
+        ] {
+            assert!(postgres().with_schema(invalid).is_err());
+        }
+        assert!(
+            DatabaseConfig::Sqlite("catalog.db".into())
+                .with_schema("isolated")
+                .is_err()
+        );
+    }
 
     #[test]
     fn deployment_config_is_explicit_and_redacted() {
