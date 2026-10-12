@@ -51,7 +51,10 @@ the Leptos WASM client and matching wasm-bindgen glue and checks dependency
 boundaries and redistribution notices. `just serve` builds the Rust/WASM browser
 and starts the native service on http://127.0.0.1:3000. Use the browser's local
 administrator setup/sign-in flow, then select a library directory or ZIP to
-preserve and browse its supported JPEG previews, albums and originals.
+preserve and browse its supported JPEG previews, albums and originals. Export
+verified static/stored-focus pixels as flattened PNG or JPEG with separate
+provenance, or stream a lossless originals/catalog bundle and restore it to an
+isolated application copy. See [export and restore](docs/architecture/api.md#verified-export-and-lossless-bundles).
 `LYTRONAUT_DATA` selects the private application state directory; never point it
 at a source library. `just browser-test` runs synthetic actual-service/browser
 integration after `just wasm-build build`. There is no deployment image yet.

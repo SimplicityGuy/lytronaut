@@ -41,7 +41,7 @@ Libraries and albums have bounded load-more controls. Capture/file pages hold
 24 items. Search is literal, URI encoded, and capped at 128 UTF-8 bytes. Album
 order is the server's retained picture_index order; ratings are explicitly
 imported ratings. Truncation flags appear as `[truncated]`. Favorites and
-unsupported focus/aperture/render/export controls are not invented. The inspector
+unsupported aperture/render controls are not invented. The inspector
 shows preserved originals, missing companion roles, static preview and honest
 legacy-edit/color/optional-renderer status. Preserved-only/quarantined libraries
 retain paginated original links. Browser attachment downloads stream originals;
@@ -226,3 +226,12 @@ must independently satisfy the unchanged 100 ms p95 target. A first batch is
 load-contended evidence only if its pending-grid count is nonzero. Separate
 native/WASM artifact hashes and OS/browser/hardware bind the report to the tested
 builds. No private paths, source hashes, identifiers or pixels belong in reports.
+
+
+Verified PNG/JPEG export selects the displayed verified stored JPEG plane and its
+explicit orientation, or static JPEG pixels with identity. Download the image and
+separate Lytronaut provenance record. Flattening loses refocus ability; unknown
+color and preserved-only imported edits stay explicit. The backup control streams
+an originals/catalog bundle; restore uploads it into a separate isolated store.
+Current libraries are unchanged. Job status can be recovered after refresh, and
+uploads/pending jobs can be cancelled. These flows do not buffer archives in WASM.

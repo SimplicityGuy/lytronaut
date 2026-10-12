@@ -564,3 +564,52 @@ fn encoder_admits_working_memory_before_allocating_and_caps_writes() {
         "identity does not allocate another pixel frame"
     );
 }
+#[test]
+fn png_preserves_decoded_pixels_and_rejects_extent_allocation_and_output_bombs() {
+    let decoded = DecodedJpeg {
+        geometry: Geometry {
+            width: 3,
+            height: 2,
+        },
+        rgba: vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 12, 34, 56, 255, 78, 90, 123, 255, 200,
+            201, 202, 255,
+        ],
+    };
+    let bytes = encode_png_derivative(&decoded, Limits::default()).unwrap();
+    let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .unwrap()
+        .into_rgba8();
+    assert_eq!(image.into_raw(), decoded.rgba);
+    for limits in [
+        Limits {
+            jpeg_bytes: 0,
+            ..Default::default()
+        },
+        Limits {
+            jpeg_bytes: 1,
+            ..Default::default()
+        },
+        Limits {
+            decoder_working_bytes: 1,
+            ..Default::default()
+        },
+        Limits {
+            dimension: 1,
+            ..Default::default()
+        },
+    ] {
+        assert!(encode_png_derivative(&decoded, limits).is_err());
+    }
+    let invalid = DecodedJpeg {
+        geometry: Geometry {
+            width: 3,
+            height: 2,
+        },
+        rgba: vec![],
+    };
+    assert_eq!(
+        encode_png_derivative(&invalid, Default::default()),
+        Err(FormatError::Extent)
+    );
+}

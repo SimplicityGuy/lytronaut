@@ -1,4 +1,6 @@
-//! Authenticated application API. Source keys stay private, mapped to durable random IDs.
+#[path = "exports.rs"]
+mod exports;
+// Authenticated application API. Source keys stay private, mapped to durable random IDs.
 use crate::{AppState, error};
 use axum::{
     Extension, Router,
@@ -325,6 +327,9 @@ impl Api {
                 catalog.healthy().await?;
             }
         }
+        exports::migrate(&catalog, &store)
+            .await
+            .map_err(|_| desktop::CatalogError::Unavailable)?;
         Ok(Self(Arc::new(Inner {
             catalog,
             store,
@@ -335,6 +340,7 @@ impl Api {
     }
     pub fn routes(self) -> Router<AppState> {
         Router::new()
+            .merge(exports::routes())
             .route("/libraries", get(libraries))
             .route("/libraries/{id}/albums", get(albums))
             .route("/libraries/{id}/captures", get(captures))

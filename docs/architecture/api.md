@@ -192,3 +192,65 @@ transform/encoding working memory, 8 MiB metadata/slack, and 16 MiB transfer
 reserve within the common 96 MiB CPU limit. The encoding writer caps allocation
 and writes before crossing its output limit. GPU work remains a separate future
 64 MiB cap. No generated derivative is written into original storage.
+
+## Verified export and lossless bundles
+
+`POST /exports` accepts V1 `ExportRequest`: `kind=flatten` selects the opaque
+asset, `format=jpeg|png`, optional stored `plane_index`, explicit EXIF 1–8 and
+an empty `operations` array. Identity is the default browser selection. Unsupported
+aperture, perspective, tone, denoise, animation and synthesis requests fail with
+400; they are never claimed applied. A static selection uses a verified JPEG;
+a focus selection authenticates the original uniform JPEG stack, plane extent
+and lambda. PNG directly encodes decoded/oriented stored pixels without an
+intervening JPEG encode. JPEG uses explicit quality 90. Generated pixels have
+unknown color, no color conversion and no copied ICC/EXIF metadata.
+
+`GET /exports/{id}` returns typed `ExportProgress` (flatten/archive/restore plus
+durable JobReport). `DELETE /exports/{id}` cancels pending work or removes a
+completed artifact. `GET /exports/{id}/download` streams a completed artifact
+with an opaque filename; `/recipe` separately returns the V1 Lytronaut record
+for flattened pixels: source variant, plane/lambda, source/output dimensions,
+full visible geometry, explicit orientation, generated extent/SHA256, color
+policy, processing loss, refocus loss and preserved-only imported adjustments.
+Legacy sidecars remain original downloads, byte-exact and separate.
+
+Two pending jobs share the existing serialized codec admission and two streaming
+transfer permits. Static JPEG staging is at most 16 MiB, focus source at most
+8 MiB; counted codec/transform/encoder work is at most 80 MiB with source bytes
+included in decoder admission. JPEG output is capped at 4 MiB and PNG at 8 MiB
+before encoder writes/allocations; source staging is released before encoding.
+No export overlaps a second native viewer decoder. Browser downloads and restore
+File uploads stream through platform APIs; WASM never accumulates bundle bytes.
+Existing 64 MiB transient/32 MiB persistent viewer admission remains separate.
+Jobs reserve configured disk bytes and the free-space floor before admission.
+At most 128 reports/artifacts remain; cancelled/failed reports are evicted oldest
+first when another job is admitted. Remove completed exports to make room.
+
+`kind=archive_originals` produces a private `.lytronaut` bundle of the complete
+application catalog snapshot plus each unique immutable original blob. Logical
+paths, source SQLite databases, unknown backup databases/files, legacy sidecars,
+H.264, exact typed native records, stable application IDs, albums, order, events
+and metadata survive. Original databases are opaque blobs and remain byte-exact;
+the generated application snapshot uses SQLite VACUUM and retains semantic values.
+A consistent snapshot is taken before selecting its blob inventory, so concurrent
+new intake cannot create a catalog/blob mismatch. Credentials, sessions, rate
+limits, export jobs and unfinished intake jobs are deleted from the generated
+snapshot, then secure deletion/VACUUM removes residual authentication pages.
+Authentication removal in ADR 002 is integrated by the deployment-auth bead.
+
+`POST /restores` streams a private bundle with a bounded Content-Length into an
+owned upload file, then validates/restores it as a durable cancellable job.
+Checks include V1 magic, sizes/counts, duplicate blobs, exact SHA256s, no trailing
+bytes, exact trusted current application schema (no views/triggers/virtual or
+unexpected/generated tables), read-only/query-only/trusted_schema=OFF SQLite,
+2 MiB cache, 20-million-VM-instruction/10-second deadline, integrity and foreign
+keys, empty authentication/transient jobs and exact source/blob inventories.
+Recomputed checksums do not bypass schema and association checks.
+
+Restore exclusively creates `staging.exports/{job-id}.restored/store` beside the
+application staging root. It never opens source libraries or the running catalog
+writable, overwrites an existing target, or activates restored data. The store
+becomes visible only after all validation passes; cancellation/failure removes
+only its exclusively owned temporary target. Interrupted jobs recover as fixed,
+retryable failed reports on restart and their incomplete owned outputs are removed.
+Logs and errors never contain source paths, row values or individual source hashes.

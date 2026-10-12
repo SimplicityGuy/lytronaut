@@ -573,3 +573,30 @@ pub fn encode_derivative(image: &DecodedJpeg, limits: Limits) -> Result<Vec<u8>>
     result.map_err(|_| if output.exceeded { E::Budget } else { E::Codec })?;
     Ok(output.bytes)
 }
+
+/// Lossless PNG encoding of decoded stored JPEG pixels; no intervening JPEG re-encode.
+pub fn encode_png_derivative(image: &DecodedJpeg, limits: Limits) -> Result<Vec<u8>> {
+    use image::ImageEncoder;
+    let n = limits.extent(image.geometry.width, image.geometry.height, 4)?;
+    if image.rgba.len() != n {
+        return Err(E::Extent);
+    }
+    if limits.jpeg_bytes == 0
+        || (n as u64) * 8 + (limits.jpeg_bytes as u64) * 2 + 16384 > limits.decoder_working_bytes
+    {
+        return Err(E::Budget);
+    }
+    let mut output = CappedJpeg {
+        bytes: Vec::new(),
+        cap: limits.jpeg_bytes,
+        exceeded: false,
+    };
+    let result = image::codecs::png::PngEncoder::new(&mut output).write_image(
+        &image.rgba,
+        image.geometry.width,
+        image.geometry.height,
+        image::ExtendedColorType::Rgba8,
+    );
+    result.map_err(|_| if output.exceeded { E::Budget } else { E::Codec })?;
+    Ok(output.bytes)
+}
