@@ -9,7 +9,11 @@ module.exports=async({browser,origin})=>{
   const albums=Array.from({length:30},(_,index)=>({id:`public-sidebar-album-${index+1}`,name:`Public album ${index+1}`,name_truncated:false,sort_order:index,captures:30}));
   const page=await browser.newPage();page.setDefaultTimeout(30000);
   let held=null,holdKind=null,failKind=null,handlerFailure=false,heldReplies=0,captureItems=[];
-  const reply=async(request,payload)=>{try{await request.respond({status:200,contentType:'application/json',body:JSON.stringify(payload)});}catch{handlerFailure=true;}};
+  let phase='setup',observedHeld=null;
+  page.on('requestfinished',request=>{if(observedHeld?.request===request)observedHeld.finished=true;});
+  page.on('requestfailed',request=>{if(observedHeld?.request===request){observedHeld.failed=true;observedHeld.aborted=request.failure()?.errorText==='net::ERR_ABORTED';}});
+  page.on('response',response=>{if(observedHeld?.request===response.request())observedHeld.response=true;});
+  const reply=async(request,payload)=>{try{await request.respond({status:200,contentType:'application/json',body:JSON.stringify(payload)});}catch{handlerFailure=true;if(observedHeld?.request===request)observedHeld.replyFailed=true;}};
   const slice=(items,offset)=>({version:1,items:items.slice(offset,offset+24),offset,next_offset:offset+24<items.length?offset+24:null});
   const intercept=request=>{
     const run=async()=>{
@@ -29,7 +33,7 @@ module.exports=async({browser,origin})=>{
       }
       if(kind){
         if(failKind===kind&&Number(url.searchParams.get('offset')||0)===24){failKind=null;await request.respond({status:503,contentType:'application/json',body:JSON.stringify({version:1,code:'storage_unavailable',retryable:true})});return;}
-        if(holdKind===kind&&Number(url.searchParams.get('offset')||0)===24){held={request,payload};holdKind=null;return;}
+        if(holdKind===kind&&Number(url.searchParams.get('offset')||0)===24){held={request,payload};observedHeld={request,finished:false,failed:false,aborted:false,response:false,replyFailed:false};holdKind=null;return;}
         await reply(request,payload);return;
       }
       await request.continue();
@@ -43,7 +47,7 @@ module.exports=async({browser,origin})=>{
     });
     await page.setRequestInterception(true);page.on('request',intercept);
     const pageErrors=[];page.on('pageerror',()=>pageErrors.push(true));
-    await page.goto(origin);await page.waitForSelector('#directory');
+    phase='initial-ready';await page.goto(origin);await page.waitForSelector('#directory');
     await page.waitForFunction(()=>document.querySelectorAll('.library-item').length===24&&document.querySelectorAll('.album-item').length===24&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
     const click=async selector=>{await page.waitForFunction(selector=>{const b=document.querySelector(selector);if(!b||b.disabled)return false;b.click();return true;},{},selector);};
     const waitPage=async(kind,number,count)=>page.waitForFunction((kind,number,count)=>document.querySelector(`#${kind}-page`)?.textContent===`Page ${number}`&&document.querySelectorAll(`.${kind==='library'?'library':'album'}-item`).length===count,{},kind,number,count);
@@ -86,7 +90,7 @@ module.exports=async({browser,origin})=>{
       }
     };
     const release=async()=>{
-      const old=held;held=null;
+      phase+='-release';const old=held;held=null;
       const response=page.waitForResponse(response=>response.url()===old.request.url());
       await reply(old.request,old.payload);
       const completed=await response;
@@ -95,6 +99,7 @@ module.exports=async({browser,origin})=>{
       heldReplies++;
     };
     // Select an album/capture, then page both sidebars without changing the viewer.
+    phase='album-select';
     await selectComplete(()=>click('.album-item'),0,'/albums/public-sidebar-album-1/captures');
     assert(await page.$('.album-item[aria-pressed="true"]'));
     for(const selector of ['.library-item','.album-item','.capture']){
@@ -103,23 +108,28 @@ module.exports=async({browser,origin})=>{
       assert.equal(tokens.filter(token=>token==='true').length,1);assert.equal(tokens.filter(token=>token==='false').length,23);
     }
     const first=await selected();
+    phase='second-capture';
     await selectComplete(()=>page.evaluate(()=>document.querySelectorAll('.capture')[1].click()),1);
     assert.notEqual((await selected()).capture,first.capture);
     const before=await selected();assert(before.capture&&before.capture!=='No capture selected'&&before.stage);
+    phase='album-page-next';
     await click('#album-next');await waitPage('album',2,6);
     assert.equal(await page.$('.album-item[aria-pressed="true"]'),null,'selected album may be off-page');
     assert.deepEqual(await page.evaluate(()=>({capture:document.querySelector('.viewer-strip span').textContent,stage:document.querySelector('.stage img').src})),{capture:before.capture,stage:before.stage});
+    phase='album-page-prev';
     await click('#album-prev');await waitPage('album',1,24);
     assert.equal((await selected()).selectedAlbum,before.selectedAlbum);
+    phase='library-page-next';
     await click('#library-next');await waitPage('library',2,6);
     assert.deepEqual(await page.$$eval('.library-item',buttons=>buttons.map(b=>b.textContent)),Array.from({length:6},(_,i)=>`Library ${25+i}`));
     assert.equal(await page.$('.library-item[aria-pressed="true"]'),null,'selected library remains active off-page');
     assert.equal((await selected()).capture,before.capture);assert.equal((await selected()).stage,before.stage);
+    phase='library-page-prev';
     await click('#library-prev');await waitPage('library',1,24);
     assert(await page.$('.library-item[aria-pressed="true"]'));
     // Hold an older Next response; Previous is reachable while Next is pending.
     const delayed=async kind=>{
-      holdKind=kind==='library'?'libraries':'albums';
+      phase='delayed-'+kind;holdKind=kind==='library'?'libraries':'albums';
       await click(`#${kind}-next`);
       for(let i=0;i<150&&!held;i++)await new Promise(resolve=>setTimeout(resolve,20));
       assert(held,'bounded held sidebar response');
@@ -129,6 +139,7 @@ module.exports=async({browser,origin})=>{
       assert.equal((await selected()).capture,before.capture,'sidebar races preserve selected capture');
     };
     await delayed('library');await delayed('album');
+    phase='capture-during-album';
     // Capture selection has its own generation and must not cancel album paging.
     holdKind='albums';await click('#album-next');
     for(let i=0;i<150&&!held;i++)await new Promise(resolve=>setTimeout(resolve,20));assert(held);
@@ -139,6 +150,7 @@ module.exports=async({browser,origin})=>{
     await release();await waitPage('album',2,6);
     assert.equal((await selected()).capture,duringCapture.capture);
     await click('#album-prev');await waitPage('album',1,24);
+    phase='library-during-album';
     // A pending old-library album request must not replace the new library page.
     holdKind='albums';await click('#album-next');
     for(let i=0;i<150&&!held;i++)await new Promise(resolve=>setTimeout(resolve,20));assert(held);
@@ -150,7 +162,7 @@ module.exports=async({browser,origin})=>{
     const completedLibrary=await selected();assert(completedLibrary.capture&&completedLibrary.capture!=='No capture selected'&&completedLibrary.stage);
     // A failed requested page leaves the committed rows/selection reachable.
     for(const kind of ['library','album']){
-      failKind=kind==='library'?'libraries':'albums';
+      phase='failed-'+kind;failKind=kind==='library'?'libraries':'albums';
       // Track this response explicitly; previous failure status is insufficient.
       const failedResponse=page.waitForResponse(response=>{
         const url=new URL(response.url());
@@ -165,6 +177,10 @@ module.exports=async({browser,origin})=>{
     }
     assert.equal(handlerFailure,false);assert.deepEqual(pageErrors,[]);
     return {publicSynthetic:true,libraryItems:30,albumItems:30,pageLimit:24,absoluteLibraryNumbers:true,selectedCapturePreserved:true,offPageSelectionPreserved:true,lateSidebarResponsesRejected:heldReplies-1,captureOperationsDoNotInvalidateSidebar:true,newLibraryResetsAlbum:true,failedPageRecovery:true};
+  }catch(error){
+    const state=await page.evaluate(()=>({libraryRows:document.querySelectorAll('.library-item').length,albumRows:document.querySelectorAll('.album-item').length,captureRows:document.querySelectorAll('.capture').length,stageReady:document.querySelector('.stage img')?.complete===true&&document.querySelector('.stage img')?.naturalWidth>0})).catch(()=>null);
+    console.error(JSON.stringify({sidebarPhaseDiagnostic:true,phase,heldObserved:observedHeld!==null,heldFinished:observedHeld?.finished===true,heldFailed:observedHeld?.failed===true,heldAborted:observedHeld?.aborted===true,heldResponse:observedHeld?.response===true,heldReplyFailed:observedHeld?.replyFailed===true,handlerFailure,heldReplies,state}));
+    throw error;
   }finally{
     if(held)await held.request.abort().catch(()=>{});
     await page.close();
