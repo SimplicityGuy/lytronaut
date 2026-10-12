@@ -1,7 +1,8 @@
 //! Exact owned PostgreSQL restore namespaces. Never enumerate or drop by prefix.
-//! SQL audit: the only interpolated identifier is `schema`, which `validate()`
-//! (called first in every entry point) re-derives from a 64-hex nonce, so it is
-//! always `lytronaut_restore_[0-9a-f]{32}`; job/nonce values are bound.
+//! SQL audit: the interpolated schema is re-derived by `validate()` (called first
+//! in every entry point) from a 64-hex nonce, so it is always
+//! `lytronaut_restore_[0-9a-f]{32}`; table names come only from static
+//! application DDL (`owned_tables`); job/nonce values are bound.
 use crate::{Backend, Catalog, StorageError as E};
 use sqlx::{AssertSqlSafe, Row};
 
@@ -124,13 +125,42 @@ impl RestoreNamespace {
         {
             return Err(E::Conflict);
         }
-        let drop = format!("DROP SCHEMA \"{}\" CASCADE", self.schema);
+        // Never CASCADE: an unrelated object elsewhere that depends on a restored
+        // table must make cleanup fail closed (journal and quota retained), not be
+        // silently dropped. Drop exactly the trusted application tables together
+        // (RESTRICT), then the namespace (RESTRICT), so anything unexpected inside
+        // it, or depending on it from outside, aborts the whole transaction.
+        let tables = owned_tables()
+            .map(|table| format!("\"{}\".{table}", self.schema))
+            .collect::<Vec<_>>()
+            .join(",");
+        let drop_tables = format!("DROP TABLE IF EXISTS {tables} RESTRICT");
+        sqlx::query(AssertSqlSafe(drop_tables.as_str()))
+            .execute(&mut *tx)
+            .await?;
+        let drop = format!("DROP SCHEMA \"{}\" RESTRICT", self.schema);
         sqlx::query(AssertSqlSafe(drop.as_str()))
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok(())
     }
+}
+/// Tables created in a restore namespace: the trusted PostgreSQL application DDL
+/// plus job order and the ownership marker. Names come only from static DDL.
+fn owned_tables() -> impl Iterator<Item = &'static str> {
+    use crate::postgres_schema::{API, CATALOG, EXPORT, INTAKE};
+    [INTAKE, CATALOG, API, EXPORT]
+        .into_iter()
+        .flatten()
+        .filter_map(|statement| statement.strip_prefix("CREATE TABLE IF NOT EXISTS "))
+        .map(|rest| {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .chain(["application_job_order", "restore_ownership"])
 }
 fn job_identity(value: &str) -> bool {
     lytronaut_contracts::OpaqueId::try_from(value.to_owned()).is_ok()
@@ -145,6 +175,20 @@ fn identity(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owned_tables_cover_every_portable_table_and_only_static_identifiers() {
+        let owned: Vec<_> = owned_tables().collect();
+        for table in crate::portable::TABLES {
+            assert!(owned.contains(&table.name), "{} not owned", table.name);
+        }
+        for name in ["export_jobs", "catalog_item_errors", "restore_ownership"] {
+            assert!(owned.contains(&name));
+        }
+        assert!(
+            owned.iter().all(|name| !name.is_empty()
+                && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        );
+    }
     #[test]
     fn journal_identity_cannot_redirect_cleanup_to_an_arbitrary_schema() {
         let owned = RestoreNamespace::new(&"1".repeat(64), &"a".repeat(64)).unwrap();
