@@ -289,16 +289,18 @@ async fn attempt(
                             .map_err(|_| "frame pixel budget")?;
                         // The platform ImageData copy stays <=128 KiB rather than
                         // retaining a second full 8 MiB image beside Rust pixels.
+                        let pixel_width = i32::try_from(width).map_err(|_| "frame pixel extent")?;
                         for row in (0..height).step_by(16) {
                             if export_signal.aborted() {
                                 return Err("cancelled");
                             }
                             let pixels = context
                                 .get_image_data(
-                                    0.0,
-                                    f64::from(row),
-                                    f64::from(width),
-                                    f64::from((height - row).min(16)),
+                                    0,
+                                    i32::try_from(row).map_err(|_| "frame pixel extent")?,
+                                    pixel_width,
+                                    i32::try_from((height - row).min(16))
+                                        .map_err(|_| "frame pixel extent")?,
                                 )
                                 .map_err(|_| "frame pixels unavailable")?;
                             rgba.extend(pixels.data().0);

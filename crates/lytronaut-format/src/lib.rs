@@ -2,9 +2,9 @@
 //! Original bytes and unknown metadata remain the caller's immutable assets.
 //! Sensor mosaics and relative float maps are never calibrated scene photographs.
 pub mod annex_b;
-pub mod live_photo;
 mod assets;
 mod container;
+pub mod live_photo;
 pub use assets::*;
 pub use container::*;
 pub use lytronaut_contracts::{AssetManifest, CapabilityState, ErrorCode};
