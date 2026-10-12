@@ -21,6 +21,8 @@ for i in range(30):
     folder = source / 'bin' / uid; folder.mkdir(parents=True,exist_ok=True)
     (folder / 'thumbnail.jpg').write_bytes((root / 'synthetic.jpg').read_bytes())
     (folder / 'raw.lfp').write_bytes(b'independent preservation fixture')
+    if i in (0, 1) and (root / 'synthetic.video.lfp').exists():
+        (folder / 'stack.lfp').write_bytes((root / 'synthetic.video.lfp').read_bytes())
     if i == 0:
         planes = [(root / f'synthetic.focus{n}.jpg').read_bytes() for n in range(3)]
         identity = lambda b: 'sha1-' + hashlib.sha1(b).hexdigest()

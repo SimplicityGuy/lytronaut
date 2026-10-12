@@ -240,7 +240,7 @@ mod web {
                 )
                 .map_err(|_| "GPU staging unavailable")?;
             let pixels = context
-                .get_image_data(0.0, 0.0, input.width as f64, input.height as f64)
+                .get_image_data(0, 0, input.width as i32, input.height as i32)
                 .map_err(|_| "GPU staging unavailable")?
                 .data()
                 .0;

@@ -1335,6 +1335,7 @@ dependencies = [
  "js-sys",
  "leptos",
  "lytronaut-contracts",
+ "lytronaut-format",
  "serde",
  "serde_json",
  "sha2",

@@ -1,0 +1,14 @@
+{
+  "license": "MIT",
+  "provenance": "Independently authored solid RGB canvas frames: red, green, blue, yellow, white. No vendor samples, reference code, or private source content. Encoded by Chrome 154.0.8037.98 WebCodecs VideoEncoder prefer-software, Annex-B AVC baseline, 32x32, realtime, framerate30. Independent SHA1-framed LFP directory and nonmonotonic lambdas authored by scripts/video-test.cjs. Encoder is fixture tooling only, never a product dependency.",
+  "width": 32,
+  "height": 32,
+  "lambdas": [
+    0,
+    3,
+    -2,
+    1,
+    2
+  ],
+  "container_base64": "iUxGUA0KGgoAAAABAAAAAIlMRk0NChoKAAAAAAAAAbhzaGExLTA4NTkxMjA4OWQ4YWNkMzAzZDBjYjNlODU0Yzg1ZDFlODJhMzA5ZGMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHsidmVyc2lvbiI6eyJtYWpvciI6MSwibWlub3IiOjB9LCJwaWN0dXJlIjp7ImFjY2VsZXJhdGlvbkFycmF5IjpbeyJ0eXBlIjoiY29tLmx5dHJvLmFjY2VsZXJhdGlvbi5yZWZvY3VzU3RhY2siLCJ2ZW5kb3JDb250ZW50Ijp7ImJsb2NrT2ZJbWFnZXMiOnsicmVwcmVzZW50YXRpb24iOiJoMjY0IiwiYmxvY2tPZkltYWdlc1JlZiI6InNoYTEtNjQ4NjU3YzM1MzVmYThmZmEzMWFlOTAwYmQwZGUzZmVmYTc2N2YxNSIsIm1ldGFkYXRhQXJyYXkiOlt7IndpZHRoIjozMiwiaGVpZ2h0IjozMiwibGFtYmRhIjowfSx7IndpZHRoIjozMiwiaGVpZ2h0IjozMiwibGFtYmRhIjozfSx7IndpZHRoIjozMiwiaGVpZ2h0IjozMiwibGFtYmRhIjotMn0seyJ3aWR0aCI6MzIsImhlaWdodCI6MzIsImxhbWJkYSI6MX0seyJ3aWR0aCI6MzIsImhlaWdodCI6MzIsImxhbWJkYSI6Mn1dfX19XX19AAAAAAAAAACJTEZDDQoaCgAAAAAAAAFQc2hhMS02NDg2NTdjMzUzNWZhOGZmYTMxYWU5MDBiZDBkZTNmZWZhNzY3ZjE1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABCfAAAAABZ0LACoxolJqAhoCDwiEagAAAAAFozjyAAAAAAWW4AAR///4IooAAgD+OAAfjgACDRJ114AAAAAEJ8AAAAAFh4AB+R/hSKAASigAEooABKKAASigAEooABKKAASigAEooABKKAASigAEooABKKAASigAEooABKKAASjgAE44AAhT4nefefwAAAAEJ8AAAAAFh4AC+R/hSKAAIAsUAAQBYoAAgCxQABAFigACALFAAEAWKAAIAsUAAQBYoAAgCxQABAFigACALFAAEAWKAAIAsUAAQBYoAAgCxQABAFjgACE1HAAEA7E4rnxXP4AAAAAEJ8AAAAAFh4AD+R83//wRRQABAW8cAAQaY4BxPn8/gAAAAAQnwAAAAAWHgAT5H+FIoGKBigYoGKBigYoGKBigYoGKBigYoGKBigYoGOAAINEcAcT5/P4A="
+}
