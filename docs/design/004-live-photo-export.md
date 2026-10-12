@@ -134,7 +134,7 @@ central headers, duplicated fixed entry names and the end record. Both assembly
 and packaging use that shared bound; a final 18 MiB ZIP is allowed and one byte
 over is rejected before mutation.
 
-For the largest 2048×1024 geometry with three retained frames, allocated PCM
+For the tested 2048×1024 geometry with three retained frames, allocated PCM
 scratch is at most 3.016 MiB and escaped picture scratch 4.524 MiB. The three
 pictures plus conservative tables occupy at most 13.579 MiB; the selected browser
 JPEG is bounded to about 1.5 MiB by its 2 MiB base64 data URL. Before this source
@@ -148,7 +148,12 @@ buffer at about 38.167 MiB, after decoder cleanup. Final ZIP-to-Uint8Array or
 Uint8Array-to-Blob copies can overlap about 30.191 MiB. These source estimates
 exclude allocator overhead, JS string/backing retention and opaque platform
 buffers, and the optimized source still requires runtime verification.
-These estimates do not prove an opaque
+This shape is not the largest coded-padding case: enumerating the admitted even
+dimensions up to 2048 and 2,097,152 visible pixels gives at most 8352 macroblocks.
+For example, 1138×1842 is padded to 1152×1856, bounding raw scratch to 3,223,936
+bytes and escaped scratch to 4,835,905 bytes. These shapes retain the same supported
+geometry and three-frame sweep bounds; their padded decoder and encoder allocations
+also require measurement. These estimates do not prove an opaque
 browser process stays within 64 MiB. B-picture reorder, additional references,
 padding, conversion, garbage collection and final ZIP/Uint8Array/Blob copy phases
 need actual source-bound measurements.

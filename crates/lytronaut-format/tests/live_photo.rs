@@ -151,8 +151,10 @@ fn selected_key_order_dimensions_identifier_cancel_and_complete_pair() {
         3
     );
     let offsets: Vec<_> = pair.movie[stco + 12..stco + 24]
-        .chunks_exact(4)
-        .map(|v| u32::from_be_bytes(v.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|v| u32::from_be_bytes(*v))
         .collect();
     assert_eq!(offsets, [chunks[2], chunks[0], chunks[1]]);
     let allocation = pair.movie.as_ptr();
