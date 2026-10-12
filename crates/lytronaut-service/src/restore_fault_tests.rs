@@ -1339,6 +1339,62 @@ async fn whole_store_failures_still_refuse_startup(pg: bool) {
     env.finish().await;
 }
 
+/// A ready restore whose published result can no longer be verified at startup
+/// (here: its private result directory was made group/world accessible) must
+/// fail closed: if its non-ready state cannot even be persisted, startup is
+/// refused (never left ready); otherwise it becomes visibly non-ready while its
+/// files, namespace and quota are retained — never deleted without an explicit
+/// DELETE — across repeated restarts.
+async fn unverifiable_ready_result_fails_closed_and_is_never_auto_deleted(pg: bool) {
+    let mut env = Env::new(pg).await;
+    let (_, id) = env.upload(archive(0).await).await;
+    let id = id.unwrap();
+    let journal = env.assert_ready(&id).await;
+    let retained = env.job(&id).await.3;
+    let result = journal.result(&env.root());
+    fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    // The blocked/unverified state cannot be persisted: refuse startup rather
+    // than keep serving the unverifiable result as ready.
+    install_update_fault(
+        &mut env,
+        "deny_unready",
+        "NEW.state IS DISTINCT FROM OLD.state AND OLD.state='succeeded'",
+        "NEW.state IS NOT OLD.state AND OLD.state='succeeded'",
+    )
+    .await;
+    assert!(
+        !env.restart().await,
+        "an unverifiable ready result must not stay ready"
+    );
+    assert!(result.exists());
+    remove_update_fault(&mut env, "deny_unready").await;
+    for _ in 0..2 {
+        assert!(env.restart().await);
+        let report = report(&env.api, &id).await.unwrap();
+        assert_eq!(report.state, JobState::Failed);
+        assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+        assert!(
+            result.join("store").exists(),
+            "result must never be auto-deleted"
+        );
+        assert!(Journal::load(&env.root(), &id).unwrap().is_some());
+        assert_eq!(env.job(&id).await.3, retained, "quota retained");
+        if let Some(namespace) = journal.namespace() {
+            assert!(
+                restore_schemas(env.catalog())
+                    .await
+                    .contains(&namespace.schema().to_owned())
+            );
+        }
+        env.sentinels.assert_intact(&env.fx).await;
+    }
+    // Only an explicit DELETE, with ownership proof, removes it.
+    fs::set_permissions(&result, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
 macro_rules! matrix {
     ($($scenario:ident => $sqlite:ident, $postgres:ident;)*) => {$(
         #[tokio::test]
@@ -1366,6 +1422,7 @@ matrix! {
     live_writes_proceed_during_restore_import => sqlite_live_writes_during_import, postgres_live_writes_during_import;
     unjournaled_restore_paths_retain_quota => sqlite_unjournaled_paths, postgres_unjournaled_paths;
     whole_store_failures_still_refuse_startup => sqlite_whole_store_failures, postgres_whole_store_failures;
+    unverifiable_ready_result_fails_closed_and_is_never_auto_deleted => sqlite_unverifiable_ready_result, postgres_unverifiable_ready_result;
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]

@@ -40,16 +40,18 @@ pub(super) async fn migrate(c: &Catalog, s: &Store) -> Result<()> {
     recover_restores(c, s).await?;
     sqlx::query("UPDATE export_jobs SET state='failed',error='interrupted' WHERE state IN ('queued','running','cancelling')").execute(c.pool()).await?;
     // Artifacts of interrupted jobs are never offered. Owned files only, no source mutation.
-    let ids: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM export_jobs WHERE state IN ('failed','cancelled')")
-            .fetch_all(c.pool())
-            .await?;
+    // A previously ready result that failed verification is never removed
+    // automatically; only an explicit DELETE (with ownership proof) may.
+    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM export_jobs WHERE state IN ('failed','cancelled') AND (error IS NULL OR error<>'unverified-result')")
+        .fetch_all(c.pool())
+        .await?;
     for id in ids {
         if OpaqueId::try_from(id.clone()).is_ok() {
             // A restore result without a journal is not guessed-owned by its
             // filename. New restore creation always journals before any side effect.
-            if reconcile_or_block(c, s, &id).await.is_err() {
+            if cleanup_result(c, s, &id).await.is_err() {
                 store_available(c, s).await?;
+                block(c, &id).await?;
             }
         }
     }
@@ -189,7 +191,7 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
                 version: WireVersion::V1,
                 code: match r.try_get::<Option<String>, _>(3)?.as_deref() {
                     Some("unsupported") => ErrorCode::UnsupportedFormat,
-                    Some("cleanup-blocked") => ErrorCode::StorageUnavailable,
+                    Some("cleanup-blocked" | "unverified-result") => ErrorCode::StorageUnavailable,
                     _ => ErrorCode::CorruptAsset,
                 },
                 retryable: true,
@@ -270,7 +272,7 @@ async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()
     let mut tx = catalog.begin_write().await?;
     // A previously blocked job is now clean; its original reason was replaced
     // by the blocked marker, so it is reported as interrupted from here on.
-    sqlx::query("UPDATE export_jobs SET retained=0,reserved=0,error=CASE WHEN error='cleanup-blocked' THEN 'interrupted' ELSE error END WHERE id=$1")
+    sqlx::query("UPDATE export_jobs SET retained=0,reserved=0,error=CASE WHEN error IN ('cleanup-blocked','unverified-result') THEN 'interrupted' ELSE error END WHERE id=$1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
@@ -308,10 +310,21 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
         else {
             continue;
         };
-        let state: Option<String> = sqlx::query_scalar("SELECT state FROM export_jobs WHERE id=$1")
+        let row = sqlx::query("SELECT state,error FROM export_jobs WHERE id=$1")
             .bind(id)
             .fetch_optional(catalog.pool())
             .await?;
+        let (state, error) = match row {
+            Some(row) => (
+                Some(row.try_get::<String, _>(0)?),
+                row.try_get::<Option<String>, _>(1)?,
+            ),
+            None => (None, None),
+        };
+        if error.as_deref() == Some("unverified-result") {
+            // Retained until an explicit DELETE; never cleaned automatically.
+            continue;
+        }
         if state.as_deref() == Some("succeeded")
             && matches!(
                 journal.phase(),
@@ -328,8 +341,9 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
             };
             if verified.is_err() {
                 store_available(catalog, store).await?;
-                // Never offer an unverifiable result as ready; retain it all.
-                block(catalog, id).await;
+                // Never offer an unverifiable result as ready, and never delete
+                // a previously ready result without an explicit DELETE.
+                mark_unverified(catalog, id).await?;
                 continue;
             }
             // A failed journal fsync here is retried at the next startup; the
@@ -342,7 +356,7 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
                 .bind(id).execute(catalog.pool()).await?;
             if cleanup_result(catalog, store, id).await.is_err() {
                 store_available(catalog, store).await?;
-                block(catalog, id).await;
+                block(catalog, id).await?;
             }
         }
     }
@@ -358,23 +372,48 @@ async fn store_available(catalog: &Catalog, store: &Store) -> Result<()> {
 /// Persist a visible blocked state for a job whose owned cleanup cannot be
 /// proved or completed. Files, journal and quota are all retained; DELETE and
 /// every startup retry it. A blocked job is failed, so it is never ready.
-async fn block(catalog: &Catalog, id: &str) {
+/// Failing to persist the blocked state is itself fatal to startup: a job that
+/// cannot be durably marked non-ready must not be left in its previous state.
+async fn block(catalog: &Catalog, id: &str) -> Result<()> {
     eprintln!(
         "Lytronaut job {id}: owned cleanup is blocked; its files, journal and quota are retained. Resolve the reported conflict, then DELETE the job or restart"
     );
-    if sqlx::query("UPDATE export_jobs SET state='failed',error='cleanup-blocked' WHERE id=$1")
-        .bind(id)
-        .execute(catalog.pool())
-        .await
-        .is_err()
-    {
+    let persisted =
+        sqlx::query("UPDATE export_jobs SET state='failed',error='cleanup-blocked' WHERE id=$1")
+            .bind(id)
+            .execute(catalog.pool())
+            .await;
+    if persisted.is_err() {
         eprintln!("Lytronaut job {id}: the blocked state could not be persisted");
     }
+    persisted?;
+    Ok(())
 }
+/// A ready result that no longer verifies becomes visibly non-ready with all of
+/// it retained. Unlike a blocked cleanup it is not retried automatically: the
+/// user's restored copy is removed only by an explicit DELETE.
+async fn mark_unverified(catalog: &Catalog, id: &str) -> Result<()> {
+    eprintln!(
+        "Lytronaut job {id}: its published restore result failed verification and is no longer ready; it is retained until DELETE"
+    );
+    let persisted =
+        sqlx::query("UPDATE export_jobs SET state='failed',error='unverified-result' WHERE id=$1")
+            .bind(id)
+            .execute(catalog.pool())
+            .await;
+    if persisted.is_err() {
+        eprintln!("Lytronaut job {id}: the unverified state could not be persisted");
+    }
+    persisted?;
+    Ok(())
+}
+/// Runtime cleanup (DELETE, worker finalization, failed upload). The caller's
+/// job is already durably failed or cancelled, so it is never ready even when
+/// the blocked marker cannot be written; the cleanup error is returned.
 async fn reconcile_or_block(catalog: &Catalog, store: &Store, id: &str) -> Result<()> {
     let result = cleanup_result(catalog, store, id).await;
     if result.is_err() {
-        block(catalog, id).await;
+        let _ = block(catalog, id).await;
     }
     result
 }

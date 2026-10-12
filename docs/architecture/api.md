@@ -252,7 +252,9 @@ If a job's owned cleanup cannot be proved or completed (foreign collision, denie
 permission, a dependent database object, a marker lost mid-removal), that one job
 is reported `failed` with a retryable `storage_unavailable` error; its files,
 journal and quota stay reserved, it is never offered as ready, and `DELETE` or the
-next startup retries cleanup. The service still starts. Startup is refused only
+next startup retries cleanup. A ready restore whose result no longer verifies
+at startup is likewise reported `failed`/`storage_unavailable` and retained, but is
+removed only by an explicit `DELETE`. The service still starts. Startup is refused only
 when the whole store is unavailable: unreadable export root or restore journal, or
 an unreachable database.
 Logs and errors never contain source paths, row values or individual source hashes.

@@ -142,10 +142,14 @@ ownership, lost reservation, or unjournaled successful-looking result is allowed
 Blocked cleanup is per job and does not stop the service. A job whose owned cleanup
 cannot be proved or completed is persisted as `failed` with error `cleanup-blocked`
 (reported as a retryable `storage_unavailable` error), logged loudly with its job id,
-and keeps its files, journal and quota; admission keeps counting that quota. A
-published result that can no longer be verified is blocked the same way and is
-never offered as ready. `DELETE` and every startup retry the cleanup; once it
-succeeds the reservation is released and the job reads `interrupted`. Startup is
+and keeps its files, journal and quota; admission keeps counting that quota.
+`DELETE` and every startup retry the cleanup; once it succeeds the reservation is
+released and the job reads `interrupted`. A previously ready result that no longer
+verifies at startup becomes `failed` with error `unverified-result` (also reported
+as retryable `storage_unavailable`), keeps its files, namespace, journal and quota,
+and is never cleaned automatically: only an explicit `DELETE`, with ownership proof,
+removes the user's restored copy. If either non-ready state cannot be persisted,
+startup is refused rather than leaving the job in its previous state. Startup is
 refused only for whole-store failures: an unreadable export root or restore journal,
 or an unreachable database (checked after any per-job failure). A journal file name
 that is not an application job id is foreign and is left untouched.
@@ -189,7 +193,8 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   mkdir, marker, rename, namespace created before SchemaOwned, files ready, files
   published with and without a committed success), unjournaled restore paths,
   live writes during a restore import, an exactly-at-limit source cell, per-job
-  blocked cleanup that still starts the service, and whole-store failures that
+  blocked cleanup that still starts the service, an unverifiable ready result
+  that fails closed and is never auto-deleted, and whole-store failures that
   still refuse startup. Every case checks unrelated SQL/filesystem sentinels and
   the live library.
 
