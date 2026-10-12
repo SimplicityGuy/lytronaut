@@ -83,8 +83,15 @@ impl Fixture {
         let mut tx = self.catalog.begin_write().await.unwrap();
         for (index, id) in IDS.iter().enumerate() {
             let job = format!("synthetic-job-{index}");
-            sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,reserved) VALUES($1,'directory','succeeded',0,0,1,1,0)").bind(&job).execute(&mut *tx).await.unwrap();
-            sqlx::query("INSERT INTO intake_sources(job,path,canonical,digest,length) VALUES($1,'opaque.bin','opaque.bin',$2,$3)").bind(&job).bind(&digest).bind(BLOB.len() as i64).execute(&mut *tx).await.unwrap();
+            // Distinct per-row values in every intake column so round trips
+            // compare real values, not defaults.
+            let n = index as i64 + 1;
+            let path = format!("synthetic/{index}/opaque é.bin");
+            sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,zip_complete,completed,files,path_bytes,reserved,error) VALUES($1,'directory','succeeded',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+                .bind(&job).bind(n * 1000).bind(n * 2000).bind(n).bind(n * 3000).bind(index as i64 % 2).bind(n * 1000).bind(n).bind(path.len() as i64).bind(n * 4000)
+                .bind(if index == 1 { Some("synthetic-recovered-warning") } else { None })
+                .execute(&mut *tx).await.unwrap();
+            sqlx::query("INSERT INTO intake_sources(job,path,canonical,digest,length) VALUES($1,$2,$3,$4,$5)").bind(&job).bind(&path).bind(format!("{path}#canonical")).bind(&digest).bind(BLOB.len() as i64).execute(&mut *tx).await.unwrap();
             sqlx::query(
                 "INSERT INTO application_job_order(ordinal,kind,job) VALUES($1,'intake',$2)",
             )
@@ -94,7 +101,7 @@ impl Fixture {
             .await
             .unwrap();
             sqlx::query("INSERT INTO catalog_versions(id,fingerprint,source_job,library_uuid,state,reason,conflict) VALUES($1,$2,$3,$4,'supported',NULL,0)").bind(id).bind(format!("synthetic-fingerprint-{index}")).bind(&job).bind(if index == 0 { None } else { Some(self.catalog.encode_source_key("library\0雪")) }).execute(&mut *tx).await.unwrap();
-            sqlx::query("INSERT INTO catalog_sources(version,job,path,digest,length) VALUES($1,$2,'opaque.bin',$3,$4)").bind(id).bind(&job).bind(&digest).bind(BLOB.len() as i64).execute(&mut *tx).await.unwrap();
+            sqlx::query("INSERT INTO catalog_sources(version,job,path,digest,length) VALUES($1,$2,$3,$4,$5)").bind(id).bind(&job).bind(&path).bind(&digest).bind(BLOB.len() as i64).execute(&mut *tx).await.unwrap();
             sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) VALUES($1,'unknown-typed-values',$1,$2)").bind(id).bind(ORIGINAL).execute(&mut *tx).await.unwrap();
             let key = self.catalog.encode_source_key(KEY);
             let album = self.catalog.encode_source_key("album\0雪");
@@ -120,6 +127,15 @@ impl Fixture {
             .bind(format!("synthetic-asset-{index}"))
             .bind(id)
             .bind(&key)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO catalog_item_errors(version,picture_uuid,code) VALUES($1,$2,$3)",
+            )
+            .bind(id)
+            .bind(self.catalog.encode_source_key(KEY))
+            .bind(format!("synthetic-item-error-{index}"))
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -151,6 +167,66 @@ fn logical_text(catalog: &Catalog, row: &sqlx::any::AnyRow, column: &str) -> Vec
     } else {
         row.try_get::<String, _>(column).unwrap().into_bytes()
     }
+}
+/// Every portable table's logical rows (source keys decoded, text compared as
+/// bytes, nulls explicit), sorted. `skip` omits auxiliary tables by name.
+pub(crate) async fn logical_tables(
+    catalog: &Catalog,
+    skip: &[&str],
+) -> Vec<(&'static str, Vec<Vec<String>>)> {
+    use lytronaut_storage::portable::{Kind, TABLES};
+    let postgres = catalog.backend() == Backend::Postgres;
+    let mut tables = Vec::new();
+    for table in TABLES.iter().filter(|t| !skip.contains(&t.name)) {
+        let names = table.columns.iter().map(|c| c.name).collect::<Vec<_>>();
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "SELECT {} FROM {}",
+            names.join(","),
+            table.name
+        )))
+        .fetch_all(catalog.pool())
+        .await
+        .unwrap();
+        let mut values = rows
+            .iter()
+            .map(|row| {
+                table
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(index, column)| {
+                        let text = |bytes: Option<Vec<u8>>| {
+                            bytes.map_or("NULL".to_owned(), |b| {
+                                b.iter().map(|x| format!("{x:02x}")).collect()
+                            })
+                        };
+                        match column.kind {
+                            Kind::Integer => row
+                                .try_get::<Option<i64>, _>(index)
+                                .unwrap()
+                                .map_or("NULL".to_owned(), |v| v.to_string()),
+                            Kind::Blob => text(row.try_get(index).unwrap()),
+                            Kind::SourceText if postgres => text(row.try_get(index).unwrap()),
+                            Kind::SourceKey => text(
+                                row.try_get::<Option<String>, _>(index)
+                                    .unwrap()
+                                    .map(|v| catalog.decode_source_key(v).unwrap().into_bytes()),
+                            ),
+                            _ => text(
+                                row.try_get::<Option<String>, _>(index)
+                                    .unwrap()
+                                    .map(String::into_bytes),
+                            ),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        values.sort();
+        assert!(!values.is_empty(), "{} is not seeded", table.name);
+        tables.push((table.name, values));
+    }
+    tables
 }
 pub(crate) async fn verify(catalog: &Catalog, original_root: &Path) {
     verify_ordered(catalog, original_root, &IDS).await;
@@ -334,6 +410,7 @@ async fn round_trip(source_pg: bool, destination_pg: bool) {
     let (reopened, result, journal) =
         restore_and_reopen(&destination, &archive, store.limits()).await;
     verify(&reopened, &result.join("originals")).await;
+    assert!(logical_tables(&source.catalog, &[]).await == logical_tables(&reopened, &[]).await);
     release(&destination, reopened, journal).await;
     source.finish().await;
     destination.finish().await;
@@ -386,7 +463,12 @@ fn small_original(ordinal: i64) -> Vec<u8> {
 /// `has_auth` adds the three known legacy authentication tables with synthetic
 /// credential rows that restore must never carry forward. Returns the archive
 /// bytes and the number of near-limit small rows.
-async fn legacy_archive(has_order: bool, has_auth: bool, bulk: Bulk) -> (Vec<u8>, i64) {
+type Logical = Vec<(&'static str, Vec<Vec<String>>)>;
+async fn legacy_archive(
+    has_order: bool,
+    has_auth: bool,
+    bulk: Bulk,
+) -> (Vec<u8>, i64, Option<Logical>) {
     let source = Fixture::new(false).await;
     source.seed().await;
     let mut small_rows = 0;
@@ -488,11 +570,18 @@ async fn legacy_archive(has_order: bool, has_auth: bool, bulk: Bulk) -> (Vec<u8>
     archive.extend_from_slice(&Sha256::digest(BLOB));
     archive.extend_from_slice(&(BLOB.len() as u64).to_le_bytes());
     archive.extend_from_slice(BLOB);
+    // Pre-job-order forms derive ordinals from rowid, so the auxiliary order
+    // table is compared by intake order in verify_ordered, not here.
+    let logical = if bulk == Bulk::None {
+        Some(logical_tables(&source.catalog, &["application_job_order"]).await)
+    } else {
+        None
+    };
     source.finish().await;
-    (archive, small_rows)
+    (archive, small_rows, logical)
 }
 async fn legacy_restore(destination_pg: bool, has_order: bool, has_auth: bool, bulk: Bulk) {
-    let (archive, small_rows) = legacy_archive(has_order, has_auth, bulk).await;
+    let (archive, small_rows, logical) = legacy_archive(has_order, has_auth, bulk).await;
     let destination = Fixture::new(destination_pg).await;
     let input = destination.root.join("legacy.bundle");
     fs::write(&input, &archive).unwrap();
@@ -509,6 +598,9 @@ async fn legacy_restore(destination_pg: bool, has_order: bool, has_auth: bool, b
         vec![1, 2, 3, 4]
     };
     verify_ordered(&reopened, &result.join("originals"), &order).await;
+    if let Some(logical) = logical {
+        assert!(logical == logical_tables(&reopened, &["application_job_order"]).await);
+    }
     let auth: i64 = sqlx::query_scalar(reopened.dialect(
         "SELECT count(*) FROM sqlite_master WHERE name LIKE 'auth%'",
         "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name LIKE 'auth%'",
