@@ -160,10 +160,9 @@ impl Builder {
             dimension: 2048,
             pixels: 2 * 1024 * 1024,
             jpeg_bytes: 2 * 1024 * 1024,
-            decoder_working_bytes: 160 * 1024 * 1024,
             ..Default::default()
         };
-        if crate::jpeg_geometry(jpeg, limits)? != self.plan.geometry {
+        if crate::jpeg_metadata_geometry(jpeg, limits)? != self.plan.geometry {
             return Err(E::Extent);
         }
         self.jpeg = Some(paired_jpeg(jpeg, &self.id)?);

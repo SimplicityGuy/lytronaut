@@ -1,5 +1,6 @@
 //! Durable deployment-protected export/isolated restore jobs. Shares viewer codec and transfer admission.
 use super::*;
+#[path = "exports/live_photo.rs"]
 mod live_photo;
 use axum::{Json, extract::Request, routing::post};
 use http_body_util::BodyExt;

@@ -485,8 +485,8 @@ pub async fn decode_container(
         .chars()
         .map(|c| c as u8)
         .collect::<Vec<_>>();
-    let geometry =
-        lytronaut_format::jpeg_geometry(&encoded, limits).map_err(|_| "invalid generated JPEG")?;
+    let geometry = lytronaut_format::jpeg_metadata_geometry(&encoded, limits)
+        .map_err(|_| "invalid generated JPEG")?;
     if geometry != first.geometry {
         return Err("output image extent mismatch");
     }

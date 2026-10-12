@@ -102,6 +102,12 @@ captures and identifiers must never enter public reports or CI artifacts.
 
 ## Resource verification still pending
 
+Platform-generated JPEGs use bounded metadata-only inspection for their encoded
+size, segment bounds and geometry, followed by independent browser image decoding
+to verify the selected pixels' dimensions. Metadata inspection allocates no Rust
+codec scratch. Actual Rust JPEG decoding retains its conservative working-memory
+admission; accepting a platform-generated still does not raise that decode budget.
+
 Export admits one queued compressed chunk; ordinary viewing retains its existing
 two-chunk upper limit. Pixels are copied in at most 16-row strips, bounding each
 platform ImageData and Rust temporary to 128 KiB. The canvas backing and current

@@ -4,6 +4,97 @@ use lytronaut_format::{
     live_photo::{Builder, Plan, bundle},
 };
 const ID: &str = "A8A8A8A8-1111-4444-8888-121212121212";
+#[test]
+fn platform_jpeg_metadata_at_two_million_pixels_keeps_real_decode_admission() {
+    let geometry = Geometry {
+        width: 2048,
+        height: 1024,
+    };
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+        .encode(
+            &vec![64; 2048 * 1024 * 3],
+            geometry.width,
+            geometry.height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+    let limits = lytronaut_format::Limits {
+        dimension: 2048,
+        pixels: 2 * 1024 * 1024,
+        decoded_bytes: 8 * 1024 * 1024,
+        decoder_working_bytes: 128 * 1024 * 1024,
+        jpeg_bytes: 2 * 1024 * 1024,
+        ..Default::default()
+    };
+    assert!(!jpeg.is_empty());
+    assert_eq!(
+        lytronaut_format::jpeg_metadata_geometry(&jpeg, limits),
+        Ok(geometry)
+    );
+    assert_eq!(
+        lytronaut_format::jpeg_geometry(&jpeg, limits),
+        Err(FormatError::Budget)
+    );
+    assert!(matches!(
+        lytronaut_format::decode_jpeg(&jpeg, limits),
+        Err(FormatError::Budget)
+    ));
+    for (changed, expected) in [
+        (
+            lytronaut_format::Limits {
+                pixels: limits.pixels - 1,
+                ..limits
+            },
+            FormatError::Budget,
+        ),
+        (
+            lytronaut_format::Limits {
+                dimension: 1024,
+                ..limits
+            },
+            FormatError::Extent,
+        ),
+        (
+            lytronaut_format::Limits {
+                jpeg_bytes: jpeg.len() - 1,
+                ..limits
+            },
+            FormatError::Budget,
+        ),
+    ] {
+        assert_eq!(
+            lytronaut_format::jpeg_metadata_geometry(&jpeg, changed),
+            Err(expected)
+        );
+    }
+    assert_eq!(
+        lytronaut_format::jpeg_metadata_geometry(
+            &jpeg,
+            lytronaut_format::Limits {
+                decoder_working_bytes: 0,
+                ..limits
+            }
+        ),
+        Ok(geometry)
+    );
+    for malformed in [
+        b"not a JPEG".as_slice(),
+        &[255, 216, 255, 224, 0, 1],
+        &[255, 216, 255, 218],
+        &[255, 216, 255, 192, 0, 17, 8],
+    ] {
+        assert!(lytronaut_format::jpeg_metadata_geometry(malformed, limits).is_err());
+    }
+    let sof = jpeg.windows(2).position(|v| v == [255, 192]).unwrap();
+    assert_eq!(
+        lytronaut_format::jpeg_metadata_geometry(&jpeg[..sof + 4], limits),
+        Err(FormatError::Truncated)
+    );
+    let mut builder = Builder::new(Plan::new(geometry, &[-1.0, 1.0], 0).unwrap(), ID).unwrap();
+    builder.set_still(&jpeg).unwrap();
+    assert!(builder.finish().is_err());
+}
 fn geometry() -> Geometry {
     Geometry {
         width: 32,
