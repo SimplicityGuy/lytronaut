@@ -1,15 +1,11 @@
 //! Owner-only aggregate HTTP check against an existing private catalog. No source copy or output.
-use lytronaut_service::{
-    AppState, SecurityConfig, api::Api, auth::AuthStore, local, router_with_routes, uploads,
-};
+use lytronaut_service::{AppState, SecurityConfig, api::Api, local, router_with_routes, uploads};
 use lytronaut_storage::{Catalog, Limits, Store};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
     io::{Read, Write},
     net::TcpStream,
-    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
 };
 async fn request(
@@ -42,8 +38,8 @@ async fn request(
     .await
     .map_err(|_| ())?
 }
-async fn get(port: u16, path: &str, cookie: &str) -> Result<Value, ()> {
-    let r = request(port, "GET", path, cookie, vec![]).await?;
+async fn get(port: u16, path: &str, headers: &str) -> Result<Value, ()> {
+    let r = request(port, "GET", path, headers, vec![]).await?;
     if r.0 != 200 {
         return Err(());
     }
@@ -59,35 +55,6 @@ async fn run() -> Result<(), ()> {
     let database = root.join("app.db");
     local::database_file(&database).map_err(|_| ())?;
     let catalog = Catalog::open_application_database(&database)
-        .await
-        .map_err(|_| ())?;
-    let password_path = root.join("private-api-password");
-    let password = if password_path.exists() {
-        local::database_file(&password_path).map_err(|_| ())?;
-        fs::read_to_string(&password_path).map_err(|_| ())?
-    } else {
-        let mut random = [0; 32];
-        getrandom::fill(&mut random).map_err(|_| ())?;
-        let value: String = random.iter().map(|b| format!("{b:02x}")).collect();
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&password_path)
-            .map_err(|_| ())?;
-        file.write_all(value.as_bytes()).map_err(|_| ())?;
-        file.sync_all().map_err(|_| ())?;
-        value
-    };
-    let bootstrap = if AuthStore::needs_bootstrap(catalog.pool())
-        .await
-        .map_err(|_| ())?
-    {
-        Some(local::bootstrap_file(&root.join("private-api-bootstrap")).map_err(|_| ())?)
-    } else {
-        None
-    };
-    let auth = AuthStore::open(catalog.pool().clone(), bootstrap.as_deref())
         .await
         .map_err(|_| ())?;
     let store = Store::open(
@@ -107,7 +74,6 @@ async fn run() -> Result<(), ()> {
     let app = router_with_routes(
         AppState {
             catalog: catalog.clone(),
-            auth,
             security: SecurityConfig::new("http://127.0.0.1:3000").map_err(|_| ())?,
         },
         uploads::routes(store).merge(api.routes()),
@@ -119,50 +85,8 @@ async fn run() -> Result<(), ()> {
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    let origin = "Origin: http://127.0.0.1:3000\r\n";
-    if let Some(bootstrap) = bootstrap {
-        let body =
-            json!({"bootstrap":bootstrap,"username":"private_validation","password":password})
-                .to_string()
-                .into_bytes();
-        if request(
-            port,
-            "POST",
-            "/auth/setup",
-            &format!("{origin}X-Lytronaut-Intent: setup\r\n"),
-            body,
-        )
-        .await?
-        .0 != 204
-        {
-            return Err(());
-        }
-    }
-    let login = json!({"username":"private_validation","password":password})
-        .to_string()
-        .into_bytes();
-    let response = request(
-        port,
-        "POST",
-        "/auth/login",
-        &format!("{origin}X-Lytronaut-Intent: login\r\n"),
-        login,
-    )
-    .await?;
-    if response.0 != 204 {
-        return Err(());
-    }
-    let cookie = response
-        .1
-        .lines()
-        .find_map(|line| line.strip_prefix("set-cookie: "))
-        .ok_or(())?
-        .split(';')
-        .next()
-        .ok_or(())?;
-    let cookie = format!("Cookie: {cookie}\r\n");
-    let session = get(port, "/auth/session", &cookie).await?;
-    let libs = get(port, "/libraries?limit=100", &cookie).await?;
+    let headers = String::new();
+    let libs = get(port, "/libraries", &headers).await?;
     let libraries = libs["items"].as_array().ok_or(())?;
     if libraries.len() != 1 {
         return Err(());
@@ -171,7 +95,12 @@ async fn run() -> Result<(), ()> {
     if libraries[0]["state"] != "ready" {
         return Err(());
     }
-    let albums = get(port, &format!("/libraries/{lib}/albums?limit=100"), &cookie).await?;
+    let albums = get(
+        port,
+        &format!("/libraries/{lib}/albums?limit=100"),
+        &headers,
+    )
+    .await?;
     let albums = albums["items"].as_array().ok_or(())?;
     if albums.len() != 3 {
         return Err(());
@@ -180,8 +109,8 @@ async fn run() -> Result<(), ()> {
     let mut sizes = Vec::new();
     for album in albums {
         let id = album["id"].as_str().ok_or(())?;
-        let page = get(port, &format!("/albums/{id}/captures?limit=100"), &cookie).await?;
-        let repeated = get(port, &format!("/albums/{id}/captures?limit=100"), &cookie).await?;
+        let page = get(port, &format!("/albums/{id}/captures?limit=100"), &headers).await?;
+        let repeated = get(port, &format!("/albums/{id}/captures?limit=100"), &headers).await?;
         if page != repeated {
             return Err(());
         }
@@ -203,7 +132,7 @@ async fn run() -> Result<(), ()> {
         let page = get(
             port,
             &format!("/libraries/{lib}/captures?limit=100&offset={offset}"),
-            &cookie,
+            &headers,
         )
         .await?;
         captures.extend(page["items"].as_array().ok_or(())?.iter().cloned());
@@ -217,7 +146,7 @@ async fn run() -> Result<(), ()> {
     let mut jpeg_stack_originals = 0;
     for capture in &captures {
         let id = capture["id"].as_str().ok_or(())?;
-        let detail = get(port, &format!("/captures/{id}"), &cookie).await?;
+        let detail = get(port, &format!("/captures/{id}"), &headers).await?;
         jpeg_stack_originals += detail["originals"]
             .as_array()
             .ok_or(())?
@@ -226,17 +155,17 @@ async fn run() -> Result<(), ()> {
             .count();
         let preview = detail["preview"].as_str().ok_or(())?;
         let path = format!("/assets/{preview}/manifest");
-        if request(port, "GET", &path, "", vec![]).await?.0 != 401 {
+        if request(port, "GET", &path, "", vec![]).await?.0 != 200 {
             return Err(());
         }
-        let manifest = get(port, &path, &cookie).await?;
+        let manifest = get(port, &path, &headers).await?;
         let mut bytes = Vec::new();
         for (index, chunk) in manifest["chunks"].as_array().ok_or(())?.iter().enumerate() {
             let r = request(
                 port,
                 "GET",
                 &format!("/assets/{preview}/chunks/{index}"),
-                &cookie,
+                &headers,
                 vec![],
             )
             .await?;
@@ -253,7 +182,7 @@ async fn run() -> Result<(), ()> {
             port,
             "GET",
             &format!("/assets/{preview}/download"),
-            &cookie,
+            &headers,
             vec![],
         )
         .await?;
@@ -269,24 +198,11 @@ async fn run() -> Result<(), ()> {
     if sizes != [12, 39, 58] {
         return Err(());
     }
-    let csrf = session["csrf"].as_str().ok_or(())?;
-    if request(
-        port,
-        "POST",
-        "/auth/logout",
-        &format!("{cookie}{origin}X-Lytronaut-Csrf: {csrf}\r\n"),
-        vec![],
-    )
-    .await?
-    .0 != 204
-    {
-        return Err(());
-    }
     task.abort();
     let _ = task.await;
     println!(
         "{}",
-        json!({"version":1,"captures":captures.len(),"validated_previews":previews,"jpeg_focus_stack_originals":jpeg_stack_originals,"albums":albums.len(),"ordered_memberships":memberships,"ordered_album_sizes":sizes,"authenticated_manifest_chunks_originals":true,"unauthorized_denied":true,"existing_catalog_reused":true})
+        json!({"version":1,"captures":captures.len(),"validated_previews":previews,"jpeg_focus_stack_originals":jpeg_stack_originals,"albums":albums.len(),"ordered_memberships":memberships,"ordered_album_sizes":sizes,"direct_manifest_chunks_originals":true,"existing_catalog_reused":true})
     );
     Ok(())
 }

@@ -1,0 +1,77 @@
+{
+  "mode": "synthetic",
+  "revision": "24ebdfdd332dd4acac4674975e15147a6f1da9d2",
+  "artifactProfiles": "macOS native debug; native-amd64-built Linux Rust/WASM release",
+  "performanceGateEnabled": false,
+  "startupMs": 277,
+  "gpuProof": null,
+  "preZoomGPUDevices": null,
+  "focusProof": {
+    "stacks": 1,
+    "planes": 3,
+    "maxSourceBytes": 14560,
+    "p95NativeHttpDecodeMs": 211
+  },
+  "focusUiLoadContendedTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 0,
+    "p50InputToDecodedFrameReadyMs": 78.79999995231628,
+    "p95InputToDecodedFrameReadyMs": 128.29999995231628,
+    "maxInputToDecodedFrameReadyMs": 129.5
+  },
+  "focusUiTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 0,
+    "p50InputToDecodedFrameReadyMs": 82.10000002384186,
+    "p95InputToDecodedFrameReadyMs": 137.5,
+    "maxInputToDecodedFrameReadyMs": 146.30000007152557
+  },
+  "faultSuite": true,
+  "videoHttpRustUi": true,
+  "videoUiProof": {
+    "actualRustHttp": true,
+    "visibleVideo": true,
+    "oldGpuHidden": true,
+    "obsoleteDeviceReleased": false,
+    "gpuVideoFailureRecovery": null,
+    "flattenedButtonsDisabled": true,
+    "injectedFlattenedExportPosts": 0,
+    "backupAvailable": true,
+    "nonmonotonicSelectedBlue": true,
+    "corruptOriginalRetainsFrame": true,
+    "staleCaptureIgnored": true,
+    "absentCodecStaticFallback": true,
+    "retryRecovered": true
+  },
+  "keyboardNavigation": true,
+  "contrast": {
+    "text": 15.465817170572732,
+    "control": 4.046600406095304
+  },
+  "preZoomURLsReleasedExceptCurrentStage": true,
+  "captures": 30,
+  "albums": 3,
+  "orderedMemberships": [
+    10,
+    10,
+    10
+  ],
+  "assets429": 0,
+  "blobURLsReleased": true,
+  "absentGPUAndCodecInjected": true,
+  "pageErrors": 0,
+  "reducedMotion": true,
+  "forcedColors": true,
+  "AXTree": true,
+  "responsive": true,
+  "zoom": {
+    "inner": 720,
+    "outer": 756,
+    "dpr": 2
+  },
+  "browser": "Chrome/154.0.8037.98",
+  "screenReader": "AX inspection only; VoiceOver not manually certified",
+  "applicationWasmSha256": "b25caf506e21de5aa02ec50b6ae151a5bc2fd1059e7a0b2e3495b3a82df7888a",
+  "generatedGlueSha256": "49c9efa9d50af2536ea963b2955ef3466f6a7a2d0499687ee4490252af39f168",
+  "nativeServiceSha256": "609e05adcd303b6d851c762792288948c40cd5175453c2301a45186cef2cad2b"
+}

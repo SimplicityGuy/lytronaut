@@ -1,12 +1,13 @@
 // MIT, independently authored test harness. Product parsing/decoding is Rust/WASM.
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const {execFileSync} = require('node:child_process');
 const pp = require('./browser/node_modules/puppeteer-core');
 const privateRoot = process.env.LYTRONAUT_VIDEO_PRIVATE_ROOT;
-const scratch = fs.mkdtempSync('/private/tmp/lytronaut-video-'); fs.chmodSync(scratch,0o700);
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(),'lytronaut-video-')); fs.chmodSync(scratch,0o700);
 const dist = path.resolve(process.env.LYTRONAUT_CLIENT || 'dist');
 const fixturePath=path.join(__dirname,'../fixtures/public/avc-colors.json');
 const authoredFixture=fs.existsSync(fixturePath)?Buffer.from(JSON.parse(fs.readFileSync(fixturePath,'utf8')).container_base64,'base64'):null;

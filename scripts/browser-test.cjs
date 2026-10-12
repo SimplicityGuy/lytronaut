@@ -49,18 +49,9 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    URL.revokeObjectURL=function(...args){window.__urls.revoked++;return revoke.apply(this,args);};
   },gpuMode);await instrument(page);
   const errors=[],responses=[];const attach=p=>{p.on('pageerror',e=>{errors.push(e.message);if(!privateMode)console.error(e.message);});p.on('response',r=>{if(/\/assets\//.test(r.url()))responses.push(r.status());});};attach(page);
-  if(!privateMode)console.error('opening app');await page.goto(origin);checkpoint='authentication';await page.waitForSelector('#username');if(!privateMode)console.error(await page.$$eval('button',b=>b.map(x=>x.textContent)));
-  if(!privateMode && !fs.existsSync(path.join(root,'setup-complete'))){
-   await page.evaluate(()=>[...document.querySelectorAll('button')].find(b=>b.textContent.includes('First run')).click());
-   await page.type('#username','browser');await page.type('#password','synthetic browser password');
-   await page.type('#bootstrap',fs.readFileSync(path.join(data,'bootstrap.secret'),'utf8').trim());
-   await click('Create administrator');
-   await page.waitForFunction(()=>!document.querySelector('#bootstrap'));fs.writeFileSync(path.join(root,'setup-complete'),'synthetic');
-  }
-  const username=privateMode?'private_validation': 'browser';
-  const password=privateMode?fs.readFileSync(path.join(root,'private-api-password'),'utf8').trim():'synthetic browser password';
-  await page.$eval('#username',e=>e.value='');await page.type('#username',username);await page.type('#password',password);
-  await click('Sign in');await page.waitForSelector('#directory');
+  if(!privateMode)console.error('opening app');await page.goto(origin);checkpoint='direct-entry';await page.waitForSelector('#directory');
+  assert.equal(await page.$('#username'),null);assert.equal(await page.$('#password'),null);
+  assert(!fs.existsSync(path.join(data,'bootstrap.secret')));
   if(!privateMode){
    const directory=await page.$('#directory');await directory.uploadFile(path.join(root,'Synthetic.lytrolibrary'));
    await page.waitForFunction(async()=>{const id=sessionStorage.getItem('lytronaut-import');if(!id||document.querySelector('#directory').disabled)return false;return (await (await fetch('/imports/'+id)).json()).phase==='catalog_complete';},{timeout:120000});
@@ -328,18 +319,18 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await page.waitForFunction(()=>document.querySelectorAll('.browser-panel ul a').length===2,{timeout:120000});
    const original=await page.$eval('.browser-panel ul a',e=>e.getAttribute('href'));
    assert.equal((await page.evaluate(async url=>(await fetch(url)).status,original)),200);
-   checkpoint='stale-session';
-   // Delayed library/albums responses after logout cannot repopulate the old session.
+   checkpoint='stale-page';
+   // Delayed library/albums responses from a replaced page cannot repopulate the new workspace.
    const allLibraries=await page.evaluate(async()=> (await (await fetch('/libraries')).json()).items);
    const readyIndex=allLibraries.findIndex(l=>l.state==='ready');
    let held;await page.setRequestInterception(true);
    const delayed=request=>{if(request.url().includes('/albums')&&!held){held=request;}else{request.continue().catch(()=>{});}};page.on('request',delayed);
    await click('Library '+(readyIndex+1));
    for(let i=0;i<50&&!held;i++)await delay(20);assert(held);
-   await click('Sign out');await held.continue().catch(()=>{});await delay(200);
-   assert.equal(await page.$('#directory'),null);
+   await page.reload();await held.continue().catch(()=>{});await delay(200);
+   assert.equal(await page.$('#username'),null);
    await page.setRequestInterception(false);page.off('request',delayed);
-   await page.type('#username','browser');await page.type('#password','synthetic browser password');await click('Sign in');await page.waitForSelector('#directory');
+   await page.waitForSelector('#directory');
    await click('Library '+(readyIndex+1));
    await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===24,{timeout:120000});
    checkpoint='corrupt-preview';
@@ -362,9 +353,14 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
   // Only the currently displayed stage keeps a Blob URL; downsampled grid uses data URLs.
   const preZoomURLs=await page.evaluate(()=>window.__urls);assert(preZoomURLs.created>0);assert.equal(preZoomURLs.created-preZoomURLs.revoked,1);
-  await click('Sign out');await page.waitForSelector('#username');await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
+  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
   const preZoomGPUDevices=gpuMode?await page.evaluate(()=>window.__gpuCounts):null;if(gpuMode)assert.equal(preZoomGPUDevices.created,preZoomGPUDevices.destroyed,'all GPU devices released before browser restart');
-  await page.type('#username',username);await page.type('#password',password);await click('Sign in');await page.waitForSelector('#directory');
+  // Actual browser lifecycle callbacks restore a bfcache page without account state.
+  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+  await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0,{timeout:120000});
+  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+  await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
+  await page.waitForSelector('#directory');
   // Chromium stores default zoom as log(factor)/log(1.2), partition key x.
   // Restart the isolated profile with actual browser zoom; do not use page scaling.
   checkpoint='zoom200';const baseline=await page.evaluate(()=>({inner:innerWidth,dpr:devicePixelRatio}));
@@ -387,14 +383,15 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   assert(await page.evaluate(()=>matchMedia('(forced-colors: active)').matches));
   const ax=await cdp.send('Accessibility.getFullAXTree');
   assert(ax.nodes.some(n=>n.role?.value==='navigation'&&n.name?.value==='Library and albums'));
-  assert(ax.nodes.some(n=>n.role?.value==='status'));assert(ax.nodes.some(n=>n.role?.value==='button'&&n.name?.value==='Sign out'));assert(ax.nodes.some(n=>n.role?.value==='searchbox'&&n.name?.value==='Search captures'));
+  assert(ax.nodes.some(n=>n.role?.value==='status'));assert(!ax.nodes.some(n=>n.role?.value==='button'&&n.name?.value==='Sign out'));assert(ax.nodes.some(n=>n.role?.value==='searchbox'&&n.name?.value==='Search captures'));
   checkpoint='responsive';await page.setViewport({width:390,height:844});
   if(!privateMode)console.error(await page.evaluate(()=>({viewport:innerWidth,scroll:document.documentElement.scrollWidth,overflow:[...document.querySelectorAll('*')].filter(e=>e.getBoundingClientRect().right>innerWidth+1).map(e=>e.tagName+'.'+e.className).slice(0,8)})));
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await page.keyboard.press('Tab');const focus=await page.evaluate(()=>({name:document.activeElement.textContent||document.activeElement.getAttribute('aria-label'),outline:getComputedStyle(document.activeElement).outlineWidth}));
   assert.notEqual(focus.outline,'0px');
-  checkpoint='final-logout';await click('Sign out');await page.waitForSelector('#username');
-  const unauthorized=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(unauthorized,401);
+  checkpoint='final-direct-entry';assert.equal(await page.$('#username'),null);
+  const direct=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(direct,200);
+  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
   assert.equal(errors.length,0);assert(!responses.includes(429));const urls=await page.evaluate(()=>window.__urls);assert.equal(urls.created,urls.revoked);
   const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,videoHttpRustUi:!privateMode,videoUiProof,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
   const clientDir=process.env.LYTRONAUT_CLIENT||'dist';const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');

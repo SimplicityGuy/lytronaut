@@ -102,3 +102,29 @@ video-private-test sealed_root: wasm-build
     fi
     npm ci --ignore-scripts --prefix scripts/browser
     LYTRONAUT_VIDEO_PRIVATE_ROOT="$1" node scripts/video-test.cjs
+
+# Explicit local Linux image builds; never publish to a registry.
+container-build architecture image relay_image revision:
+    docker build --platform "linux/{{ architecture }}" --tag "{{ image }}" --build-arg "SOURCE_REVISION={{ revision }}" --progress=plain .
+    docker build --platform "linux/{{ architecture }}" --tag "{{ relay_image }}" --file scripts/Dockerfile.smoke-relay scripts
+
+# Freeze the products from the same cached build before the runtime proof.
+container-artifacts architecture image output:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{ output }}"
+    docker build --platform "linux/{{ architecture }}" --target validation-artifacts --output "type=local,dest={{ output }}/programs" .
+    docker image save "{{ image }}" | gzip -1 > "{{ output }}/image.tar.gz"
+
+container-smoke architecture image relay_image revision output:
+    mkdir -p "{{ output }}"
+    LYTRONAUT_TEST_REVISION="{{ revision }}" LYTRONAUT_SMOKE_RELAY_IMAGE="{{ relay_image }}" python3 scripts/container-smoke.py "{{ image }}" "linux/{{ architecture }}" > "{{ output }}/runtime.json"
+
+# Requires an actual native Linux runner and checks saved image/layer identity.
+container-evidence architecture revision output:
+    LYTRONAUT_TEST_REVISION="{{ revision }}" python3 scripts/container-evidence.py "{{ output }}" "{{ architecture }}"
+
+container-bundle output archive:
+    mkdir -p "{{ output }}"
+    tar -C "{{ output }}" -czf "{{ archive }}" .
+    python3 -c 'import pathlib,sys; assert pathlib.Path(sys.argv[1]).stat().st_size <= 128*1024**2, "evidence archive exceeds 128 MiB"' "{{ archive }}"

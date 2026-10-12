@@ -1,6 +1,6 @@
 //! Owner-only existing sealed-catalog roundtrip; all output is aggregate counts.
 //! Requires two arguments: protected existing app root and a NEW protected proof directory.
-use lytronaut_service::{api::Api, auth::AuthStore, bundle, local};
+use lytronaut_service::{api::Api, bundle, local};
 use lytronaut_storage::{Catalog, Limits, Store};
 use sqlx::Row;
 use std::{
@@ -22,9 +22,6 @@ async fn run() -> Result<(), ()> {
         .create(&proof)
         .map_err(|_| ())?;
     let catalog = Catalog::open_application_database(&source.join("app.db"))
-        .await
-        .map_err(|_| ())?;
-    AuthStore::open(catalog.pool().clone(), None)
         .await
         .map_err(|_| ())?;
     let store = Store::open(

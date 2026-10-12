@@ -1,7 +1,5 @@
 //! Lawfully authored schema-23 records and encoder-generated synthetic pixels only.
-use lytronaut_service::{
-    AppState, SecurityConfig, api::Api, auth::AuthStore, router_with_routes, uploads,
-};
+use lytronaut_service::{AppState, SecurityConfig, api::Api, router_with_routes, uploads};
 use lytronaut_storage::{Catalog, Limits, Store};
 use serde_json::{Value, json};
 use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
@@ -68,9 +66,6 @@ impl Server {
         let catalog = Catalog::open_application_database(&self.root.join("catalog.db"))
             .await
             .unwrap();
-        let auth = AuthStore::open(catalog.pool().clone(), Some(&"a".repeat(64)))
-            .await
-            .unwrap();
         let store = Store::open(
             catalog.clone(),
             &self.root.join("originals"),
@@ -92,7 +87,6 @@ impl Server {
         let app = router_with_routes(
             AppState {
                 catalog,
-                auth,
                 security: SecurityConfig::new("http://127.0.0.1:3000").unwrap(),
             },
             uploads::routes(store.clone()).merge(api.routes()),
@@ -141,50 +135,18 @@ impl Server {
         .await
         .unwrap()
     }
-    async fn get(&self, path: &str, cookie: &str) -> Value {
-        let r = self.request("GET", path, cookie, b"").await;
+    async fn get(&self, path: &str, headers: &str) -> Value {
+        let r = self.request("GET", path, headers, b"").await;
         assert_eq!(r.0, 200, "{path}: {}", String::from_utf8_lossy(&r.2));
         serde_json::from_slice(&r.2).unwrap()
     }
-    async fn session(&self) -> (String, String) {
-        let origin = "Origin: http://127.0.0.1:3000\r\n";
-        let setup=json!({"bootstrap":"a".repeat(64),"username":"api","password":"synthetic api password"}).to_string();
-        assert_eq!(
-            self.request(
-                "POST",
-                "/auth/setup",
-                &format!("{origin}X-Lytronaut-Intent: setup\r\n"),
-                setup.as_bytes()
-            )
-            .await
-            .0,
-            204
-        );
-        let login = json!({"username":"api","password":"synthetic api password"}).to_string();
-        let r = self
-            .request(
-                "POST",
-                "/auth/login",
-                &format!("{origin}X-Lytronaut-Intent: login\r\n"),
-                login.as_bytes(),
-            )
-            .await;
-        assert_eq!(r.0, 204);
-        let cookie =
-            r.1.lines()
-                .find_map(|line| line.strip_prefix("set-cookie: "))
-                .unwrap()
-                .split(';')
-                .next()
-                .unwrap();
-        let cookie = format!("Cookie: {cookie}\r\n");
-        let csrf = self.get("/auth/session", &cookie).await["csrf"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let mutation = format!("{cookie}{origin}X-Lytronaut-Csrf: {csrf}\r\n");
-        (cookie, mutation)
+    async fn request_headers(&self) -> (String, String) {
+        (
+            String::new(),
+            "Origin: http://127.0.0.1:3000\r\nX-Lytronaut-Intent: mutation\r\n".into(),
+        )
     }
+
     async fn source(&self, version: u16) -> Vec<u8> {
         let path = self.root.join(format!("synthetic-{version}.db"));
         let mut c = SqliteConnection::connect_with(
@@ -267,36 +229,36 @@ CREATE TABLE event(uuid TEXT,library_uuid TEXT);INSERT INTO event VALUES('event'
     }
 }
 #[tokio::test]
-async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
+async fn direct_upload_catalog_preview_original_restart_and_recovery() {
     let mut s = Server::new().await;
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     let (job, jpeg) = s.upload(&mutation, 23).await;
-    let progress = s.get(&format!("/imports/{job}"), &cookie).await;
+    let progress = s.get(&format!("/imports/{job}"), &headers).await;
     assert_eq!(progress["phase"], "intake");
     assert!(progress["completed_bytes"].as_u64().unwrap() > 0);
     // Interrupt after intake completion, before adaptation. Startup must recover the durable job.
     s.store.as_ref().unwrap().finish(&job).await.unwrap();
-    let progress = s.get(&format!("/imports/{job}"), &cookie).await;
+    let progress = s.get(&format!("/imports/{job}"), &headers).await;
     assert_eq!(progress["phase"], "catalog_pending");
     s.restart().await;
-    let progress = s.get(&format!("/imports/{job}"), &cookie).await;
+    let progress = s.get(&format!("/imports/{job}"), &headers).await;
     assert_eq!(progress["phase"], "catalog_complete");
     assert_eq!(progress["catalog_state"], "ready");
     let lib = progress["library"].as_str().unwrap();
-    let libraries = s.get("/libraries", &cookie).await;
+    let libraries = s.get("/libraries", &headers).await;
     assert_eq!(libraries["items"].as_array().unwrap().len(), 1);
     assert_eq!(libraries["items"][0]["captures"], 2);
-    let albums = s.get(&format!("/libraries/{lib}/albums"), &cookie).await;
+    let albums = s.get(&format!("/libraries/{lib}/albums"), &headers).await;
     assert_eq!(albums["items"][0]["name"], "Album β");
     assert_eq!(albums["items"][1]["sort_order"], 8);
     let album = albums["items"][1]["id"].as_str().unwrap();
     let first = s
-        .get(&format!("/albums/{album}/captures?limit=1"), &cookie)
+        .get(&format!("/albums/{album}/captures?limit=1"), &headers)
         .await;
     let second = s
         .get(
             &format!("/albums/{album}/captures?limit=1&offset=1"),
-            &cookie,
+            &headers,
         )
         .await;
     assert_eq!(first["items"][0]["name"], "Second");
@@ -305,7 +267,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
     assert_eq!(first["next_offset"], 1);
     assert!(second["next_offset"].is_null());
     let id = second["items"][0]["id"].as_str().unwrap();
-    let detail = s.get(&format!("/captures/{id}"), &cookie).await;
+    let detail = s.get(&format!("/captures/{id}"), &headers).await;
     assert_eq!(detail["caption"], "Caption café");
     assert_eq!(detail["capture"]["flag_status"], 2);
     assert!(!detail["item_errors"].as_array().unwrap().is_empty());
@@ -321,7 +283,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
         .unwrap()["id"]
         .as_str()
         .unwrap();
-    let stack = s.get(&format!("/assets/{stack_id}/focus"), &cookie).await;
+    let stack = s.get(&format!("/assets/{stack_id}/focus"), &headers).await;
     assert_eq!(stack["lambdas"], json!([-1.0, 1.0]));
     assert!(
         stack["orientation_policy"]
@@ -334,7 +296,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
             .request(
                 "GET",
                 &format!("/assets/{stack_id}/focus/0/{orientation}"),
-                &cookie,
+                &headers,
                 b"",
             )
             .await;
@@ -357,7 +319,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
             s.request(
                 "GET",
                 &format!("/assets/{stack_id}/focus/{suffix}"),
-                &cookie,
+                &headers,
                 b""
             )
             .await
@@ -369,20 +331,27 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
         s.request("GET", &format!("/assets/{stack_id}/focus"), "", b"")
             .await
             .0,
-        401
+        200
     );
     assert_eq!(
         s.request("GET", &format!("/assets/{stack_id}/focus/0/1"), "", b"")
             .await
             .0,
-        401
+        200
     );
     let original_stack = s
-        .request("GET", &format!("/assets/{stack_id}/download"), &cookie, b"")
+        .request(
+            "GET",
+            &format!("/assets/{stack_id}/download"),
+            &headers,
+            b"",
+        )
         .await;
     assert_eq!(original_stack.2, synthetic_focus(&jpeg));
     let preview = detail["preview"].as_str().unwrap();
-    let manifest = s.get(&format!("/assets/{preview}/manifest"), &cookie).await;
+    let manifest = s
+        .get(&format!("/assets/{preview}/manifest"), &headers)
+        .await;
     assert_eq!(manifest["dimensions"], json!({"width":2,"height":1}));
     assert_eq!(manifest["decoded_bytes"], 8);
     assert_eq!(manifest["color_space"], "unknown");
@@ -400,7 +369,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
         assert!(!encoded.contains(marker));
     }
     let r = s
-        .request("GET", &format!("/assets/{preview}/chunks/0"), &cookie, b"")
+        .request("GET", &format!("/assets/{preview}/chunks/0"), &headers, b"")
         .await;
     assert_eq!(r.0, 200);
     assert_eq!(r.2, jpeg);
@@ -410,19 +379,24 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
         format!("/assets/{preview}/chunks/0"),
         format!("/assets/{preview}/download"),
     ] {
-        assert_eq!(s.request("GET", &path, "", b"").await.0, 401);
+        assert_eq!(s.request("GET", &path, "", b"").await.0, 200);
     }
     assert_eq!(
-        s.request("GET", &format!("/assets/{preview}/chunks/99"), &cookie, b"")
-            .await
-            .0,
+        s.request(
+            "GET",
+            &format!("/assets/{preview}/chunks/99"),
+            &headers,
+            b""
+        )
+        .await
+        .0,
         404
     );
     assert_eq!(
         s.request(
             "GET",
             &format!("/assets/{preview}/chunks/nope"),
-            &cookie,
+            &headers,
             b""
         )
         .await
@@ -433,7 +407,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
         s.request(
             "GET",
             &format!("/assets/{preview}/download"),
-            &format!("{cookie}Range: bytes=0-9\r\n"),
+            &format!("{headers}Range: bytes=0-9\r\n"),
             b""
         )
         .await
@@ -441,7 +415,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
         400
     );
     let bad_id = first["items"][0]["id"].as_str().unwrap();
-    let bad = s.get(&format!("/captures/{bad_id}"), &cookie).await;
+    let bad = s.get(&format!("/captures/{bad_id}"), &headers).await;
     assert!(bad["preview"].is_null());
     assert_eq!(
         bad["originals"]
@@ -465,7 +439,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
     for file in bad["originals"].as_array().unwrap() {
         let fid = file["id"].as_str().unwrap();
         let r = s
-            .request("GET", &format!("/assets/{fid}/download"), &cookie, b"")
+            .request("GET", &format!("/assets/{fid}/download"), &headers, b"")
             .await;
         assert_eq!(r.0, 200);
         assert_eq!(r.2.len() as u64, file["encoded_bytes"].as_u64().unwrap());
@@ -473,7 +447,7 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
     let searched = s
         .get(
             &format!("/libraries/{lib}/captures?search=caf%C3%A9&sort=rating"),
-            &cookie,
+            &headers,
         )
         .await;
     assert_eq!(searched["items"].as_array().unwrap().len(), 1);
@@ -489,27 +463,27 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
             .request(
                 "GET",
                 &format!("/libraries/{lib}/captures?{query}"),
-                &cookie,
+                &headers,
                 b"",
             )
             .await;
         assert_eq!(r.0, 400);
         assert!(!String::from_utf8_lossy(&r.2).contains("private-source-marker"));
     }
-    let before = s.get(&format!("/albums/{album}/captures"), &cookie).await;
+    let before = s.get(&format!("/albums/{album}/captures"), &headers).await;
     s.restart().await;
     assert_eq!(
         before,
-        s.get(&format!("/albums/{album}/captures"), &cookie).await
+        s.get(&format!("/albums/{album}/captures"), &headers).await
     );
 }
 #[tokio::test]
 async fn finish_adapts_unknown_schema_preserved_download_and_cancel_consistency() {
     let s = Server::new().await;
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     let (job, _) = s.upload(&mutation, 24).await;
     assert_eq!(
-        s.request("POST", &format!("/imports/{job}/finish"), &cookie, b"")
+        s.request("POST", &format!("/imports/{job}/finish"), &headers, b"")
             .await
             .0,
         403
@@ -531,29 +505,29 @@ async fn finish_adapts_unknown_schema_preserved_download_and_cancel_consistency(
             .0,
         204
     );
-    let p = s.get(&format!("/imports/{job}"), &cookie).await;
+    let p = s.get(&format!("/imports/{job}"), &headers).await;
     assert_eq!(p["catalog_state"], "preserved_only");
     let lib = p["library"].as_str().unwrap();
     assert_eq!(
-        s.request("GET", &format!("/libraries/{lib}/captures"), &cookie, b"")
+        s.request("GET", &format!("/libraries/{lib}/captures"), &headers, b"")
             .await
             .0,
         409
     );
-    let files = s.get(&format!("/libraries/{lib}/files"), &cookie).await;
+    let files = s.get(&format!("/libraries/{lib}/files"), &headers).await;
     assert_eq!(files["items"].as_array().unwrap().len(), 9);
     let mut empty = 0;
     for f in files["items"].as_array().unwrap() {
         let id = f["id"].as_str().unwrap();
         let r = s
-            .request("GET", &format!("/assets/{id}/download"), &cookie, b"")
+            .request("GET", &format!("/assets/{id}/download"), &headers, b"")
             .await;
         assert_eq!(r.0, 200);
         assert_eq!(r.2.len() as u64, f["encoded_bytes"].as_u64().unwrap());
         if r.2.is_empty() {
             empty += 1;
             assert_eq!(
-                s.request("GET", &format!("/assets/{id}/manifest"), &cookie, b"")
+                s.request("GET", &format!("/assets/{id}/manifest"), &headers, b"")
                     .await
                     .0,
                 422
@@ -576,11 +550,11 @@ async fn finish_adapts_unknown_schema_preserved_download_and_cancel_consistency(
             .0,
         204
     );
-    let p = s.get(&format!("/imports/{id}"), &cookie).await;
+    let p = s.get(&format!("/imports/{id}"), &headers).await;
     assert_eq!(p["phase"], "cancelled");
     assert!(p["library"].is_null());
     assert_eq!(
-        s.get("/libraries", &cookie).await["items"]
+        s.get("/libraries", &headers).await["items"]
             .as_array()
             .unwrap()
             .len(),
@@ -637,7 +611,7 @@ fn stored_zip(name: &str, data: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn zip_completion_adapts_without_an_extra_finish_request() {
     let s = Server::new().await;
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     let request =
         json!({"version":1,"kind":"zip_library","declared_bytes":1024,"declared_files":1})
             .to_string();
@@ -654,7 +628,7 @@ async fn zip_completion_adapts_without_an_extra_finish_request() {
         .request("PUT", &format!("/imports/{id}/zip"), &mutation, &zip)
         .await;
     assert_eq!(r.0, 204, "{}", String::from_utf8_lossy(&r.2));
-    let p = s.get(&format!("/imports/{id}"), &cookie).await;
+    let p = s.get(&format!("/imports/{id}"), &headers).await;
     assert_eq!(p["phase"], "catalog_complete");
     assert_eq!(p["catalog_state"], "preserved_only");
     assert_eq!(
@@ -668,7 +642,7 @@ async fn zip_completion_adapts_without_an_extra_finish_request() {
 #[tokio::test]
 async fn polling_during_catalog_publication_keeps_completed_import_visible() {
     let s = Server::new().await;
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     for iteration in 0..6 {
         let (job, _) = s.upload(&mutation, 24 + iteration).await;
         let finish_path = format!("/imports/{job}/finish");
@@ -677,9 +651,9 @@ async fn polling_during_catalog_publication_keeps_completed_import_visible() {
         let polling = async {
             for _ in 0..40 {
                 let (a, b, c) = tokio::join!(
-                    s.request("GET", &path, &cookie, b""),
-                    s.request("GET", &path, &cookie, b""),
-                    s.request("GET", &path, &cookie, b"")
+                    s.request("GET", &path, &headers, b""),
+                    s.request("GET", &path, &headers, b""),
+                    s.request("GET", &path, &headers, b"")
                 );
                 for response in [a, b, c] {
                     assert_eq!(response.0, 200);
@@ -688,15 +662,15 @@ async fn polling_during_catalog_publication_keeps_completed_import_visible() {
         };
         let (response, ()) = tokio::join!(finish, polling);
         assert_eq!(response.0, 204);
-        let progress = s.get(&path, &cookie).await;
+        let progress = s.get(&path, &headers).await;
         assert_eq!(progress["phase"], "catalog_complete");
         assert_eq!(progress["catalog_state"], "preserved_only");
     }
 }
 
-async fn wait_export(s: &Server, id: &str, cookie: &str) -> Value {
+async fn wait_export(s: &Server, id: &str, headers: &str) -> Value {
     for _ in 0..400 {
-        let r = s.get(&format!("/exports/{id}"), cookie).await;
+        let r = s.get(&format!("/exports/{id}"), headers).await;
         if matches!(
             r["state"].as_str(),
             Some("succeeded" | "failed" | "cancelled")
@@ -708,10 +682,10 @@ async fn wait_export(s: &Server, id: &str, cookie: &str) -> Value {
     panic!("export did not reach durable terminal state")
 }
 #[tokio::test]
-async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_restart() {
+async fn direct_flatten_png_jpeg_exact_pixels_provenance_cancel_and_restart() {
     use sha2::{Digest, Sha256};
     let mut s = Server::new().await;
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     let (import, jpeg) = s.upload(&mutation, 23).await;
     assert_eq!(
         s.request("POST", &format!("/imports/{import}/finish"), &mutation, b"")
@@ -719,18 +693,18 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
             .0,
         204
     );
-    let library = s.get("/libraries", &cookie).await["items"][0]["id"]
+    let library = s.get("/libraries", &headers).await["items"][0]["id"]
         .as_str()
         .unwrap()
         .to_owned();
     let captures = s
         .get(
             &format!("/libraries/{library}/captures?sort=rating"),
-            &cookie,
+            &headers,
         )
         .await;
     let capture = captures["items"][0]["id"].as_str().unwrap();
-    let detail = s.get(&format!("/captures/{capture}"), &cookie).await;
+    let detail = s.get(&format!("/captures/{capture}"), &headers).await;
     let focus = detail["originals"]
         .as_array()
         .unwrap()
@@ -752,10 +726,10 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
             )
             .await
             .0,
-            401
+            403
         );
         assert_eq!(
-            s.request("POST", "/exports", &cookie, request.as_bytes())
+            s.request("POST", "/exports", &headers, request.as_bytes())
                 .await
                 .0,
             403
@@ -768,8 +742,8 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
             .as_str()
             .unwrap()
             .to_owned();
-        assert_eq!(wait_export(&s, &id, &cookie).await["state"], "succeeded");
-        let recipe = s.get(&format!("/exports/{id}/recipe"), &cookie).await;
+        assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
+        let recipe = s.get(&format!("/exports/{id}/recipe"), &headers).await;
         assert_eq!(recipe["plane_index"], 1);
         assert_eq!(recipe["lambda"], 1.0);
         assert_eq!(recipe["orientation"], orientation);
@@ -783,7 +757,7 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
                 .contains("preserved only")
         );
         let r = s
-            .request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+            .request("GET", &format!("/exports/{id}/download"), &headers, b"")
             .await;
         assert_eq!(r.0, 200);
         assert!(r.1.contains("image/png"));
@@ -818,7 +792,7 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
             }
         );
         assert_eq!(
-            s.request("GET", &format!("/assets/{focus}/download"), &cookie, b"")
+            s.request("GET", &format!("/assets/{focus}/download"), &headers, b"")
                 .await
                 .2,
             synthetic_focus(&jpeg)
@@ -847,13 +821,13 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(wait_export(&s, &id, &cookie).await["state"], "succeeded");
+    assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
     let r = s
-        .request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+        .request("GET", &format!("/exports/{id}/download"), &headers, b"")
         .await;
     assert_eq!(r.0, 200);
     assert!(r.1.contains("image/jpeg"));
-    let recipe = s.get(&format!("/exports/{id}/recipe"), &cookie).await;
+    let recipe = s.get(&format!("/exports/{id}/recipe"), &headers).await;
     assert_eq!(recipe["source_variant"], "verified_static_jpeg");
     assert!(
         recipe["processing_loss"]
@@ -863,7 +837,7 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
     );
     s.restart().await;
     assert_eq!(
-        s.get(&format!("/exports/{id}"), &cookie).await["state"],
+        s.get(&format!("/exports/{id}"), &headers).await["state"],
         "succeeded"
     );
     assert_eq!(
@@ -873,17 +847,17 @@ async fn authenticated_flatten_png_jpeg_exact_pixels_provenance_cancel_and_resta
         200
     );
     assert_eq!(
-        s.get(&format!("/exports/{id}"), &cookie).await["state"],
+        s.get(&format!("/exports/{id}"), &headers).await["state"],
         "cancelled"
     );
     assert_eq!(
-        s.request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
             .await
             .0,
         404
     );
     assert_eq!(
-        s.request("GET", &format!("/assets/{preview}/download"), &cookie, b"")
+        s.request("GET", &format!("/assets/{preview}/download"), &headers, b"")
             .await
             .2,
         jpeg
@@ -894,7 +868,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     use lytronaut_service::bundle;
     use std::sync::atomic::{AtomicBool, AtomicU64};
     let s = Server::new().await;
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     let (import, _) = s.upload(&mutation, 23).await;
     assert_eq!(
         s.request("POST", &format!("/imports/{import}/finish"), &mutation, b"")
@@ -1030,12 +1004,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         .unwrap();
         assert_eq!(original, restored);
     }
-    for table in [
-        "auth_account",
-        "auth_sessions",
-        "auth_attempts",
-        "export_jobs",
-    ] {
+    for table in ["export_jobs"] {
         assert_eq!(
             sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
                 "SELECT count(*) FROM {table}"
@@ -1100,9 +1069,9 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     let dbsize = u64::from_le_bytes(before[20..28].try_into().unwrap()) as usize;
     for sql in [
         "CREATE TRIGGER hostile AFTER INSERT ON catalog_albums BEGIN DELETE FROM catalog_pictures; END",
-        "CREATE VIEW hostile AS SELECT * FROM auth_account",
+        "CREATE VIEW hostile AS SELECT * FROM export_jobs",
         "CREATE TABLE hostile(x INTEGER,y INTEGER GENERATED ALWAYS AS (x+1) STORED)",
-        "INSERT INTO auth_account VALUES(1,'restored-user','restored-password',NULL)",
+        "CREATE TABLE auth_account (malformed TEXT)",
         "UPDATE intake_jobs SET state='running'",
         "UPDATE catalog_sources SET digest='ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
     ] {
@@ -1178,7 +1147,47 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         .is_err()
     );
     assert!(!failed.exists());
-    // Actual HTTP archive and inbound streaming restore; sessions never carried into restored DB.
+    // A known legacy app schema accepts obsolete credential rows only to discard them.
+    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+    let legacy_db = s.root.join("legacy.db");
+    fs::write(&legacy_db, &before[60..60 + dbsize]).unwrap();
+    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&legacy_db))
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TABLE auth_account (singleton INTEGER PRIMARY KEY CHECK(singleton=1), username_hash TEXT, password_hash TEXT, bootstrap_hash TEXT); CREATE TABLE auth_sessions (token_hash TEXT PRIMARY KEY, expires INTEGER NOT NULL, created INTEGER NOT NULL); CREATE TABLE auth_attempts (kind TEXT PRIMARY KEY, start INTEGER NOT NULL, count INTEGER NOT NULL); INSERT INTO auth_account VALUES(1,'synthetic-user','synthetic-hash',NULL); INSERT INTO auth_sessions VALUES('synthetic-session',100,0);").execute(&mut db).await.unwrap();
+    db.close().await.unwrap();
+    let db = fs::read(&legacy_db).unwrap();
+    let mut altered = before[..60].to_vec();
+    altered[20..28].copy_from_slice(&(db.len() as u64).to_le_bytes());
+    altered[28..60].copy_from_slice(&Sha256::digest(&db));
+    altered.extend_from_slice(&db);
+    altered.extend_from_slice(&before[60 + dbsize..]);
+    let legacy = s.root.join("legacy.bundle");
+    fs::write(&legacy, altered).unwrap();
+    let legacy_restore = s.root.join("legacy-restored");
+    bundle::restore(
+        &legacy,
+        &legacy_restore,
+        &expected,
+        s.store.as_ref().unwrap().limits(),
+        &cancel,
+        &progress,
+    )
+    .await
+    .unwrap();
+    let mut restored_db = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new().filename(legacy_restore.join("store/catalog.db")),
+    )
+    .await
+    .unwrap();
+    let obsolete: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE name LIKE 'auth_%'")
+            .fetch_one(&mut restored_db)
+            .await
+            .unwrap();
+    assert_eq!(obsolete, 0);
+    restored_db.close().await.unwrap();
+    // Actual HTTP archive and inbound streaming restore; obsolete authentication state never carried into restored DB.
     let r = s
         .request(
             "POST",
@@ -1191,9 +1200,9 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(wait_export(&s, &id, &cookie).await["state"], "succeeded");
+    assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
     let r = s
-        .request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+        .request("GET", &format!("/exports/{id}/download"), &headers, b"")
         .await;
     assert_eq!(r.0, 200);
     assert_eq!(
@@ -1205,16 +1214,16 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         )
         .await
         .0,
-        401
+        403
     );
-    assert_eq!(s.request("POST", "/restores", &cookie, b"").await.0, 403);
+    assert_eq!(s.request("POST", "/restores", &headers, b"").await.0, 403);
     let r = s.request("POST", "/restores", &mutation, &r.2).await;
     assert_eq!(r.0, 200);
     let id = serde_json::from_slice::<Value>(&r.2).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(wait_export(&s, &id, &cookie).await["state"], "succeeded");
+    assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
     assert!(
         s.root
             .join("staging.exports")
@@ -1248,10 +1257,10 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     );
     // Keep the upload body stalled; DELETE must terminate it without waiting for EOF.
     let port = s.port;
-    let headers = mutation.clone();
+    let stalled_headers = mutation.clone();
     let prefix = before[..65536.min(before.len())].to_vec();
     let declared = before.len();
-    let stalled=tokio::task::spawn_blocking(move||{let mut socket=TcpStream::connect(("127.0.0.1",port)).unwrap();let head=format!("POST /restores HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared}\r\n{headers}\r\n");socket.write_all(head.as_bytes()).unwrap();socket.write_all(&prefix).unwrap();socket}).await.unwrap();
+    let stalled=tokio::task::spawn_blocking(move||{let mut socket=TcpStream::connect(("127.0.0.1",port)).unwrap();let head=format!("POST /restores HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared}\r\n{stalled_headers}\r\n");socket.write_all(head.as_bytes()).unwrap();socket.write_all(&prefix).unwrap();socket}).await.unwrap();
     let mut uploading = None;
     for _ in 0..100 {
         uploading=sqlx::query_scalar::<_,String>("SELECT id FROM export_jobs WHERE kind='restore' AND state='queued' ORDER BY rowid DESC LIMIT 1").fetch_optional(catalog.pool()).await.unwrap();
@@ -1269,7 +1278,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         200
     );
     assert_eq!(
-        wait_export(&s, &uploading, &cookie).await["state"],
+        wait_export(&s, &uploading, &headers).await["state"],
         "cancelled"
     );
     assert!(start.elapsed() < std::time::Duration::from_secs(2));

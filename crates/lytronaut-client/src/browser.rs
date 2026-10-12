@@ -84,7 +84,7 @@ impl Net {
         &self,
         path: &str,
         method: &str,
-        csrf: &str,
+        intent: &str,
         body: Option<&JsValue>,
         extra: &[(&str, &str)],
         abort: &AbortController,
@@ -97,9 +97,9 @@ impl Net {
             init.set_body(body);
         }
         let req = Request::new_with_str_and_init(path, &init).map_err(|_| "Request unavailable")?;
-        if !csrf.is_empty() {
+        if !intent.is_empty() {
             req.headers()
-                .set("X-Lytronaut-Csrf", csrf)
+                .set("X-Lytronaut-Intent", intent)
                 .map_err(|_| "Request unavailable")?;
         }
         for (k, v) in extra {
@@ -129,7 +129,7 @@ impl Net {
             }
             if !response.ok() {
                 let message = match response.status() {
-                    401 => "Session expired or credentials denied. Sign in again",
+                    401 => "Request rejected by deployment policy",
                     429 => "Resource limit reached. Wait, then retry",
                     400 => "Selection or request was rejected. Check the input and retry",
                     404 => "This item is no longer available",
@@ -150,7 +150,7 @@ impl Net {
         &self,
         path: &str,
         method: &str,
-        csrf: &str,
+        intent: &str,
         body: Option<serde_json::Value>,
     ) -> Result<T> {
         let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
@@ -159,7 +159,7 @@ impl Net {
             .fetch(
                 path,
                 method,
-                csrf,
+                intent,
                 body.as_ref(),
                 &[("Content-Type", "application/json")],
                 &abort,
@@ -168,9 +168,9 @@ impl Net {
         let bytes = read_cancel(response, JSON_LIMIT, &abort).await?;
         serde_json::from_slice(&bytes).map_err(|_| "Invalid or oversized service response".into())
     }
-    async fn mutation(&self, path: &str, csrf: &str) -> Result<()> {
+    async fn mutation(&self, path: &str, intent: &str) -> Result<()> {
         let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
-        self.fetch(path, "POST", csrf, None, &[], &abort).await?;
+        self.fetch(path, "POST", intent, None, &[], &abort).await?;
         Ok(())
     }
     async fn preview(&self, id: &OpaqueId, abort: &AbortController, grid: bool) -> Result<String> {
@@ -352,8 +352,6 @@ async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
 #[derive(Clone)]
 struct Ui {
     net: Net,
-    csrf: RwSignal<String>,
-    signed_in: RwSignal<bool>,
     status: RwSignal<String>,
     libraries: RwSignal<Vec<LibrarySummary>>,
     library: RwSignal<Option<LibrarySummary>>,
@@ -401,8 +399,6 @@ impl Ui {
     fn new() -> Self {
         Self {
             net: Net::default(),
-            csrf: RwSignal::new(String::new()),
-            signed_in: RwSignal::new(false),
             status: RwSignal::new("Connecting to local service…".into()),
             libraries: RwSignal::new(Vec::new()),
             library: RwSignal::new(None),
@@ -448,11 +444,6 @@ impl Ui {
         }
     }
     fn fail(&self, error: String) {
-        if error.starts_with("Session expired") {
-            self.clear_assets();
-            self.csrf.set(String::new());
-            self.signed_in.set(false);
-        }
         self.status.set(error);
     }
     fn clear_stage(&self) {
@@ -493,15 +484,8 @@ impl Ui {
         self.thumbs.set(BTreeMap::new());
         self.clear_stage();
     }
-    async fn session(&self) -> Result<()> {
-        let session: serde_json::Value = self.net.json("/auth/session", "GET", "", None).await?;
-        let token = session["csrf"].as_str().ok_or("Invalid session response")?;
-        self.csrf.set(token.into());
-        self.signed_in.set(true);
-        self.libraries(0).await
-    }
     async fn watch_export(&self, mut report: ExportProgress) -> Result<()> {
-        let session = self.csrf.get_untracked();
+        let generation = *self.generation.borrow();
         if let Ok(Some(storage)) = web_sys::window().unwrap().session_storage() {
             let _ = storage.set_item("lytronaut-export", report.job.id.as_str());
         }
@@ -522,7 +506,7 @@ impl Ui {
                 return Ok(());
             }
             pause(150).await;
-            if !self.signed_in.get_untracked() || self.csrf.get_untracked() != session {
+            if *self.generation.borrow() != generation {
                 return Ok(());
             }
             report = self
@@ -599,7 +583,7 @@ impl Ui {
             .json(
                 "/exports",
                 "POST",
-                &self.csrf.get_untracked(),
+                "mutation",
                 Some(serde_json::to_value(request).map_err(|_| "Invalid export")?),
             )
             .await?;
@@ -626,7 +610,7 @@ impl Ui {
                 .json(
                     "/exports",
                     "POST",
-                    &self.csrf.get_untracked(),
+                    "mutation",
                     Some(serde_json::to_value(request).map_err(|_| "Invalid Live Photo request")?),
                 )
                 .await?;
@@ -776,7 +760,7 @@ impl Ui {
             .fetch(
                 "/restores",
                 "POST",
-                &self.csrf.get_untracked(),
+                "mutation",
                 Some(file.as_ref()),
                 &[("Content-Type", "application/octet-stream")],
                 &abort,
@@ -789,7 +773,7 @@ impl Ui {
         self.watch_export(report).await
     }
     async fn libraries(&self, offset: u32) -> Result<()> {
-        let session = self.csrf.get_untracked();
+        let generation = *self.generation.borrow();
         let page: Result<Page<LibrarySummary>> = self
             .net
             .json(
@@ -799,7 +783,7 @@ impl Ui {
                 None,
             )
             .await;
-        if !self.signed_in.get_untracked() || self.csrf.get_untracked() != session {
+        if *self.generation.borrow() != generation {
             return Ok(());
         }
         let page = page?;
@@ -818,8 +802,8 @@ impl Ui {
         Ok(())
     }
     async fn choose_library(&self, library: LibrarySummary) -> Result<()> {
-        let session = self.csrf.get_untracked();
         self.clear_assets();
+        let generation = *self.generation.borrow();
         self.library.set(Some(library.clone()));
         self.album.set(None);
         self.albums.set(Vec::new());
@@ -827,8 +811,7 @@ impl Ui {
         self.offset.set(0);
         if library.state == LibraryState::Ready {
             self.load_albums(0).await?;
-            if self.csrf.get_untracked() != session
-                || !self.signed_in.get_untracked()
+            if *self.generation.borrow() != generation
                 || self
                     .library
                     .get_untracked()
@@ -846,7 +829,7 @@ impl Ui {
         Ok(())
     }
     async fn load_albums(&self, offset: u32) -> Result<()> {
-        let session = self.csrf.get_untracked();
+        let generation = *self.generation.borrow();
         let library = self.library.get_untracked().ok_or("Select a library")?;
         let page: Result<Page<AlbumSummary>> = self
             .net
@@ -860,8 +843,7 @@ impl Ui {
                 None,
             )
             .await;
-        if !self.signed_in.get_untracked()
-            || self.csrf.get_untracked() != session
+        if *self.generation.borrow() != generation
             || self
                 .library
                 .get_untracked()
@@ -879,7 +861,6 @@ impl Ui {
         Ok(())
     }
     async fn load_files(&self, offset: u32) -> Result<()> {
-        let session = self.csrf.get_untracked();
         self.clear_assets();
         let generation = *self.generation.borrow();
         let library = self.library.get_untracked().ok_or("Select a library")?;
@@ -895,9 +876,7 @@ impl Ui {
                 None,
             )
             .await;
-        if !self.signed_in.get_untracked()
-            || self.csrf.get_untracked() != session
-            || generation != *self.generation.borrow()
+        if generation != *self.generation.borrow()
             || self
                 .library
                 .get_untracked()
@@ -912,7 +891,6 @@ impl Ui {
         Ok(())
     }
     async fn page(&self, offset: u32) -> Result<()> {
-        let session = self.csrf.get_untracked();
         let library = self.library.get_untracked().ok_or("Select a library")?;
         if library.state != LibraryState::Ready {
             return self.load_files(offset).await;
@@ -936,10 +914,7 @@ impl Ui {
             .net
             .json(&format!("{base}?{query}"), "GET", "", None)
             .await;
-        if generation != *self.generation.borrow()
-            || self.csrf.get_untracked() != session
-            || !self.signed_in.get_untracked()
-        {
+        if generation != *self.generation.borrow() {
             return Ok(());
         }
         let page = page?;
@@ -1551,13 +1526,13 @@ impl Ui {
         *self.upload_cancelled.borrow_mut() = false;
         self.status
             .set("Preparing bounded import selection…".into());
-        let session = self.csrf.get_untracked();
         let (mut declared_bytes, mut declared_files) = declaration(
             kind,
             &files.iter().map(|f| f.size() as u64).collect::<Vec<_>>(),
         )
         .map_err(str::to_owned)?;
         self.clear_assets();
+        let generation = *self.generation.borrow();
         let metadata_abort =
             AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
         let metadata_lease = self.net.lease(VIEWER_BUDGET, &metadata_abort).await?;
@@ -1615,17 +1590,17 @@ impl Ui {
             (declared_bytes, declared_files) = zip_declaration(&central).map_err(str::to_owned)?;
         }
         drop(metadata_lease);
-        if !self.signed_in.get_untracked() || self.csrf.get_untracked() != session {
+        if *self.generation.borrow() != generation {
             return Err("Cancelled".into());
         }
         self.progress.set(0);
         self.total
             .set(files.iter().map(|f| f.size() as u64).sum::<u64>().max(1));
         let result=async {
-            let value:serde_json::Value=self.net.json("/imports","POST",&self.csrf.get_untracked(),Some(serde_json::json!({"version":1,"kind":kind,"declared_bytes":declared_bytes,"declared_files":declared_files}))).await?;
+            let value:serde_json::Value=self.net.json("/imports","POST","mutation",Some(serde_json::json!({"version":1,"kind":kind,"declared_bytes":declared_bytes,"declared_files":declared_files}))).await?;
             let id:OpaqueId=value["id"].as_str().ok_or("Invalid import identifier")?.to_owned().try_into().map_err(|_|"Invalid import identifier")?;
             self.job.set(id.as_str().into());
-            // Only the opaque job ID is retained; never account, CSRF or source paths.
+            // Only the opaque job ID is retained; never source paths.
             if let Ok(Some(storage))=web_sys::window().unwrap().session_storage(){let _=storage.set_item("lytronaut-import",id.as_str());}
             let mut base=0;
             for (index,file) in files.iter().enumerate() {
@@ -1635,7 +1610,7 @@ impl Ui {
                 let hex=if kind==ImportKind::Directory {let path=Reflect::get(file,&"webkitRelativePath".into()).ok().and_then(|v|v.as_string()).unwrap_or_else(||file.name());Some(path_hex(&path).map_err(str::to_owned)?)}else{None};
                 self.send_file(&route,file,hex.as_deref(),base).await?;base+=file.size() as u64;
             }
-            self.net.mutation(&format!("/imports/{}/finish",id.as_str()),&self.csrf.get_untracked()).await?;
+            self.net.mutation(&format!("/imports/{}/finish",id.as_str()),"mutation").await?;
             self.status_job().await
         }.await;
         self.upload_abort.borrow_mut().take();
@@ -1646,7 +1621,7 @@ impl Ui {
         xhr.open_with_async("PUT", path, true)
             .map_err(|_| "Upload unavailable")?;
         xhr.set_with_credentials(true);
-        xhr.set_request_header("X-Lytronaut-Csrf", &self.csrf.get_untracked())
+        xhr.set_request_header("X-Lytronaut-Intent", "mutation")
             .map_err(|_| "Upload unavailable")?;
         if let Some(hex) = hex {
             xhr.set_request_header("X-Lytronaut-Path-Hex", hex)
@@ -1722,14 +1697,57 @@ pub fn app() -> impl IntoView {
     }
     let startup = state.clone();
     spawn_local(async move {
-        if startup.session().await.is_err() {
-            startup
-                .status
-                .set("Sign in or set up this local library".into());
+        if let Err(error) = startup.libraries(0).await {
+            startup.fail(error);
         }
     });
+    // Release owned assets when the page leaves, including a bfcache transition.
+    let page_state = state.clone();
+    let page_event = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+        move |event: web_sys::Event| {
+            if event.type_() == "pagehide" {
+                page_state.clear_assets();
+                if let Some(abort) = page_state.export_abort.borrow_mut().take() {
+                    abort.abort();
+                }
+                if let Some(xhr) = page_state.upload_abort.borrow().as_ref() {
+                    let _ = xhr.abort();
+                }
+            } else if Reflect::get(&event, &"persisted".into())
+                .ok()
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                let task = page_state.clone();
+                spawn_local(async move {
+                    let library = task.library.get_untracked();
+                    let result = if let Some(library) = library {
+                        task.choose_library(library).await
+                    } else {
+                        task.libraries(0).await
+                    };
+                    if let Err(error) = result {
+                        task.fail(error);
+                    }
+                });
+            }
+        },
+    );
+    for event in ["pagehide", "pageshow"] {
+        let _ = web_sys::window()
+            .unwrap()
+            .add_event_listener_with_callback(event, page_event.as_ref().unchecked_ref());
+    }
+    let page_event = StoredValue::new_local(page_event);
     let cleanup = StoredValue::new_local(state.clone());
     on_cleanup(move || {
+        page_event.with_value(|callback| {
+            for event in ["pagehide", "pageshow"] {
+                let _ = web_sys::window()
+                    .unwrap()
+                    .remove_event_listener_with_callback(event, callback.as_ref().unchecked_ref());
+            }
+        });
         let cleanup = cleanup.get_value();
         cleanup.clear_assets();
         if let Some(abort) = cleanup.export_abort.borrow_mut().take() {
@@ -1739,44 +1757,14 @@ pub fn app() -> impl IntoView {
             let _ = xhr.abort();
         }
     });
-    let signed = state.signed_in;
     let status = state.status;
     view! {
         <a class="skip" href="#content">"Skip to library"</a>
         <header class="header"><a class="brand" href="/">"◉ LYTRONAUT"</a><span>"an explorer for your light-field library"</span>
-            <Show when=move||signed.get()><button on:click=move |_| {let u=ui();let task=u.clone();launch(u,async move{task.net.mutation("/auth/logout",&task.csrf.get_untracked()).await?;task.clear_assets();task.library.set(None);task.libraries.set(Vec::new());task.albums.set(Vec::new());task.files.set(Vec::new());task.captures.set(Vec::new());task.csrf.set(String::new());task.signed_in.set(false);task.status.set("Signed out".into());Ok(())});}>"Sign out"</button></Show>
+
         </header>
         <div class="status" role="status" aria-live="polite" aria-atomic="true">{move||status.get()}</div>
-        <Show when=move||signed.get() fallback=||view!{<Authentication/>}><Workspace/></Show>
-    }
-}
-#[component]
-fn Authentication() -> impl IntoView {
-    let username = RwSignal::new(String::new());
-    let password = RwSignal::new(String::new());
-    let bootstrap = RwSignal::new(String::new());
-    let setup = RwSignal::new(false);
-    let pending = RwSignal::new(false);
-    view! {
-        <main id="content" class="authentication"><section class="panel"><h1>{move||if setup.get(){"Set up your library"}else{"Welcome back"}}</h1>
-            <p>"Private, local access to your light-field originals."</p>
-            <form on:submit=move |event|{event.prevent_default();if pending.get_untracked(){return;}pending.set(true);let u=ui();spawn_local(async move{
-                let result=async {
-                    let abort=AbortController::new().map_err(|_|"Browser cancellation unavailable")?;
-                    let intent=if setup.get_untracked(){"setup"}else{"login"};
-                    let body=if setup.get_untracked(){serde_json::json!({"username":username.get_untracked(),"password":password.get_untracked(),"bootstrap":bootstrap.get_untracked()})}else{serde_json::json!({"username":username.get_untracked(),"password":password.get_untracked()})};
-                    u.net.fetch(&format!("/auth/{intent}"),"POST","",Some(&JsValue::from_str(&body.to_string())),&[("Content-Type","application/json"),("X-Lytronaut-Intent",intent)],&abort).await?;
-                    password.set(String::new());bootstrap.set(String::new());
-                    if setup.get_untracked(){setup.set(false);u.status.set("Administrator created. Sign in with your credentials".into());Ok(())}else{u.session().await}
-                }.await;
-                pending.set(false);if let Err(e)=result{u.fail(e);}
-            });}>
-                <label for="username">"Username"</label><input id="username" autocomplete="username" required maxlength="64" prop:value=move||username.get() on:input=move|e|username.set(event_target_value(&e))/>
-                <label for="password">"Password"</label><input id="password" type="password" autocomplete=move||if setup.get(){"new-password"}else{"current-password"} required minlength="12" maxlength="1024" prop:value=move||password.get() on:input=move|e|password.set(event_target_value(&e))/>
-                <Show when=move||setup.get()><label for="bootstrap">"Local bootstrap secret"</label><input id="bootstrap" type="password" autocomplete="off" required minlength="64" maxlength="64" prop:value=move||bootstrap.get() on:input=move|e|bootstrap.set(event_target_value(&e))/><p>"Read bootstrap.secret from your private application data directory. This secret is consumed once."</p></Show>
-                <button class="primary" type="submit" disabled=move||pending.get()>{move||if pending.get(){"Working…"}else if setup.get(){"Create administrator"}else{"Sign in"}}</button>
-            </form><button on:click=move |_|setup.update(|s|*s = !*s) disabled=move||pending.get()>{move||if setup.get(){"Back to sign in"}else{"First run? Set up administrator"}}</button>
-        </section></main>
+        <Workspace/>
     }
 }
 #[component]
@@ -1830,15 +1818,15 @@ fn Workspace() -> impl IntoView {
                 <div class="import"><h2>"IMPORT LIBRARY"</h2><label for="directory">"Library directory"</label><input id="directory" type="file" multiple=true node_ref=directory_ref disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let files=input.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();input.set_value("");let u=ui();let task=u.clone();launch(u,async move{task.upload(ImportKind::Directory,files).await});}/>
                     <label for="zip">"ZIP library archive"</label><input id="zip" type="file" accept=".zip,application/zip" disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let files=input.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();input.set_value("");let u=ui();let task=u.clone();launch(u,async move{task.upload(ImportKind::ZipLibrary,files).await});}/>
                     <Show when=move||!job.get().is_empty()><label for="import-progress">"Upload / committed bytes"</label><progress id="import-progress" value=move||progress.get() max=move||total.get()></progress><span>{move||format!("{} / {} bytes",progress.get(),total.get())}</span>
-                        <button disabled=move||!busy.get() || job.get().is_empty() on:click=move |_|{let u=ui();*u.upload_cancelled.borrow_mut()=true;if let Some(xhr)=u.upload_abort.borrow().as_ref(){let _=xhr.abort();}let task=u.clone();launch(u,async move{task.net.mutation(&format!("/imports/{}/cancel",task.job.get_untracked()),&task.csrf.get_untracked()).await?;task.status_job().await});}>"Cancel import"</button>
+                        <button disabled=move||!busy.get() || job.get().is_empty() on:click=move |_|{let u=ui();*u.upload_cancelled.borrow_mut()=true;if let Some(xhr)=u.upload_abort.borrow().as_ref(){let _=xhr.abort();}let task=u.clone();launch(u,async move{task.net.mutation(&format!("/imports/{}/cancel",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Cancel import"</button>
                         <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.status_job().await});}>"Recover import status"</button>
-                        <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.net.mutation(&format!("/imports/{}/finish",task.job.get_untracked()),&task.csrf.get_untracked()).await?;task.status_job().await});}>"Retry catalog adaptation"</button>
+                        <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.net.mutation(&format!("/imports/{}/finish",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Retry catalog adaptation"</button>
                         <p>"Interrupted uploads: recover status, then reselect the original directory or ZIP to start a new bounded import. Completed original bytes deduplicate."</p>
                     </Show>
                 </div>
             </nav>
             <main id="content" class="workspace"><div class="toolbar"><h1>"Library explorer"</h1><form class="search" on:submit=move|e|{e.prevent_default();let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><label for="search">"Search captures"</label><input id="search" type="search" prop:value=move||search.get() on:input=move|e|search.set(event_target_value(&e))/><button type="submit">"Search"</button><label for="sort">"Sort"</label><select id="sort" prop:value=move||sort.get() on:change=move|e|{sort.set(event_target_value(&e));let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><option value="order">"Library / album order"</option><option value="name">"Name"</option><option value="rating">"Imported rating"</option></select></form></div>
-                <section class="export-controls" aria-label="Export and lossless backup"><button id="backup-library" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(None).await});}>"Back up originals and catalog"</button><button id="recover-export" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.recover_export().await});}>"Recover export / restore status"</button><label for="restore-bundle">"Restore private bundle to an isolated store"</label><input id="restore-bundle" type="file" accept=".lytronaut" disabled=move||export_busy.get() on:change=move|e|{let input=event_target::<web_sys::HtmlInputElement>(&e);let file=input.files().and_then(|f|f.get(0));input.set_value("");if let Some(file)=file{let u=ui();let task=u.clone();launch(u,async move{task.restore_bundle(file).await});}}/><button id="cancel-restore-upload" disabled=move||!export_busy.get()||export_job.get().is_some() on:click=move |_|{let u=ui();if let Some(abort)=u.export_abort.borrow_mut().take(){abort.abort();}}>"Cancel restore upload"</button><p>"Private backup includes all immutable originals and catalog associations. Credentials and pending jobs are excluded. Restore creates a separate store."</p>{move||export_job.get().map(|r|{let id=r.job.id.as_str().to_owned();let recipe_id=id.clone();let cancel_id=id.clone();view!{<p id="export-progress">{format!("{:?} · {} bytes processed",r.job.state,r.job.completed_bytes)}</p><Show when=move||r.job.state==JobState::Succeeded&&r.kind!=ExportKind::Restore><a id="export-download" href=format!("/exports/{id}/download") download="">"Download export / private bundle"</a></Show><Show when=move||r.job.state==JobState::Succeeded&&r.kind==ExportKind::Flatten><a id="export-recipe" href=format!("/exports/{recipe_id}/recipe") download="lytronaut-recipe.json">"Download Lytronaut provenance"</a></Show><button id="cancel-export" disabled=move||matches!(r.job.state,JobState::Cancelled|JobState::Failed) on:click=move |_|{let u=ui();let task=u.clone();let id=cancel_id.clone();launch(u,async move{let r=task.net.json(&format!("/exports/{id}"),"DELETE",&task.csrf.get_untracked(),None).await?;task.watch_export(r).await});}>"Cancel or remove result"</button>}})}</section>
+                <section class="export-controls" aria-label="Export and lossless backup"><button id="backup-library" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(None).await});}>"Back up originals and catalog"</button><button id="recover-export" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.recover_export().await});}>"Recover export / restore status"</button><label for="restore-bundle">"Restore private bundle to an isolated store"</label><input id="restore-bundle" type="file" accept=".lytronaut" disabled=move||export_busy.get() on:change=move|e|{let input=event_target::<web_sys::HtmlInputElement>(&e);let file=input.files().and_then(|f|f.get(0));input.set_value("");if let Some(file)=file{let u=ui();let task=u.clone();launch(u,async move{task.restore_bundle(file).await});}}/><button id="cancel-restore-upload" disabled=move||!export_busy.get()||export_job.get().is_some() on:click=move |_|{let u=ui();if let Some(abort)=u.export_abort.borrow_mut().take(){abort.abort();}}>"Cancel restore upload"</button><p>"Private backup includes all immutable originals and catalog associations. Pending jobs are excluded. Restore creates a separate store."</p>{move||export_job.get().map(|r|{let id=r.job.id.as_str().to_owned();let recipe_id=id.clone();let cancel_id=id.clone();view!{<p id="export-progress">{format!("{:?} · {} bytes processed",r.job.state,r.job.completed_bytes)}</p><Show when=move||r.job.state==JobState::Succeeded&&r.kind!=ExportKind::Restore><a id="export-download" href=format!("/exports/{id}/download") download="">"Download export / private bundle"</a></Show><Show when=move||r.job.state==JobState::Succeeded&&r.kind==ExportKind::Flatten><a id="export-recipe" href=format!("/exports/{recipe_id}/recipe") download="lytronaut-recipe.json">"Download Lytronaut provenance"</a></Show><button id="cancel-export" disabled=move||matches!(r.job.state,JobState::Cancelled|JobState::Failed) on:click=move |_|{let u=ui();let task=u.clone();let id=cancel_id.clone();launch(u,async move{let r=task.net.json(&format!("/exports/{id}"),"DELETE","mutation",None).await?;task.watch_export(r).await});}>"Cancel or remove result"</button>}})}</section>
                 <section class="viewer" aria-label="Capture viewer"><div class="stage" tabindex="0" aria-label="Capture stage. Left and right arrows change capture" on:keydown=move|e|{if e.key()=="ArrowLeft"{e.prevent_default();ui().navigate(-1);}else if e.key()=="ArrowRight"{e.prevent_default();ui().navigate(1);}}>
                     <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img style:display=move||if gpu_visible.get(){"none"}else{"block"} src=move||stage.get() alt=move||detail.get().map(|d|format!("{}: {}",if !video_lambdas.get().is_empty(){"Archived browser focus derivative"}else if displayed_derivative.get().is_some(){"Stored JPEG focus derivative"}else{"Static JPEG preview"},d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
                     <canvas id="gpu-stage" role="img" aria-label="Verified stored derivative GPU presentation" style:display=move||if gpu_visible.get(){"block"}else{"none"} style="max-width:100%;max-height:100%;object-fit:contain"/>
