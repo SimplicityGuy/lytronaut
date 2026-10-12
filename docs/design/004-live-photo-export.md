@@ -214,8 +214,8 @@ PPS capacities; `paired_jpeg` = borrowed input length / output / EXIF capacities
 allocation (not an observed JS backing). Zero fields carry no claim.
 These snapshots do not capture every reallocation, JS physical backing or JSON
 heap. `complete` means only that the event buffer did not overflow; `dropped > 0`
-invalidates even that partial coverage. Observer storage/report overhead is
-separate and reported; no event contains an identifier, path or pixel contents.
+invalidates even that partial coverage. Fixed observer buffer bytes are reported; returned report Vec and serialization
+String allocations remain separate and unmeasured; no event contains an identifier, path or pixel contents.
 No test script invokes these new start/take exports yet, and no observations
 have been executed for this source revision. Overflow/reset tests are source-only
 until the feature test build is run.
