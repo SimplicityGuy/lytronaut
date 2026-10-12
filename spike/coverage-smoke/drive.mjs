@@ -49,8 +49,12 @@ const fields = rawVer >= 11
 const h = Object.fromEntries(fields.map((f, i) => [f, u64(i)]));
 const dataOff = fields.length * 8 + Number(h.BinaryIdsSize);
 const firstNameRef = h.NumData > 0n ? buf.readBigUInt64LE(dataOff) : 0n;
+// NumVnodes is not in the profraw: minicov's runtime places a static pool of
+// INSTR_PROF_VNODE_POOL_SIZE (1024) ValueProfNodes in __llvm_prf_vnds
+// (c/InstrProfilingValue.c), and this crate has no value-profiling sites.
+const NUM_VNODES = 1024n;
 const sigFromProfraw = ((h.NamesSize << 40n) + (h.NumCounters << 30n) + (h.NumData << 20n)
-  + firstNameRef + version + magic) & M;
+  + (NUM_VNODES << 10n) + firstNameRef + version + magic) & M;
 
 const summary = {
   hit12: res.h1,

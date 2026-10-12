@@ -99,8 +99,8 @@ set +e
 "$PROFDATA" show --all-functions --counts "$OUT/x.profdata" > "$OUT/profdata-show.txt" 2>> "$OUT/profdata.stderr"
 "$LLVMCOV" export -format=lcov -instr-profile "$OUT/x.profdata" -object "$OUT/raw.wasm" > "$OUT/x.lcov" 2> "$OUT/cov-export.stderr"; rc2=$?
 "$LLVMCOV" report -instr-profile "$OUT/x.profdata" -object "$OUT/raw.wasm" > "$OUT/cov-report.txt" 2> "$OUT/cov-report.stderr"; rc3=$?
-"$LLVMCOV" report -show-functions -instr-profile "$OUT/x.profdata" -object "$OUT/raw.wasm" "$W/src/lib.rs" > "$OUT/cov-report-functions.txt" 2>> "$OUT/cov-report.stderr"
-"$LLVMCOV" show -instr-profile "$OUT/x.profdata" -object "$OUT/raw.wasm" "$W/src/lib.rs" > "$OUT/cov-show.txt" 2> "$OUT/cov-show.stderr"; rc4=$?
+"$LLVMCOV" report -show-functions -instr-profile "$OUT/x.profdata" "$OUT/raw.wasm" "$W/src/lib.rs" > "$OUT/cov-report-functions.txt" 2>> "$OUT/cov-report.stderr"
+"$LLVMCOV" show -instr-profile "$OUT/x.profdata" "$OUT/raw.wasm" "$W/src/lib.rs" > "$OUT/cov-show.txt" 2> "$OUT/cov-show.stderr"; rc4=$?
 set -e
 for f in profdata.stderr cov-export.stderr cov-report.stderr cov-show.stderr; do echo "== $f (rc)"; cat "$OUT/$f"; done
 echo "rc: merge=$rc1 export=$rc2 report=$rc3 show=$rc4"
