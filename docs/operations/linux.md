@@ -83,7 +83,12 @@ No GPU device or hardware acceleration runtime mount is required.
 The native `--healthcheck` probes `/healthz` with the configured Host using a
 bounded local TCP request. Readiness requires a live application SQLite pool;
 startup must finish storage recovery, catalog/API migration and loading generated
-client assets before the listener opens. Docker checks every 10 seconds.
+client assets before the listener opens. Recovery rehashes sealed originals; it
+does not skip integrity verification to meet a readiness deadline. Docker checks
+every 10 seconds, with a 30-second initial grace period. Increase
+`healthcheck.start_period` in your Compose override if measured recovery of your
+existing library takes longer; synthetic smoke timings do not establish a bound
+for a large library.
 `LYTRONAUT_LISTEN` is a numeric IPv4/IPv6 socket address; wildcard probes use the
 matching loopback family. SIGTERM stops admission, cancels intake and background
 exports/restores, then drains accepted HTTP work and closes SQLite. Drain and
