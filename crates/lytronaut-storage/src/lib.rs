@@ -34,6 +34,17 @@ impl Catalog {
     }
     pub async fn open(config: DatabaseConfig) -> Result<Self, DatabaseError> {
         let database = ApplicationDatabase::open(config).await?;
+        if database.backend == Backend::Sqlite {
+            // Only the application database had historical built-in auth state.
+            // Imported Desktop SQLite and immutable originals never enter here.
+            let mut tx = database
+                .begin_write()
+                .await
+                .map_err(|_| DatabaseError::Migration)?;
+            sqlx::raw_sql("PRAGMA secure_delete=ON; DROP TABLE IF EXISTS auth_sessions; DROP TABLE IF EXISTS auth_attempts; DROP TABLE IF EXISTS auth_account;")
+                .execute(&mut *tx).await.map_err(|_| DatabaseError::Migration)?;
+            tx.commit().await.map_err(|_| DatabaseError::Migration)?;
+        }
         database
             .migrate_job_order()
             .await

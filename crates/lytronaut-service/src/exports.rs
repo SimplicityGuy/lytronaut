@@ -1,4 +1,4 @@
-//! Durable authenticated export/isolated restore jobs. Shares viewer codec and transfer admission.
+//! Durable deployment-protected export/isolated restore jobs. Shares viewer codec and transfer admission.
 use super::*;
 use axum::{Json, extract::Request, routing::post};
 use http_body_util::BodyExt;
@@ -655,13 +655,59 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn queued_cancel_never_publishes_and_limits_admit_two_only() {
+    async fn service_shutdown_cancels_a_queued_background_archive_before_publish() {
         let dir = std::env::temp_dir().join(random_id().unwrap());
         crate::local::private_directory(&dir).unwrap();
         let c = Catalog::open_application_database(&dir.join("app.db"))
             .await
             .unwrap();
-        crate::auth::AuthStore::open(c.pool().clone(), Some(&"a".repeat(64)))
+        let store = Store::open(
+            c.clone(),
+            &dir.join("originals"),
+            &dir.join("staging"),
+            lytronaut_storage::Limits {
+                free_floor: 0,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let a = Api::open(c.clone(), store).await.unwrap();
+        let hold = a.0.validation.clone().acquire_owned().await.unwrap();
+        let id = create(&a, "archive", 1).await.unwrap();
+        let worker = a.clone();
+        let job = id.clone();
+        let running = tokio::spawn(async move {
+            run(
+                worker,
+                job,
+                ExportRequest::ArchiveOriginals {
+                    version: WireVersion::V1,
+                },
+                None,
+            )
+            .await;
+        });
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(hold);
+        });
+        a.shutdown().await.unwrap();
+        running.await.unwrap();
+        release.await.unwrap();
+        assert_eq!(report(&a, &id).await.unwrap().state, JobState::Cancelled);
+        assert!(!artifact(&a, &id).exists());
+        assert_eq!(a.0.validation.available_permits(), 1);
+        a.shutdown().await.unwrap();
+        drop(a);
+        c.pool().close().await;
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn queued_cancel_never_publishes_and_limits_admit_two_only() {
+        let dir = std::env::temp_dir().join(random_id().unwrap());
+        crate::local::private_directory(&dir).unwrap();
+        let c = Catalog::open_application_database(&dir.join("app.db"))
             .await
             .unwrap();
         let store = Store::open(

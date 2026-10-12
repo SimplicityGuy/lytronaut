@@ -173,3 +173,30 @@ This is preliminary evidence, not final submission: canonical login-removal
 integration, service API/export/migration adverse-path testing, whole-application
 checks, and the release coverage threshold remain required. Portable cross-backend
 backup and deployment CI remain owned by their approved downstream beads.
+
+
+## Canonical login-removal source integration
+
+The database leaf integrates the canonical a0ab1e2 login-removal merge. Startup
+retains deployment-selected database configuration and redacted connection errors,
+removes only the app-owned obsolete bootstrap secret, and uses the approved
+Host/Origin and X-Lytronaut-Intent mutation contract. Native and Rust WASM retain
+automatic CPU/GPU selection. Historical obsolete-auth table removal runs only
+against the owned application SQLite database under writer admission; PostgreSQL
+starts with the approved login-free schema and source Desktop inputs remain
+immutable.
+
+SQLite bundle admission combines the two exact compatibility seams: current
+trusted schema or that exact schema without the derived job-order table, each with
+or without the three exact historical auth definitions. Unknown DDL is rejected;
+input schema SQL is never executed. Verified legacy credential state is removed
+only from the isolated owned copy, while retained order rows are scrubbed and
+legacy missing order is reconstructed at startup. Actual cross-combination and
+unknown-DDL rejection tests remain required after a validation-slot grant.
+
+The source-only merge preserves all PostgreSQL/Any dependency versions and checksums
+while removing the five unreachable auth-only packages. Lock, generated inventory
+and notice package identities agree statically (342 locked identities, 336 external
+packages). Cargo resolution and licence regeneration have not run on this merged
+source. The earlier 31 SQLite and seven PostgreSQL passes remain explicitly bound
+to the pre-integration preliminary checkpoint; they are not evidence for this tree.

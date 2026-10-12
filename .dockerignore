@@ -1,0 +1,13 @@
+*
+!Dockerfile
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!assets/
+!assets/**
+!.cargo/
+!.cargo/**
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!DEPENDENCY_LICENSES.md

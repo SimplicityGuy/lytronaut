@@ -1,80 +1,36 @@
-//! Local bootstrap file management. Paths and secrets never enter diagnostic errors.
-use crate::auth::{AuthError, secret, token_valid};
+//! Private application file management. Paths never enter diagnostic errors.
+use crate::ServiceError;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     fs::{self, OpenOptions},
-    io::{Read, Write},
     path::Path,
 };
 
 /// Require a private real directory; fail rather than silently chmod an existing directory.
-pub fn private_directory(path: &Path) -> Result<(), AuthError> {
+pub fn private_directory(path: &Path) -> Result<(), ServiceError> {
     #[cfg(unix)]
     {
         match fs::create_dir(path) {
             Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                .map_err(|_| AuthError)?,
+                .map_err(|_| ServiceError)?,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err(AuthError),
+            Err(_) => return Err(ServiceError),
         }
-        let metadata = fs::symlink_metadata(path).map_err(|_| AuthError)?;
+        let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError)?;
         if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
-            return Err(AuthError);
+            return Err(ServiceError);
         }
         Ok(())
     }
     #[cfg(not(unix))]
     {
         let _ = path;
-        Err(AuthError)
-    }
-}
-/// Create once with O_EXCL and mode 0600. Never replace a pending bootstrap on restart.
-/// An interrupted/empty write fails closed on the next start; local operator may remove it
-/// only while the application is stopped and before credentials exist.
-pub fn bootstrap_file(path: &Path) -> Result<String, AuthError> {
-    #[cfg(unix)]
-    {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true).mode(0o600);
-        match options.open(path) {
-            Ok(mut file) => {
-                let token = secret()?;
-                file.write_all(token.as_bytes()).map_err(|_| AuthError)?;
-                file.sync_all().map_err(|_| AuthError)?;
-                Ok(token)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let metadata = fs::symlink_metadata(path).map_err(|_| AuthError)?;
-                if !metadata.is_file()
-                    || metadata.permissions().mode() & 0o077 != 0
-                    || metadata.len() != 64
-                {
-                    return Err(AuthError);
-                }
-                let mut token = String::new();
-                fs::File::open(path)
-                    .map_err(|_| AuthError)?
-                    .take(65)
-                    .read_to_string(&mut token)
-                    .map_err(|_| AuthError)?;
-                if !token_valid(&token) {
-                    return Err(AuthError);
-                }
-                Ok(token)
-            }
-            Err(_) => Err(AuthError),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Err(AuthError)
+        Err(ServiceError)
     }
 }
 /// Secure database file before SQLite opens it. SQLite sidecars inherit private-directory protection.
-pub fn database_file(path: &Path) -> Result<(), AuthError> {
+pub fn database_file(path: &Path) -> Result<(), ServiceError> {
     #[cfg(unix)]
     {
         let mut options = OpenOptions::new();
@@ -82,32 +38,46 @@ pub fn database_file(path: &Path) -> Result<(), AuthError> {
         match options.open(path) {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err(AuthError),
+            Err(_) => return Err(ServiceError),
         }
-        let metadata = fs::symlink_metadata(path).map_err(|_| AuthError)?;
+        let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError)?;
         if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
-            return Err(AuthError);
+            return Err(ServiceError);
         }
         Ok(())
     }
     #[cfg(not(unix))]
     {
         let _ = path;
-        Err(AuthError)
+        Err(ServiceError)
     }
 }
 
 /// Resolve only an administrator-selected filename inside the private data directory.
-pub fn application_database(data: &Path) -> Result<std::path::PathBuf, AuthError> {
+pub fn application_database(data: &Path) -> Result<std::path::PathBuf, ServiceError> {
     let name = std::env::var("LYTRONAUT_DATABASE").unwrap_or_else(|_| "catalog.db".into());
     database_path(data, &name)
 }
-pub fn database_path(data: &Path, name: &str) -> Result<std::path::PathBuf, AuthError> {
+pub fn database_path(data: &Path, name: &str) -> Result<std::path::PathBuf, ServiceError> {
     if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
-        return Err(AuthError);
+        return Err(ServiceError);
     }
     Ok(data.join(name))
 }
+/// Unlink the obsolete, fixed application-owned credential artifact. Never follow links.
+/// Only invoked for the private application state directory, not imported source libraries.
+pub fn remove_obsolete_bootstrap(data: &Path) -> Result<(), ServiceError> {
+    let path = data.join("bootstrap.secret");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+            fs::remove_file(path).map_err(|_| ServiceError)
+        }
+        Ok(_) => Err(ServiceError),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(ServiceError),
+    }
+}
+
 #[cfg(test)]
 mod browser_config_tests {
     use super::*;

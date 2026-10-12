@@ -248,6 +248,22 @@ fn archive_magic(prefix: &[u8]) -> bool {
         || prefix.get(257..262) == Some(b"ustar")
 }
 impl Store {
+    /// Stop active intake after the listener stops accepting work; no original is deleted.
+    pub async fn shutdown(&self) -> Result<(), StorageError> {
+        let jobs: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM intake_jobs WHERE state='running'")
+                .fetch_all(self.0.catalog.pool())
+                .await?;
+        for id in jobs {
+            self.cancel(&id).await?;
+        }
+        Ok(())
+    }
+    pub fn cancellation_requested(&self, id: &str) -> bool {
+        self.flag(id)
+            .map_or(true, |flag| flag.load(Ordering::Relaxed))
+    }
+
     pub async fn open(
         catalog: Catalog,
         originals: &Path,
@@ -979,6 +995,52 @@ fn verify_equal(temp: &Path, dest: &Path, digest: &str, len: u64) -> Result<(), 
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+    #[tokio::test]
+    async fn shutdown_cancels_intake_and_preserves_existing_originals() {
+        let root = std::env::temp_dir().join(format!("lytronaut-shutdown-{}", unique().unwrap()));
+        fs::create_dir(&root).unwrap();
+        let c = Catalog::open_application_database(&root.join("app.db"))
+            .await
+            .unwrap();
+        let s = Store::open(
+            c.clone(),
+            &root.join("originals"),
+            &root.join("staging"),
+            Limits {
+                free_floor: 0,
+                ..Limits::default()
+            },
+        )
+        .await
+        .unwrap();
+        let job = s
+            .begin(&ImportRequest {
+                version: WireVersion::V1,
+                kind: lytronaut_contracts::ImportKind::Directory,
+                declared_bytes: 100,
+                declared_files: 2,
+            })
+            .await
+            .unwrap();
+        s.append_directory_file(&job, "kept.bin", &b"synthetic original"[..])
+            .await
+            .unwrap();
+        let sources = s.entries(&job).await.unwrap();
+        let flag = s.flag(&job).unwrap();
+        assert!(!s.cancellation_requested(&job));
+        s.shutdown().await.unwrap();
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(s.cancellation_requested(&job));
+        assert_eq!(s.job(&job).await.unwrap().state, JobState::Cancelled);
+        assert_eq!(
+            s.open_blob(&sources[0]).unwrap().metadata().unwrap().len(),
+            18
+        );
+        s.shutdown().await.unwrap();
+        drop(s);
+        c.pool().close().await;
+        fs::remove_dir_all(root).unwrap();
+    }
     #[tokio::test]
     async fn simultaneous_no_replace_publication_verifies_dedup_bytes() {
         let root = std::env::temp_dir().join(format!("lytronaut-publish-{}", unique().unwrap()));

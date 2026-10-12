@@ -1,6 +1,6 @@
 #[path = "exports.rs"]
 mod exports;
-// Authenticated application API. Source keys stay private, mapped to durable random IDs.
+// Deployment-protected application API. Source keys stay private, mapped to durable random IDs.
 use crate::{AppState, error};
 use axum::{
     Extension, Router,
@@ -301,7 +301,31 @@ pub async fn progress(
     })
 }
 impl Api {
-    /// Startup recovers completed-but-unadapted intakes, retaining existing auth/storage tables.
+    /// Called after HTTP has drained; cancel durable background exports and wait for cleanup.
+    pub async fn shutdown(&self) -> std::result::Result<(), lytronaut_storage::StorageError> {
+        sqlx::query(
+            "UPDATE export_jobs SET state='cancelling' WHERE state IN ('queued','running')",
+        )
+        .execute(self.0.catalog.pool())
+        .await?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM export_jobs WHERE state IN ('queued','running','cancelling')",
+            )
+            .fetch_one(self.0.catalog.pool())
+            .await?;
+            if pending == 0 {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(lytronaut_storage::StorageError::Busy);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Startup recovers completed-but-unadapted intakes, retaining existing storage records.
     pub async fn open(
         catalog: Catalog,
         store: Store,

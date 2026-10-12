@@ -7,7 +7,7 @@ use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection, sqlite::SqliteConne
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs, io,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -166,11 +166,11 @@ pub async fn migrate(catalog: &Catalog) -> Result<(), CatalogError> {
 }
 
 struct Snapshot {
-    root: PathBuf,
+    path: PathBuf,
 }
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_file(&self.path);
     }
 }
 fn snapshot(store: Store, entry: SourceEntry) -> Result<Snapshot, CatalogError> {
@@ -179,24 +179,26 @@ fn snapshot(store: Store, entry: SourceEntry) -> Result<Snapshot, CatalogError> 
     }
     let mut random = [0; 16];
     getrandom::fill(&mut random).map_err(|_| CatalogError::Unavailable)?;
-    let root = std::env::temp_dir().join(format!(
-        "lytronaut-desktop-{:x}",
+    // Catalog adaptation must stay inside the configured writable boundary, even
+    // when the host/container root (including /tmp) is read-only.
+    let path = store.staging_root().join(format!(
+        "lytronaut-desktop-{:032x}.db",
         u128::from_le_bytes(random)
     ));
-    fs::DirBuilder::new().mode(0o700).create(&root)?;
-    let snapshot = Snapshot { root };
     let mut src = store.open_blob(&entry)?;
-    let path = snapshot.root.join("source.db");
     let mut dst = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&path)?;
+    // Own cleanup only after exclusive creation succeeds. Flat staging files are
+    // also removed by Store recovery after an interrupted adaptation.
+    let snapshot = Snapshot { path };
     if io::copy(&mut src, &mut dst)? != entry.length {
         return Err(CatalogError::Invalid);
     }
     dst.sync_all()?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o400))?;
+    fs::set_permissions(&snapshot.path, fs::Permissions::from_mode(0o400))?;
     Ok(snapshot)
 }
 fn quote(name: &str) -> String {
@@ -205,7 +207,7 @@ fn quote(name: &str) -> String {
 type Records = BTreeMap<String, Vec<OriginalRecord>>;
 async fn decode(snapshot: &Snapshot) -> Result<Records, CatalogError> {
     let options = SqliteConnectOptions::new()
-        .filename(snapshot.root.join("source.db"))
+        .filename(&snapshot.path)
         .read_only(true)
         .immutable(true)
         .pragma("query_only", "ON")
@@ -799,6 +801,105 @@ pub async fn summary(catalog: &Catalog, id: i64) -> Result<ImportSummary, Catalo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn snapshot_uses_private_staging_and_cleans_copy_without_changing_original() {
+        use crate::Limits;
+        use lytronaut_contracts::{ImportKind, ImportRequest, WireVersion};
+        use std::io::Read;
+        use std::os::unix::fs::DirBuilderExt;
+        let mut random = [0; 16];
+        getrandom::fill(&mut random).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "lytronaut-snapshot-test-{:x}",
+            u128::from_le_bytes(random)
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let catalog = Catalog::open_application_database(&root.join("app.db"))
+            .await
+            .unwrap();
+        let store = Store::open(
+            catalog.clone(),
+            &root.join("originals"),
+            &root.join("staging"),
+            Limits {
+                free_floor: 0,
+                ..Limits::default()
+            },
+        )
+        .await
+        .unwrap();
+        let original = b"independent opaque original source bytes";
+        let id = store
+            .begin(&ImportRequest {
+                version: WireVersion::V1,
+                kind: ImportKind::Directory,
+                declared_bytes: original.len() as u64,
+                declared_files: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .append_directory_file(&id, "lytrolibrary.db", &original[..])
+            .await
+            .unwrap();
+        store.finish(&id).await.unwrap();
+        let entry = store.manifest(&id).await.unwrap().remove(0);
+        let copy = snapshot(store.clone(), entry.clone()).unwrap();
+        assert_eq!(copy.path.parent(), Some(store.staging_root()));
+        assert_eq!(
+            fs::metadata(store.staging_root())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(fs::read(&copy.path).unwrap(), original);
+        assert_eq!(
+            fs::metadata(&copy.path).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+        let scratch = copy.path.clone();
+        drop(copy);
+        assert!(!scratch.exists());
+        let mut preserved = Vec::new();
+        store
+            .open_blob(&entry)
+            .unwrap()
+            .read_to_end(&mut preserved)
+            .unwrap();
+        assert_eq!(preserved, original);
+        let interrupted = snapshot(store.clone(), entry.clone()).unwrap();
+        let interrupted_path = interrupted.path.clone();
+        std::mem::forget(interrupted);
+        catalog.pool().close().await;
+        drop(store);
+        let reopened_catalog = Catalog::open_application_database(&root.join("app.db"))
+            .await
+            .unwrap();
+        let reopened = Store::open(
+            reopened_catalog.clone(),
+            &root.join("originals"),
+            &root.join("staging"),
+            Limits {
+                free_floor: 0,
+                ..Limits::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!interrupted_path.exists());
+        let mut after_recovery = Vec::new();
+        reopened
+            .open_blob(&entry)
+            .unwrap()
+            .read_to_end(&mut after_recovery)
+            .unwrap();
+        assert_eq!(after_recovery, original);
+        reopened_catalog.pool().close().await;
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[tokio::test]
     async fn source_vm_progress_budget_interrupts_work() {
         let mut conn =

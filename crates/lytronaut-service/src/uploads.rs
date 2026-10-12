@@ -1,5 +1,5 @@
-//! Product routes added before the final authentication/CSRF guard.
-use crate::{AppState, Authenticated, error};
+//! Product routes added before the final Host/Origin guard.
+use crate::{AppState, error};
 use axum::{
     Extension, Json, Router,
     body::Body,
@@ -45,7 +45,6 @@ pub fn routes(store: Store) -> Router<AppState> {
 }
 async fn begin(
     Extension(store): Extension<Store>,
-    Extension(_): Extension<Authenticated>,
     payload: Result<Json<ImportRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = payload else {
@@ -174,9 +173,18 @@ async fn stream(
     spool.restrict(limit);
     let mut actual = 0u64;
     loop {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), body.frame())
-            .await
-            .map_err(|_| StorageError::Unavailable)?;
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                tokio::select! {
+                    frame = body.frame() => return Ok(frame),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                        if store.cancellation_requested(id) { return Err(StorageError::Cancelled); }
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| StorageError::Unavailable)??;
         let Some(frame) = frame else { break };
         let frame = frame.map_err(|_| StorageError::Invalid)?;
         if let Ok(bytes) = frame.into_data() {

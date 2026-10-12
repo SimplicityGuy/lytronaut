@@ -49,17 +49,17 @@ mise exec -- just check
 `just test` runs contract, live SQLite and HTTP tests. `just check` also builds
 the Leptos WASM client and matching wasm-bindgen glue and checks dependency
 boundaries and redistribution notices. `just serve` builds the Rust/WASM browser
-and starts the native service on http://127.0.0.1:3000. Use the browser's local
-administrator setup/sign-in flow, then select a library directory or ZIP to
+and starts the native service on http://127.0.0.1:3000. Open the library workspace directly, then select a library directory or ZIP to
 preserve and browse its supported JPEG previews, albums and originals. Export
 verified static/stored-focus pixels as flattened PNG or JPEG with separate
 provenance, or stream a lossless originals/catalog bundle and restore it to an
 isolated application copy. See [export and restore](docs/architecture/api.md#verified-export-and-lossless-bundles).
 `LYTRONAUT_DATA` selects the private application state directory; never point it
 at a source library. `just browser-test` runs synthetic actual-service/browser
-integration after `just wasm-build build`. There is no deployment image yet.
+integration after `just wasm-build build`. See [private Linux Docker operation](docs/operations/linux.md) for image builds,
+Compose configuration and persistent mounts.
 See [browser operation and evidence](docs/architecture/browser.md),
-[authentication](docs/architecture/authentication.md), and
+[deployment access](docs/architecture/authentication.md), and
 [workspace contracts](docs/architecture/contracts.md).
 
 ## Architecture direction
@@ -79,7 +79,7 @@ Import will preserve originals and will never edit an uploaded source library.
 ## Contributing
 
 Use Conventional Commits. The project is versioned through Cargo metadata;
-release tooling and containers are planned after the compatibility milestone.
+local Linux containers are supported; release tooling remains separate.
 No automated publishing is enabled. Preserve merge commits for Beadhive work.
 
 ## License
