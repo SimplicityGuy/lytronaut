@@ -75,7 +75,9 @@ is hidden behind a domain repository trait. Storage never imports the service.
    refine and submit through Beadhive.
 
 Portable same/cross-backend archive restore belongs to `lytronaut-1ga`;
-PostgreSQL Compose and GitHub CI jobs belong to `lytronaut-55g`. These are initial
+PostgreSQL Compose and broader deployment/cross-restore CI belong to
+`lytronaut-55g`. The scoped e7y actual-engine parity CI job is described below.
+These are initial
 release requirements and are not disabled or represented as complete by this
 bead. Final coverage includes every added first-party application path.
 
@@ -210,3 +212,58 @@ rand_core qualifiers and semantic package ordering. Actual locked offline metada
 now accepts the file, and the hash-verified frozen notice checker verifies all
 336 external packages without compilation or downloads. This metadata evidence
 also does not replace runtime tests or the final gate on the integrated source.
+
+
+## Login-free actual-engine parity CI (source checkpoint)
+
+The approved e7y `persistence-parity` job uses the official PostgreSQL 18.6
+stable image, pinned to the multi-platform index digest
+`sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873`.
+The PostgreSQL [version policy](https://www.postgresql.org/support/versioning/)
+still lists 18.6 as stable; 19 Beta is a prerelease. Fresh official registry
+manifest metadata matched its `Docker-Content-Digest` by SHA-256 of the original
+10,293 response bytes, with Linux amd64 and arm64 descriptors. No manifest
+reserialization, image pull or local service startup was needed for this check.
+
+The disposable CI database runs with one CPU, 512 MiB RAM and a bounded health
+check. Only bootstrap creates the test role and public sentinel. The tested
+application role has LOGIN, CONNECT and CREATE on the dedicated test database,
+with NOSUPERUSER, NOCREATEDB, NOCREATEROLE and NOREPLICATION; it has no CREATE
+privilege on `public`. Database CREATE permits generated private schemas and
+does not grant the role permission to create databases. The public sentinel has
+one synthetic marker and a SELECT-only grant. Generated passwords and the
+job-only connection URL are masked before use, kept in the runner environment,
+and never uploaded with captures, fixture metadata or credentials.
+
+`mise exec -- just postgres-test` requires `LYTRONAUT_TEST_POSTGRES_URL` rather
+than falling back to SQLite or skipping tests. Provision this role and sentinel
+in a dedicated disposable database before using the local recipe; the workflow
+contains the exact trusted bootstrap SQL. For a local bootstrap, use a generated
+password instead of reusing the workflow's disposable bootstrap value. The
+recipe is explicit opt-in and runs serially with exact result-count assertions:
+
+- Six actual PostgreSQL storage unit contracts (including actual SQLite oracles).
+- One actual Desktop intake/adaptation/originals/conflict/reopen contract.
+- Five existing HTTP scenarios: browse/search/detail/assets/originals and restart,
+  unsupported input/cancellation, ZIP publication, concurrent publication polling,
+  and PNG/JPEG export/cancellation/restart.
+
+The HTTP fixture selects PostgreSQL only with the explicit
+`LYTRONAUT_TEST_BACKEND=postgres` set by this recipe. The ordinary test recipe
+continues to use SQLite, even if a test PostgreSQL URL is present. Each PG HTTP
+fixture generates its own schema, preserves the selected URL/configuration
+across restart, checks all four pooled connections together, verifies the public
+sentinel before/after migrations and at cleanup, and removes only its own schema.
+A failed assertion may leave a generated schema in the disposable CI database;
+the service is job-scoped and never shares a user database.
+
+Only the exact sixth HTTP scenario
+`public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_and_interruption`
+is temporarily omitted from this focused PostgreSQL recipe because portable
+backup remains pending `lytronaut-1ga`. The same scenario remains active in the
+SQLite suite. This is an explicit pending acceptance item, not a coverage
+exclusion, a completed PostgreSQL backup claim, or the final release gate. The
+backup bead must enable the scenario and add same/cross-backend restore checks.
+The current checkpoint has only static validation: older b585 actual 31 SQLite
+and 7 PG results do not attest to this login-free source or its new HTTP paths.
+The full current-tree actual-engine checks and pristine submission remain pending.

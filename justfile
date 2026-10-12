@@ -21,6 +21,12 @@ test:
     cargo test --locked --workspace --all-targets --all-features
     cargo test --locked --workspace --doc
 
+# Explicit disposable PostgreSQL only; the default SQLite test recipe stays independent.
+# Requires a restricted role, CONNECT+CREATE on its dedicated DB, and the synthetic
+# public sentinel described in docs/design/006-database-boundary.md.
+postgres-test:
+    python3 scripts/postgres-test.py
+
 build:
     cargo build --locked --workspace --all-targets --all-features
 

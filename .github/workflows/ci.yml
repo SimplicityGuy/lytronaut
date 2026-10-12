@@ -52,3 +52,53 @@ jobs:
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - run: mise exec -- just setup wasm-build build
       - run: mise exec -- just browser-test
+  persistence-parity:
+    name: persistence-parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    services:
+      postgres:
+        # Official 18.6 stable multi-platform index; upstream raw digest verified.
+        image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+        env:
+          POSTGRES_DB: lytronaut_parity
+          # Disposable job-only bootstrap; never an application credential.
+          POSTGRES_PASSWORD: synthetic-bootstrap-only
+        ports:
+          - "5432"
+        options: >-
+          --cpus 1 --memory 512m --pids-limit 128
+          --health-cmd "pg_isready -U postgres -d lytronaut_parity"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - name: Configure restricted synthetic test role
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+        run: |
+          set -euo pipefail
+          password="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+          url="postgres://lytronaut_parity_app:${password}@127.0.0.1:${POSTGRES_PORT}/lytronaut_parity?sslmode=disable"
+          echo "::add-mask::$password"
+          echo "::add-mask::$url"
+          docker exec -i "$POSTGRES_CONTAINER" psql -U postgres -d lytronaut_parity -v ON_ERROR_STOP=1 > /dev/null <<SQL
+          CREATE ROLE lytronaut_parity_app LOGIN PASSWORD '$password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+          REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+          GRANT CONNECT, CREATE ON DATABASE lytronaut_parity TO lytronaut_parity_app;
+          CREATE TABLE public.lytronaut_parity_sentinel(marker text PRIMARY KEY);
+          INSERT INTO public.lytronaut_parity_sentinel VALUES ('synthetic-persistence-parity');
+          GRANT USAGE ON SCHEMA public TO lytronaut_parity_app;
+          GRANT SELECT ON public.lytronaut_parity_sentinel TO lytronaut_parity_app;
+          SQL
+          actual="$(docker exec "$POSTGRES_CONTAINER" psql -U postgres -d lytronaut_parity -Atqc 'SHOW server_version_num')"
+          test "$actual" = 180006
+          echo "Actual PostgreSQL server_version_num: $actual"
+          printf 'LYTRONAUT_TEST_POSTGRES_URL=%s\n' "$url" >> "$GITHUB_ENV"
+      - run: mise exec -- just setup
+      - name: Actual PostgreSQL storage, Desktop and HTTP parity (12 tests)
+        run: mise exec -- just postgres-test

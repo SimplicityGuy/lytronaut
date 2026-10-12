@@ -447,6 +447,21 @@ async fn postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport
     getrandom::fill(&mut random).unwrap();
     let schema = format!("lytronaut_desktop_test_{:x}", u128::from_le_bytes(random));
     let mut admin = PgConnection::connect_with(&options).await.unwrap();
+    let restricted: bool = sqlx::query_scalar("SELECT NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication) FROM pg_roles WHERE rolname=current_user")
+        .fetch_one(&mut admin).await.unwrap();
+    assert!(
+        restricted,
+        "parity tests require a restricted application role"
+    );
+    let public_create: bool =
+        sqlx::query_scalar("SELECT has_schema_privilege(current_user,'public','CREATE')")
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+    assert!(
+        !public_create,
+        "test role must not create objects in public"
+    );
     sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA \"{schema}\"")))
         .execute(&mut admin)
         .await

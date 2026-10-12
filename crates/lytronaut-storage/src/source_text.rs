@@ -17,7 +17,7 @@ pub(crate) fn decode_key(value: &str) -> Result<String, &'static str> {
         return Err("invalid application source-key encoding");
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);
-    for pair in value.as_bytes().chunks_exact(2) {
+    for pair in value.as_bytes().as_chunks::<2>().0 {
         fn nibble(byte: u8) -> Option<u8> {
             match byte {
                 b'0'..=b'9' => Some(byte - b'0'),
