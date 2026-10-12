@@ -590,6 +590,8 @@ pub async fn export_container(
             .iter()
             .map(|p| p.lambda.unwrap_or(f64::NAN))
             .collect();
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::metadata_export(bytes, &c.sections, &lambdas);
         (first.payload, first.geometry, lambdas)
     };
     let parsed = AnnexB::parse(payload, &lambdas, geometry.width, geometry.height)

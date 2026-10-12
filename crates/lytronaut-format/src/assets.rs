@@ -213,6 +213,8 @@ fn lambda(v: &Value) -> Result<Option<f64>> {
 }
 pub fn processed_asset<'a>(c: &Container<'a>, limits: Limits) -> Result<Processed<'a>> {
     let original = c.directory(limits)?;
+    #[cfg(feature = "test-harness")]
+    crate::capacity_observations::metadata_json(&original);
     if !supported_directory(&original) {
         return Ok(Processed {
             original,
@@ -298,6 +300,8 @@ pub fn processed_asset<'a>(c: &Container<'a>, limits: Limits) -> Result<Processe
         }
     }
     let preserved_only = planes.is_empty() && maps.is_empty();
+    #[cfg(feature = "test-harness")]
+    crate::capacity_observations::metadata_planes(&planes, &maps);
     Ok(Processed {
         original,
         planes,

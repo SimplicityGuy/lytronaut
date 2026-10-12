@@ -81,6 +81,7 @@ live-photo-owner-test:
     rm -f owner-evidence.tar.gz owner-evidence.tar.gz.partial
     just build
     cargo test --locked -p lytronaut-client --features test-harness retained_observations::tests
+    cargo test --locked -p lytronaut-format --features test-harness capacity_observations::metadata_tests
     cargo clippy --locked -p lytronaut-client --target wasm32-unknown-unknown --features test-harness -- -D warnings
     cargo build --locked -p lytronaut-client --target wasm32-unknown-unknown --features test-harness
     test "$(wasm-bindgen --version)" = "wasm-bindgen 0.2.129"

@@ -496,3 +496,58 @@ selection during pending album paging and failed-page retry. All traffic stays
 on the existing loopback service; no fixture mutations or private intake are
 used. The ordinary stale-page reload test remains intact. These new source tests
 have not run; CI account startup and local build headroom remain blocked.
+
+
+### Feature-only completed metadata inventories (source candidate)
+
+The observer's constant-time `enabled()` guard runs before any metadata/string
+walk. Inactive feature builds perform no metadata traversal. The hook borrows
+completed owners without cloning keys/JSON or creating reference strings. Its
+recursive visitor stops at depth 64; overdeep helper input or checked arithmetic
+overflow marks the bounded report incomplete. Parser limits, errors and validation
+are unchanged. A disabled or incomplete observer is never empirical budget proof.
+
+`processed_asset` observes the original JSON immediately after directory parsing;
+`Container::references` observes its validated reference Vec immediately before
+return, without extending its lifetime into plane construction. The final plane
+and map Vec capacities are observed before the processed asset returns. Browser
+Live Photo export observes source length, section/lambda capacities just before
+its existing lexical parser-owner drops. No payload alias is counted as another
+owned source buffer. The exact fixed rows are:
+
+| Row | Four numeric slots |
+| --- | --- |
+| `metadata_json_storage` | root Value inline bytes plus array Vec capacity slots; actual String/key heap capacities; logical occupied map key/Value inline bytes; maximum visited depth |
+| `metadata_json_counts` | Value nodes; map entries; array owners; String/key owners |
+| `metadata_references` | reference Vec capacity slot bytes; pointer String capacities; identity String capacities; reference length |
+| `metadata_planes` | plane Vec capacity slot bytes; map Vec capacity slot bytes; plane length; map length |
+| `metadata_export` | borrowed source length; section Vec capacity slot bytes; lambda Vec capacity slot bytes; lambda length |
+
+The map row measures **logical occupied slots**, not physical BTree nodes, headers
+or slack. Earlier completed-JSON capacities remain live at the later reference
+and plane phases, but references and planes are not simultaneous. Source Vec
+capacity comes from `ui_source_begin`, not the slice length in `metadata_export`.
+The layouts come from the existing actual-target `retained_layout_*` rows.
+Snapshot quantities are not additive independent peaks or a whole-memory total.
+
+Source receipt `/private/tmp/lytronaut-9fw-metadata-source-audit-1f8e166.json`
+records pinned Rust 1.99 BTree slots (11 leaf slots, 12 internal edges) and
+serde_json 1.0.150's BTree map implementation. It establishes neither private node
+WASM ABI nor physical allocation sizes. Deserializer scratch is cleared/reused for
+escaped text while the output String is copied, and is gone when `bounded_json`
+returns. Its overlap with in-flight children, array old/new growth, map insertion
+and active `collect_refs` path/escape temporaries is **not observed** here. Tiny
+Value arrays can have minimum capacity four; byte-Vec minimum-eight or a blanket
+capacity-less-than-twice-length formula is not a bound for these arrays. Actual
+finished Vec capacity is reported, while growth overlap and allocator rounding
+remain separate unfinished proof.
+
+Six scoped native feature tests exercise reserved/nested owners, repeated borrowed
+payload aliases, wide escaped public JSON, enabled/disabled and depth-bound behavior,
+existing byte/node/depth admission boundaries, no-content reports and arithmetic
+overflow. `just live-photo-owner-test` runs
+`cargo test --locked -p lytronaut-format --features test-harness capacity_observations::metadata_tests`
+before the existing single feature WASM build. The same three public mounted UI
+cases require the five phase rows, five plane descriptors and source-length
+correspondence. Tests and observations are source-only candidates; their execution
+and the remaining 64MiB transient/32MiB retained acceptance are pending.

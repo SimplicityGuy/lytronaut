@@ -206,7 +206,7 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   assert(Number.isSafeInteger(capacities.observer_storage_bytes)&&capacities.observer_storage_bytes>0&&capacities.observer_storage_bytes<=256*1024);
   assert(Array.isArray(capacities.observations)&&capacities.observations.length>0&&capacities.observations.length<=1024);
   const retainedStages=['retained_snapshot','retained_layout_strings','retained_layout_lists','retained_layout_detail','retained_layout_metadata','retained_layout_options','retained_layout_ui','retained_stage','retained_thumbs','retained_lists','retained_detail','retained_focus','retained_controls','retained_counts'];
-  const stages=new Set([...retainedStages,'fetch_category','fetch_before_extend','fetch_after_extend','ui_source_begin','ui_source_end','jpeg_platform_result','selected_jpeg','pixel_strip','pcm_input','pcm_escape','segments','paired_jpeg','assembly','package','download_array','download_array_live']);
+  const stages=new Set([...retainedStages,'fetch_category','fetch_before_extend','fetch_after_extend','ui_source_begin','ui_source_end','metadata_json_storage','metadata_json_counts','metadata_references','metadata_planes','metadata_export','jpeg_platform_result','selected_jpeg','pixel_strip','pcm_input','pcm_escape','segments','paired_jpeg','assembly','package','download_array','download_array_live']);
   for(const observation of capacities.observations) {
     keys(observation,['stage','bytes']);
     assert(stages.has(observation.stage),'only fixed UI capacity stages are allowed');
@@ -252,6 +252,25 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
     if(['fetch_before_extend','fetch_after_extend'].includes(observation.stage))assert.equal(capacities.observations[index-1]?.stage,'fetch_category');
   }
   for(const category of [1,2])assert(capacities.observations.some(o=>o.stage==='fetch_category'&&o.bytes[0]===category),'actual export download and manifest attributed');
+  const metadataStages=['metadata_json_storage','metadata_json_counts','metadata_references','metadata_planes','metadata_export'];
+  const metadataRows=new Map();
+  for(const stage of metadataStages) {
+    const rows=capacities.observations.filter(row=>row.stage===stage);
+    assert.equal(rows.length,1,'one completed export metadata phase per actual UI source');
+    metadataRows.set(stage,rows[0].bytes);
+  }
+  const metadataIndices=metadataStages.map(stage=>capacities.observations.findIndex(row=>row.stage===stage));
+  assert(metadataIndices[0]>capacities.observations.findIndex(row=>row.stage==='ui_source_begin'),'completed metadata is inside source ownership');
+  for(let index=1;index<metadataIndices.length;index++)assert(metadataIndices[index]>metadataIndices[index-1],'JSON/references/planes/export lifetime order');
+  assert(metadataIndices.at(-1)<capacities.observations.findIndex(row=>row.stage==='jpeg_platform_result'),'parser owners observed before codec JPEG allocation');
+  assert(metadataRows.get('metadata_json_storage')[0]>0&&metadataRows.get('metadata_json_storage')[3]<=64);
+  assert(metadataRows.get('metadata_json_counts')[0]>0&&metadataRows.get('metadata_json_counts')[1]>0);
+  assert(metadataRows.get('metadata_references')[3]>0,'validated references observed before their drop');
+  assert(metadataRows.get('metadata_references')[0]>0&&metadataRows.get('metadata_planes')[0]>0,'actual allocated reference/plane slots observed');
+  assert(metadataRows.get('metadata_export')[1]>0&&metadataRows.get('metadata_export')[2]>=5*8,'actual section slots and at least five f64 lambda slots');
+  assert.equal(metadataRows.get('metadata_planes')[2],5,'five verified archived descriptors');
+  assert.equal(metadataRows.get('metadata_planes')[3],0);
+  assert.equal(metadataRows.get('metadata_export')[3],5);
   keys(platform,['observations','dropped','complete','physicalHeapMeasured']);
   assert.equal(platform.complete,true);assert.equal(platform.dropped,0);assert.equal(platform.physicalHeapMeasured,false);
   assert(Array.isArray(platform.observations)&&platform.observations.length>0&&platform.observations.length<=128);
@@ -286,6 +305,7 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   const sources=capacities.observations.filter(o=>o.stage==='ui_source_begin');
   assert.equal(sources.length,1,'one actual UI export observed');
   assert(sources[0].bytes[1]>0&&sources[0].bytes[1]<=8*1024*1024,'existing source admission scope');
+  assert.equal(metadataRows.get('metadata_export')[0],sources[0].bytes[1],'borrowed metadata source length matches actual UI source length');
   assert.equal(capacities.observations.filter(o=>o.stage==='download_array').length,1,'one complete UI download observed');
   await page.evaluate(()=>window.__ownerModule.harness_dispose());await released();
   const counts=await page.evaluate(()=>window.__owner);

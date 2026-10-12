@@ -139,6 +139,8 @@ impl<'a> Container<'a> {
                 return Err(E::MissingReference);
             }
         }
+        #[cfg(feature = "test-harness")]
+        crate::capacity_observations::metadata_references(&refs);
         Ok(refs)
     }
 }
