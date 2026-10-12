@@ -340,6 +340,12 @@ struct Ui {
     detail: RwSignal<Option<CaptureDetail>>,
     thumbs: RwSignal<BTreeMap<String, String>>,
     stage: RwSignal<String>,
+    gpu_enabled: RwSignal<bool>,
+    gpu_busy: RwSignal<bool>,
+    gpu_quality: RwSignal<u32>,
+    gpu_visible: RwSignal<bool>,
+    gpu_status: RwSignal<String>,
+    gpu: Rc<RefCell<Option<crate::gpu::Renderer>>>,
     focus_stack: RwSignal<Option<FocusStack>>,
     displayed_derivative: RwSignal<Option<FocusDerivative>>,
     focus_value: RwSignal<f64>,
@@ -377,6 +383,12 @@ impl Ui {
             detail: RwSignal::new(None),
             thumbs: RwSignal::new(BTreeMap::new()),
             stage: RwSignal::new(String::new()),
+            gpu_enabled: RwSignal::new(true),
+            gpu_busy: RwSignal::new(false),
+            gpu_quality: RwSignal::new(512),
+            gpu_visible: RwSignal::new(false),
+            gpu_status: RwSignal::new("CPU JPEG presentation".into()),
+            gpu: Rc::default(),
             focus_stack: RwSignal::new(None),
             displayed_derivative: RwSignal::new(None),
             focus_value: RwSignal::new(0.0),
@@ -409,6 +421,11 @@ impl Ui {
         self.status.set(error);
     }
     fn clear_stage(&self) {
+        if self.gpu_enabled.get_untracked() {
+            self.gpu_status.set("CPU JPEG presentation".into());
+        }
+        self.gpu_visible.set(false);
+        self.gpu.borrow_mut().take();
         *self.stage_generation.borrow_mut() += 1;
         if let Some(a) = self.stage_abort.borrow_mut().take() {
             a.abort();
@@ -764,9 +781,20 @@ impl Ui {
         }
         let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
         *self.stage_abort.borrow_mut() = Some(abort.clone());
+        self.gpu_visible.set(false);
         let selected_orientation = self.orientation.get_untracked();
         let result = async {
-            let _lease = self.net.lease(20 * 1024 * 1024, &abort).await?;
+            let _lease = self
+                .net
+                .lease(
+                    if self.gpu_enabled.get_untracked() {
+                        24 * 1024 * 1024
+                    } else {
+                        20 * 1024 * 1024
+                    },
+                    &abort,
+                )
+                .await?;
             let response = self
                 .net
                 .fetch(
@@ -825,10 +853,33 @@ impl Ui {
                     && image.natural_width() == derivative.output_dimensions.width
                     && image.natural_height() == derivative.output_dimensions.height
                     && !cancelled(&abort);
-                image.set_src("");
                 if !valid {
+                    image.set_src("");
                     return Err("Derivative decode or geometry failed".into());
                 }
+                if generation == *self.stage_generation.borrow() && self.gpu_enabled.get_untracked()
+                {
+                    if selected_orientation == 1 {
+                        self.present_gpu(&image, generation, 1).await;
+                    } else {
+                        match self.gpu_identity(&stack, index, &abort).await {
+                            Ok((identity, url)) => {
+                                self.present_gpu(&identity, generation, selected_orientation)
+                                    .await;
+                                identity.set_src("");
+                                let _ = web_sys::Url::revoke_object_url(&url);
+                            }
+                            Err(_) => {
+                                self.gpu.borrow_mut().take();
+                                self.gpu_visible.set(false);
+                                self.gpu_enabled.set(false);
+                                self.gpu_status
+                                    .set("CPU fallback · GPU source verification failed".into());
+                            }
+                        }
+                    }
+                }
+                image.set_src("");
                 Ok((url.clone(), derivative))
             }
             .await;
@@ -855,7 +906,157 @@ impl Ui {
                 self.status.set(format!("Discrete focus: stored plane {} of {}, lambda {} · {} × {} source · explicit EXIF {}. Imported edits preserved only", index+1, stack.lambdas.len(), stack.lambdas[index], stack.source_dimensions.width, stack.source_dimensions.height, self.orientation.get_untracked()));
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                if self.gpu_enabled.get_untracked() {
+                    self.gpu_visible.set(false);
+                    self.gpu_enabled.set(false);
+                    self.gpu.borrow_mut().take();
+                    self.gpu_status
+                        .set("CPU fallback · derivative verification or geometry failed".into());
+                }
+                Err(error)
+            }
+        }
+    }
+    async fn gpu_identity(
+        &self,
+        stack: &FocusStack,
+        index: usize,
+        abort: &AbortController,
+    ) -> Result<(web_sys::HtmlImageElement, String)> {
+        // Remains inside the caller's 24 MiB lease. Focus DTO limits source to
+        // 512² and each generated JPEG to 2 MiB; neither plane is cached.
+        let response = self
+            .net
+            .fetch(
+                &format!("/assets/{}/focus/{index}/1", stack.id.as_str()),
+                "GET",
+                "",
+                None,
+                &[],
+                abort,
+            )
+            .await?;
+        let metadata = response
+            .headers()
+            .get("X-Lytronaut-Derivative")
+            .map_err(|_| "GPU metadata unavailable")?
+            .ok_or("GPU metadata missing")?;
+        if metadata.len() > JSON_LIMIT {
+            return Err("GPU metadata exceeds budget".into());
+        }
+        let derivative: FocusDerivative =
+            serde_json::from_str(&metadata).map_err(|_| "Invalid GPU metadata")?;
+        derivative
+            .validate(stack)
+            .map_err(|_| "Invalid GPU derivative")?;
+        if derivative.plane_index != index || derivative.orientation != 1 {
+            return Err("GPU selection mismatch".into());
+        }
+        let bytes = read_cancel(response, derivative.encoded_bytes as usize, abort).await?;
+        if !verified_derivative(&bytes, &derivative) {
+            return Err("GPU integrity failed".into());
+        }
+        let parts = Array::new();
+        parts.push(&Uint8Array::from(bytes.as_slice()));
+        let options = BlobPropertyBag::new();
+        options.set_type("image/jpeg");
+        let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+            .map_err(|_| "GPU source unavailable")?;
+        let url = web_sys::Url::create_object_url_with_blob(&blob)
+            .map_err(|_| "GPU source unavailable")?;
+        let result = async {
+            let image = web_sys::HtmlImageElement::new().map_err(|_| "GPU decode unavailable")?;
+            image.set_src(&url);
+            JsFuture::from(image.decode())
+                .await
+                .map_err(|_| "GPU decode failed")?;
+            if image.natural_width() != derivative.output_dimensions.width
+                || image.natural_height() != derivative.output_dimensions.height
+                || cancelled(abort)
+            {
+                image.set_src("");
+                return Err("GPU geometry or cancellation failed".into());
+            }
+            Ok((image, url.clone()))
+        }
+        .await;
+        if result.is_err() {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        }
+        result
+    }
+    async fn present_gpu(
+        &self,
+        image: &web_sys::HtmlImageElement,
+        generation: u64,
+        orientation: u8,
+    ) {
+        if self.gpu_busy.get_untracked() {
+            self.gpu_status
+                .set("CPU fallback · previous GPU operation pending".into());
+            return;
+        }
+        self.gpu_busy.set(true);
+        let _guard = BusyGuard(self.gpu_busy);
+        let mut renderer = self.gpu.borrow_mut().take();
+        let result = async {
+            if renderer.is_none() {
+                let canvas = web_sys::window()
+                    .and_then(|w| w.document())
+                    .and_then(|d| d.get_element_by_id("gpu-stage"))
+                    .ok_or("GPU canvas unavailable")?
+                    .dyn_into::<web_sys::HtmlCanvasElement>()
+                    .map_err(|_| "GPU canvas unavailable")?;
+                renderer = Some(crate::gpu::Renderer::acquire(canvas).await?);
+            }
+            renderer.as_mut().unwrap().quality = self.gpu_quality.get_untracked();
+            renderer.as_mut().unwrap().image(image, orientation).await
+        }
+        .await;
+        if generation != *self.stage_generation.borrow() || !self.gpu_enabled.get_untracked() {
+            return;
+        }
+        match result {
+            Ok(budget) => {
+                self.gpu_visible.set(true);
+                self.gpu_status.set(format!(
+                    "GPU verified derivative · {} × {} · color unverified",
+                    budget.width, budget.height
+                ));
+                *self.gpu.borrow_mut() = renderer;
+                let task = self.clone();
+                spawn_local(async move {
+                    // Loss/error flag originates from wgpu callbacks. Polling bounds UI
+                    // recovery without retaining browser/GPU objects in a Send callback.
+                    loop {
+                        pause(100).await;
+                        if generation != *task.stage_generation.borrow() {
+                            break;
+                        }
+                        let failed = task.gpu.borrow().as_ref().is_some_and(|r| r.is_failed());
+                        if failed {
+                            task.gpu_visible.set(false);
+                            task.gpu.borrow_mut().take();
+                            task.gpu_enabled.set(false);
+                            task.gpu_status.set(
+                                "CPU fallback · GPU device lost or presentation failed".into(),
+                            );
+                            break;
+                        }
+                        if !task.gpu_enabled.get_untracked() {
+                            break;
+                        }
+                    }
+                });
+            }
+            Err(error) => {
+                self.gpu_visible.set(false);
+                self.gpu_enabled.set(false);
+                self.gpu_status.set(format!(
+                    "CPU fallback · {error}. CPU presentation selected automatically"
+                ));
+            }
         }
     }
     fn navigate(&self, delta: i32) {
@@ -1154,6 +1355,9 @@ fn Workspace() -> impl IntoView {
     let captures = s.captures;
     let detail = s.detail;
     let stage = s.stage;
+    let gpu_visible = s.gpu_visible;
+    let gpu_status = s.gpu_status;
+    let gpu_quality = s.gpu_quality;
     let focus_stack = s.focus_stack;
     let displayed_derivative = s.displayed_derivative;
     let focus_value = s.focus_value;
@@ -1192,14 +1396,15 @@ fn Workspace() -> impl IntoView {
             </nav>
             <main id="content" class="workspace"><div class="toolbar"><h1>"Library explorer"</h1><form class="search" on:submit=move|e|{e.prevent_default();let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><label for="search">"Search captures"</label><input id="search" type="search" prop:value=move||search.get() on:input=move|e|search.set(event_target_value(&e))/><button type="submit">"Search"</button><label for="sort">"Sort"</label><select id="sort" prop:value=move||sort.get() on:change=move|e|{sort.set(event_target_value(&e));let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><option value="order">"Library / album order"</option><option value="name">"Name"</option><option value="rating">"Imported rating"</option></select></form></div>
                 <section class="viewer" aria-label="Capture viewer"><div class="stage" tabindex="0" aria-label="Capture stage. Left and right arrows change capture" on:keydown=move|e|{if e.key()=="ArrowLeft"{e.prevent_default();ui().navigate(-1);}else if e.key()=="ArrowRight"{e.prevent_default();ui().navigate(1);}}>
-                    <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img src=move||stage.get() alt=move||detail.get().map(|d|format!("{}: {}",if displayed_derivative.get().is_some(){"Stored JPEG focus derivative"}else{"Static JPEG preview"},d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
-                </div><div class="focus-controls"><label for="focus">"Discrete focus · nearest stored plane"</label><input id="focus" type="range" min=move||focus_stack.get().map(|s|s.lambdas[0]).unwrap_or(0.0) max=move||focus_stack.get().map(|s|*s.lambdas.last().unwrap()).unwrap_or(1.0) step="any" prop:value=move||focus_value.get() disabled=move||focus_stack.get().is_none() aria-valuetext=move||focus_stack.get().map(|s|format!("Stored plane {}, lambda {}",s.nearest(focus_value.get()).unwrap_or(0)+1, s.lambdas[s.nearest(focus_value.get()).unwrap_or(0)])).unwrap_or_else(||"Preview only; browser H.264 focus is unverified".into()) on:input=move|e|{if let Ok(value)=event_target_value(&e).parse(){let u=ui();let task=u.clone();launch(u,async move{task.change_focus(value).await});}}/><output for="focus">{move||displayed_derivative.get().map(|d|format!("Displayed: {} × {} source · plane {} · relative lambda {} · EXIF {} · lossy JPEG",d.source_dimensions.width,d.source_dimensions.height,d.plane_index+1,d.lambda,d.orientation)).unwrap_or_else(||"Preview only · H.264 browser verification pending".into())}</output><label for="orientation">"Explicit derivative EXIF orientation"</label><select id="orientation" prop:value=move||orientation.get().to_string() disabled=move||focus_stack.get().is_none() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){orientation.set(value);let u=ui();let task=u.clone();launch(u,async move{task.change_focus(focus_value.get_untracked()).await});}}>{(1..=8).map(|n|view!{<option value=n.to_string()>{n}</option>}).collect_view()}</select><p>"Processed recipe may be baked. Default identity; imported orientation, aperture, perspective, tone, denoise and animation are preserved only."</p></div><div class="viewer-strip"><button on:click=move |_|ui().navigate(-1) disabled=move||captures.get().is_empty()>"Previous capture"</button><span>{move||detail.get().map(|d|format!("{}{}",d.capture.name,if d.capture.name_truncated{" [truncated]"}else{""})).unwrap_or_else(||"No capture selected".into())}</span><button on:click=move |_|ui().navigate(1) disabled=move||captures.get().is_empty()>"Next capture"</button><button on:click=move |_|{if let Some(d)=detail.get_untracked(){let u=ui();let task=u.clone();launch(u,async move{task.select(d.capture.id).await});}}>"Retry preview"</button></div></section>
+                    <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img style:display=move||if gpu_visible.get(){"none"}else{"block"} src=move||stage.get() alt=move||detail.get().map(|d|format!("{}: {}",if displayed_derivative.get().is_some(){"Stored JPEG focus derivative"}else{"Static JPEG preview"},d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
+                    <canvas id="gpu-stage" role="img" aria-label="Verified stored derivative GPU presentation" style:display=move||if gpu_visible.get(){"block"}else{"none"} style="max-width:100%;max-height:100%;object-fit:contain"/>
+                </div><div class="focus-controls"><label for="gpu-quality">"Preview resolution cap"</label><select id="gpu-quality" prop:value=move||gpu_quality.get().to_string() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){gpu_quality.set(value);let u=ui();if u.gpu_enabled.get_untracked(){let task=u.clone();launch(u,async move{task.change_focus(task.focus_value.get_untracked()).await});}}}><option value="512">"512 · default"</option><option value="256">"256 · reduced"</option></select><output id="gpu-status" aria-live="polite">{move||gpu_status.get()}</output><label for="focus">"Discrete focus · nearest stored plane"</label><input id="focus" type="range" min=move||focus_stack.get().map(|s|s.lambdas[0]).unwrap_or(0.0) max=move||focus_stack.get().map(|s|*s.lambdas.last().unwrap()).unwrap_or(1.0) step="any" prop:value=move||focus_value.get() disabled=move||focus_stack.get().is_none() aria-valuetext=move||focus_stack.get().map(|s|format!("Stored plane {}, lambda {}",s.nearest(focus_value.get()).unwrap_or(0)+1, s.lambdas[s.nearest(focus_value.get()).unwrap_or(0)])).unwrap_or_else(||"Preview only; browser H.264 focus is unverified".into()) on:input=move|e|{if let Ok(value)=event_target_value(&e).parse(){let u=ui();let task=u.clone();launch(u,async move{task.change_focus(value).await});}}/><output for="focus">{move||displayed_derivative.get().map(|d|format!("Displayed: {} × {} source · plane {} · relative lambda {} · EXIF {} · lossy JPEG",d.source_dimensions.width,d.source_dimensions.height,d.plane_index+1,d.lambda,d.orientation)).unwrap_or_else(||"Preview only · H.264 browser verification pending".into())}</output><label for="orientation">"Explicit derivative EXIF orientation"</label><select id="orientation" prop:value=move||orientation.get().to_string() disabled=move||focus_stack.get().is_none() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){orientation.set(value);let u=ui();let task=u.clone();launch(u,async move{task.change_focus(focus_value.get_untracked()).await});}}>{(1..=8).map(|n|view!{<option value=n.to_string()>{n}</option>}).collect_view()}</select><p>"Processed recipe may be baked. Default identity; imported orientation, aperture, perspective, tone, denoise and animation are preserved only."</p></div><div class="viewer-strip"><button on:click=move |_|ui().navigate(-1) disabled=move||captures.get().is_empty()>"Previous capture"</button><span>{move||detail.get().map(|d|format!("{}{}",d.capture.name,if d.capture.name_truncated{" [truncated]"}else{""})).unwrap_or_else(||"No capture selected".into())}</span><button on:click=move |_|ui().navigate(1) disabled=move||captures.get().is_empty()>"Next capture"</button><button on:click=move |_|{if let Some(d)=detail.get_untracked(){let u=ui();let task=u.clone();launch(u,async move{task.select(d.capture.id).await});}}>"Retry preview"</button></div></section>
                 <div class="lower"><section class="browser-panel" aria-label="Capture grid and filmstrip"><h2>"Captures"</h2><div class="capture-grid">
                     {move||captures.get().into_iter().map(|capture|{let id=capture.id.as_str().to_owned();let thumb_id=StoredValue::new(id.clone());let selected_id=capture.id.clone();let click_id=capture.id.clone();view!{<button class="capture" aria-pressed=move||detail.get().is_some_and(|d|d.capture.id==selected_id) on:click=move |_|{let u=ui();let task=u.clone();let id=click_id.clone();launch(u,async move{task.select(id).await});}><Show when=move||thumbs.get().get(&id).is_some_and(|u|u.starts_with("data:image/jpeg")) fallback=||view!{<div class="thumb-empty">"◉"</div>}><img src=move||thumbs.get().get(&thumb_id.get_value()).cloned().unwrap_or_default() alt=""/></Show><span>{format!("{}{}",capture.name,if capture.name_truncated{" [truncated]"}else{""})}</span></button>}}).collect_view()}
                 </div><nav class="filmstrip" aria-label="Capture filmstrip">{move||captures.get().into_iter().enumerate().map(|(i,capture)|{let id=capture.id;view!{<button aria-label=format!("Select capture {}: {}",offset.get_untracked() as usize+i+1,capture.name) on:click=move |_|{let u=ui();let task=u.clone();let id=id.clone();launch(u,async move{task.select(id).await});}>{i+1}</button>}}).collect_view()}</nav>
                 <div class="pagination"><button disabled=move||offset.get()==0 on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(offset.get_untracked().saturating_sub(PAGE_SIZE)).await});}>"Previous page"</button><span>{move||format!("Page {}",offset.get()/PAGE_SIZE+1)}</span><button disabled=move||next.get().is_none() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(next.get_untracked().unwrap_or(0)).await});}>"Next page"</button></div>
                 <Show when=move||!files.get().is_empty()><h2>"Preserved library files"</h2><ul>{move||file_links(files.get())}</ul></Show>
-                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>"Optional renderer and codec not implemented"</dd></dl><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
+                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>gpu_status.get()</dd></dl><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
             </main>
         </div>
     }

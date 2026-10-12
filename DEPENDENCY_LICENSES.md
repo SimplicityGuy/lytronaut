@@ -13,6 +13,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | any_spawner | 0.3.0 | MIT |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | argon2 | 0.5.3 | MIT OR Apache-2.0 |
+| arrayvec | 0.7.8 | MIT OR Apache-2.0 |
 | async-lock | 3.4.2 | Apache-2.0 OR MIT |
 | async-once-cell | 0.5.4 | MIT OR Apache-2.0 |
 | async-trait | 0.1.92 | MIT OR Apache-2.0 |
@@ -26,17 +27,22 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | base16 | 0.2.1 | CC0-1.0 |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
+| bit-set | 0.10.0 | Apache-2.0 OR MIT |
+| bit-vec | 0.9.1 | Apache-2.0 OR MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
+| bytemuck_derive | 1.12.1 | Zlib OR Apache-2.0 OR MIT |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | camino | 1.2.6 | MIT OR Apache-2.0 |
 | cc | 1.8.0 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
+| cfg_aliases | 0.2.2 | MIT |
 | codee | 0.3.5 | MIT OR Apache-2.0 |
+| codespan-reporting | 0.13.1 | Apache-2.0 |
 | collection_literals | 1.0.3 | MIT |
 | config | 0.15.27 | MIT OR Apache-2.0 |
 | const-str | 1.1.0 | MIT |
@@ -52,10 +58,12 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 |
+| crunchy | 0.2.4 | MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | derive-where | 1.7.0 | MIT OR Apache-2.0 |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
+| document-features | 0.2.12 | MIT OR Apache-2.0 |
 | dotenvy | 0.15.7 | MIT |
 | drain_filter_polyfill | 0.1.3 | MIT OR Apache-2.0 |
 | either | 1.19.0 | MIT OR Apache-2.0 |
@@ -86,6 +94,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | gloo-net | 0.6.0 | MIT OR Apache-2.0 |
 | gloo-utils | 0.2.0 | MIT OR Apache-2.0 |
 | guardian | 1.3.0 | MIT OR Apache-2.0 |
+| half | 2.7.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
 | hashlink | 0.11.1 | MIT OR Apache-2.0 |
@@ -124,8 +133,11 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | leptos_macro | 0.8.19 | MIT |
 | leptos_server | 0.8.8 | MIT |
 | libc | 0.2.190 | MIT OR Apache-2.0 |
+| libloading | 0.8.9 | ISC |
+| libm | 0.2.16 | MIT |
 | libsqlite3-sys | 0.37.0 | MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
+| litrs | 1.0.0 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | manyhow | 0.14.0 | MIT OR Apache-2.0 |
@@ -136,6 +148,8 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.4 | MIT |
 | moxcms | 0.7.11 | BSD-3-Clause OR Apache-2.0 |
+| naga | 30.0.1 | MIT OR Apache-2.0 |
+| naga-types | 30.0.1 | MIT OR Apache-2.0 |
 | next_tuple | 0.1.0 | MIT |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | oco_ref | 0.2.1 | MIT |
@@ -152,17 +166,21 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | pin-project-internal | 1.1.13 | Apache-2.0 OR MIT |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
 | pkg-config | 0.3.34 | MIT OR Apache-2.0 |
+| portable-atomic | 1.15.0 | Apache-2.0 OR MIT |
+| portable-atomic-util | 0.2.8 | Apache-2.0 OR MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | prettyplease | 0.3.0 | MIT OR Apache-2.0 |
 | proc-macro-utils | 0.10.0 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
 | proc-macro2-diagnostics | 0.11.0 | MIT/Apache-2.0 |
+| profiling | 1.0.18 | MIT OR Apache-2.0 |
 | pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
 | quote | 1.0.47 | MIT OR Apache-2.0 |
 | quote-use | 0.9.0 | MIT |
 | quote-use-macros | 0.9.0 | MIT |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
+| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib |
 | reactive_graph | 0.2.15 | MIT |
 | reactive_stores | 0.4.4 | MIT |
 | reactive_stores_macro | 0.4.4 | MIT |
@@ -170,7 +188,9 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | regex | 1.13.1 | MIT OR Apache-2.0 |
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
+| renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 |
 | rstml | 0.13.1 | MIT |
+| rustc-hash | 1.1.0 | Apache-2.0/MIT |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
@@ -204,12 +224,14 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | sqlx-macros-core | 0.9.0 | MIT OR Apache-2.0 |
 | sqlx-sqlite | 0.9.0 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
+| static_assertions | 1.1.0 | MIT OR Apache-2.0 |
 | subtle | 2.6.1 | BSD-3-Clause |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.8 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |
 | synstructure | 0.14.0 | MIT |
 | tachys | 0.2.19 | MIT |
+| termcolor | 1.4.1 | Unlicense OR MIT |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
@@ -234,6 +256,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
+| unicode-width | 0.2.2 | MIT OR Apache-2.0 |
 | unicode-xid | 0.2.6 | MIT OR Apache-2.0 |
 | url | 2.5.8 | MIT OR Apache-2.0 |
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT |
@@ -251,6 +274,12 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | wasm_split_helpers | 0.2.3 | MIT OR Apache-2.0 |
 | wasm_split_macros | 0.2.2 | MIT OR Apache-2.0 |
 | web-sys | 0.3.106 | MIT OR Apache-2.0 |
+| wgpu | 30.0.1 | MIT OR Apache-2.0 |
+| wgpu-core | 30.0.1 | MIT OR Apache-2.0 |
+| wgpu-core-deps-windows-linux-android | 30.0.1 | MIT OR Apache-2.0 |
+| wgpu-hal | 30.0.1 | MIT OR Apache-2.0 |
+| wgpu-naga-bridge | 30.0.1 | MIT OR Apache-2.0 |
+| wgpu-types | 30.0.1 | MIT OR Apache-2.0 |
 | winapi | 0.3.9 | MIT/Apache-2.0 |
 | winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
 | winapi-util | 0.1.11 | Unlicense OR MIT |
@@ -262,6 +291,8 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | xxhash-rust | 0.8.19 | BSL-1.0 |
 | yoke | 0.8.3 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
+| zerocopy | 0.8.62 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy-derive | 0.8.62 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
 | zerotrie | 0.2.5 | Unicode-3.0 |

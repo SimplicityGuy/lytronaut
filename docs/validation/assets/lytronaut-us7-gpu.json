@@ -1,0 +1,255 @@
+{
+  "mode": "synthetic",
+  "revision": "35eb53c0f60ae3a4d47ec94192729073582b1e8b",
+  "artifactProfiles": "native debug; wasm debug",
+  "startupMs": 523,
+  "gpuProof": {
+    "hardware": {
+      "info": {
+        "vendor": "apple",
+        "architecture": "metal-3",
+        "device": ""
+      },
+      "maxTextureDimension2D": 16384
+    },
+    "transforms": [
+      {
+        "orientation": 1,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 2,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 3,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 4,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 360,
+        "height": 240,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 5,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 6,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 7,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      },
+      {
+        "orientation": 8,
+        "maximum": 0,
+        "rmse": 0,
+        "width": 240,
+        "height": 360,
+        "cpuBytes": 55205376,
+        "gpuBytes": 1728016
+      }
+    ],
+    "scaling": {
+      "maximum": 0,
+      "rmse": 0,
+      "width": 170,
+      "height": 256,
+      "cpuBytes": 55205376,
+      "gpuBytes": 1213456
+    },
+    "timings": {
+      "samples": 30,
+      "p50SubmitToPostFrameCallbackMs": 13.799999952316284,
+      "p95SubmitToPostFrameCallbackMs": 23.90000009536743,
+      "maxMs": 24.5,
+      "linearMemoryBytesAtStart": 2162688,
+      "linearMemoryBytesAtEnd": 2162688,
+      "physicalPresentationMeasured": false
+    },
+    "lossFallbackMs": 98,
+    "oversizeFallbackMs": 10,
+    "faults": [
+      {
+        "fault": "missing-api",
+        "fallbackMs": 15.199999928474426,
+        "reloadThroughFallbackMs": 623,
+        "devices": {
+          "created": 0,
+          "destroyed": 0
+        }
+      },
+      {
+        "fault": "adapter",
+        "fallbackMs": 9.599999904632568,
+        "reloadThroughFallbackMs": 782,
+        "devices": {
+          "created": 0,
+          "destroyed": 0
+        }
+      },
+      {
+        "fault": "device",
+        "fallbackMs": 15.099999904632568,
+        "reloadThroughFallbackMs": 789,
+        "devices": {
+          "created": 0,
+          "destroyed": 0
+        }
+      },
+      {
+        "fault": "pipeline",
+        "fallbackMs": 16.09999990463257,
+        "reloadThroughFallbackMs": 792,
+        "devices": {
+          "created": 1,
+          "destroyed": 1
+        }
+      },
+      {
+        "fault": "late-device",
+        "fallbackMs": 718.6000000238419,
+        "reloadThroughFallbackMs": 2867,
+        "devices": {
+          "created": 1,
+          "destroyed": 1
+        }
+      }
+    ],
+    "released": {
+      "created": 1,
+      "destroyed": 1
+    },
+    "finalDevices": {
+      "created": 7,
+      "destroyed": 6
+    },
+    "repeatedSwitches": 12,
+    "physicalPresentation": "unmeasured; post-frame callback does not certify scanout",
+    "target": "16.7ms compositor submit-to-present unverified",
+    "compositorTrace": {
+      "submitMarkers": 52,
+      "framePresented": 107,
+      "frameDisplayed": 315,
+      "drawAndSwap": 636,
+      "matchedCanvasPresentationSamples": 0,
+      "status": "Canvas-frame identity correlation unavailable; unrelated presentation events are not latency evidence"
+    }
+  },
+  "preZoomGPUDevices": {
+    "created": 7,
+    "destroyed": 7
+  },
+  "focusProof": {
+    "stacks": 1,
+    "planes": 3,
+    "maxSourceBytes": 14560,
+    "p95NativeHttpDecodeMs": 60.199999928474426
+  },
+  "focusUiLoadContendedTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 9,
+    "p50InputToDecodedFrameReadyMs": 67.39999997615814,
+    "p95InputToDecodedFrameReadyMs": 83.20000004768372,
+    "maxInputToDecodedFrameReadyMs": 114.79999995231628
+  },
+  "focusUiTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 0,
+    "p50InputToDecodedFrameReadyMs": 66.79999995231628,
+    "p95InputToDecodedFrameReadyMs": 82,
+    "maxInputToDecodedFrameReadyMs": 84
+  },
+  "faultSuite": true,
+  "keyboardNavigation": true,
+  "contrast": {
+    "text": 15.465817170572732,
+    "control": 4.046600406095304
+  },
+  "preZoomURLsReleasedExceptCurrentStage": true,
+  "captures": 30,
+  "albums": 3,
+  "orderedMemberships": [
+    10,
+    10,
+    10
+  ],
+  "assets429": 0,
+  "blobURLsReleased": true,
+  "absentGPUAndCodecInjected": false,
+  "pageErrors": 0,
+  "reducedMotion": true,
+  "forcedColors": true,
+  "AXTree": true,
+  "responsive": true,
+  "zoom": {
+    "inner": 720,
+    "outer": 1200,
+    "dpr": 2
+  },
+  "browser": "Chrome/154.0.8037.98",
+  "screenReader": "AX inspection only; VoiceOver not manually certified",
+  "artifacts": {
+    "synthetic_jpeg": "d1961bb82401efacbe5d8b14d8841a3cb99d46bd421813f99273b9bbe4c0317f",
+    "service": "72ee41802cc7d6157409a92d63edbac9d287ca84d3b1b696a98e0f7d7a1e2223",
+    "source-wasm": "730744b9433c7ec201902b196a90c4480bed769a352b29916d997c4148d566f6",
+    "client/lytronaut_client.d.ts": "13fa1760fab8d75978dfc76de514673fa0428097026c03cd9cc85b6cf8082c9a",
+    "client/lytronaut_client_bg.wasm.d.ts": "8a3313590056252e03bc15d2aacfbe7f733535e5502b61ff2449a7ac723a9797",
+    "client/lytronaut_client_bg.wasm": "9fdd628710843708a6e31a71605fefee3eb83f641f233894f96f7ea811fa7e4b",
+    "client/lytronaut_client.js": "fbedf2fb4e7672d92ce1b8feb1ac29fbb0ed9062c7489075154d472ae3a006fb"
+  },
+  "hardware": {
+    "model": "MacBookPro18,1",
+    "processor": "Apple M1 Pro",
+    "gpuCores": 16,
+    "memoryGiB": 32,
+    "os": "macOS 26.6.2"
+  },
+  "automaticRendererSelection": true,
+  "sourceRevision": "35eb53c0f60ae3a4d47ec94192729073582b1e8b",
+  "harnessInitializerFix": "await initial decoded thumbnails and stage before selecting after document reload",
+  "previousExactCodeRun": {
+    "runHandle": 67559,
+    "p95SubmitToPostFrameCallbackMs": 34.10000002384186,
+    "matchedCanvasPresentationSamples": 0,
+    "resolutionCap": 256
+  },
+  "runHandle": 47886,
+  "allocationMeasurementScope": "CPU/GPU bytes are conservative application allocation accounting; WASM linear-memory bytes are actual buffer length, not browser RSS or driver residency."
+}
