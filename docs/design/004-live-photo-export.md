@@ -92,7 +92,12 @@ it does not open a Photos library or replace the isolated GUI import gate.
 `dist-owner` glue. Normal builds keep their existing root mount and expose no
 dispose/remount hooks. This harness drops Leptos's actual mounted view/owner during
 pending source fetch, decoder flush, queued codec callbacks and the final download
-timer, then remounts the same app and checks recovery. CI preserves its synthetic
+timer, then remounts the same app and checks recovery. The feature is built once;
+three isolated synthetic libraries exercise 32×32, 2048×1024 and 1138×1842 UI
+geometry with the same raw/generated WASM identities. Large/padded AVC fixtures
+reuse the independent public authoring helper outside observation collection.
+The 30-capture catalog, 24-item pages and JPEG baseline are preserved in each run;
+the actual name-sort UI selects the target deterministically. CI preserves its synthetic
 aggregate, source archive, raw WASM and generated glue in a bounded 128 MiB evidence
 archive. Feature identity and hashes are distinct from production artifacts. This
 source addition still requires actual browser validation; pagehide is not owner
@@ -225,14 +230,18 @@ The synthetic owner harness invokes start/take around its existing final
 successful mounted UI export, after the viewer has settled. It validates the
 bounded fixed schema, requires every UI stage and no overflow, excludes the
 external JS-input seam, and writes the partial numeric trace into the existing
-owner result artifact with the same feature program/source identity. It performs
-no independent pair verification during collection. The trace labels its 32×32 synthetic geometry, observed source length and
+owner result artifact with the same feature program/source identity. The baseline
+`runtime.json` and separate `runtime-large.json` / `runtime-padded.json` records
+are bounded and checked for matching feature/source/program identity. It performs
+no independent pair verification during collection. Each trace labels its declared synthetic geometry, observed source length and
 existing 8 MiB source admission cap. It is not a maximum-geometry or metadata-heap
-proof. Historical `2cedaa4` CI run `38226127927` passed all three checks and collected
+proof. This three-case source wiring awaits runtime validation. Historical `2cedaa4` CI run `38226127927` passed all three checks and collected
 36 events across 13 stages from a 32×32 UI fixture with a 992-byte source and no
-overflow. That partial trace predates the early metadata-drop change; the new
-source still awaits runtime validation, maximum-geometry/private traces and the
-full counted application budget proof.
+overflow. That partial trace predates the early metadata-drop change.
+The metadata-drop source `15150c1` then passed CI `38227514154`, including its
+small mounted-UI trace. The three-case wiring still awaits runtime validation;
+maximum-geometry/private traces and the full counted application budget proof
+remain pending.
 
 Current export metadata admission inherits format defaults (2 MiB JSON,
 100,000 nodes, 1,024 sections), whereas viewing specifies 256 KiB JSON,

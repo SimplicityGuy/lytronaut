@@ -85,7 +85,7 @@ live-photo-owner-test: build
     cp "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/debug/lytronaut_client.wasm" dist-owner/application.wasm
     npm ci --ignore-scripts --prefix scripts/browser
     mkdir -p owner-evidence
-    env -u LYTRONAUT_VIDEO_PRIVATE_ROOT LYTRONAUT_TEST_REVISION="$(git rev-parse HEAD)" LYTRONAUT_CLIENT=dist-owner LYTRONAUT_OWNER_TEST=1 LYTRONAUT_OWNER_EVIDENCE=owner-evidence bash scripts/browser-test.sh
+    env -u LYTRONAUT_VIDEO_PRIVATE_ROOT LYTRONAUT_TEST_REVISION="$(git rev-parse HEAD)" LYTRONAUT_CLIENT=dist-owner LYTRONAUT_OWNER_TEST=1 LYTRONAUT_OWNER_EVIDENCE=owner-evidence bash scripts/live-photo-owner-suite.sh
     git archive HEAD | gzip -1 > owner-evidence/source.tar.gz
     tar -czf owner-evidence.tar.gz dist-owner owner-evidence
     node -e 'if(require("node:fs").statSync("owner-evidence.tar.gz").size > 128*1024*1024) throw Error("owner evidence exceeds 128 MiB")'

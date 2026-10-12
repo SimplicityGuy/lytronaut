@@ -39,6 +39,7 @@ const server = http.createServer((req, res) => {
     const errors = []; page.on('pageerror', () => errors.push('uncaught browser error'));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.addScriptTag({content:fs.readFileSync(path.join(__dirname,'live-photo-pair.js'),'utf8')});
+    await page.addScriptTag({content:fs.readFileSync(path.join(__dirname,'live-photo-fixture.js'),'utf8')});
     const result = await page.evaluate(async () => {
       const module = await import('/lytronaut_client.js'); const wasm = await module.default(); const initialWasmBytes = wasm.memory.buffer.byteLength;
       const bytes = new Uint8Array(await (await fetch('/synthetic')).arrayBuffer());
@@ -120,31 +121,9 @@ const server = http.createServer((req, res) => {
       // Test tooling only: independently authored maximum-geometry flat colors.
       // The production path never depends on VideoEncoder or this fixture writer.
       const publicFixture = async (width,height) => {
-      const largeCanvas = document.createElement('canvas'); largeCanvas.width = width; largeCanvas.height = height;
-      const context = largeCanvas.getContext('2d'), chunks = []; let encoderFailed = false;
-      const encoder = new VideoEncoder({ output: chunk => { const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data); chunks.push(data); }, error: () => encoderFailed = true });
-      try {
-        encoder.configure({ codec: 'avc1.420032', width, height, framerate: 1, latencyMode: 'realtime', hardwareAcceleration: 'prefer-software', avc: { format: 'annexb' } });
-        for (let i = 0; i < 5; i++) {
-          context.fillStyle = ['red', 'green', 'blue', 'yellow', 'white'][i]; context.fillRect(0, 0, width, height);
-          const frame = new VideoFrame(largeCanvas, { timestamp: i * 1000 });
-          try { encoder.encode(frame, { keyFrame: true }); authoredFrames++; } finally { frame.close(); }
-        }
-        await bounded(encoder.flush());
-      } finally { encoder.close(); largeCanvas.width = 0; largeCanvas.height = 0; }
-      if (encoderFailed || chunks.length !== 5) throw Error('maximum-geometry synthetic fixture failed');
-      const stream = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length + 6, 0)); let position = 0;
-      for (const chunk of chunks) { stream.set([0, 0, 0, 1, 9, 0xf0], position); position += 6; stream.set(chunk, position); position += chunk.length; }
-      chunks.length = 0;
-      const sha = async data => 'sha1-' + [...new Uint8Array(await crypto.subtle.digest('SHA-1', data))].map(v => v.toString(16).padStart(2, '0')).join('');
-      const directory = new TextEncoder().encode(JSON.stringify({ version: { major: 1, minor: 0 }, picture: { accelerationArray: [{ type: 'com.lytro.acceleration.refocusStack', vendorContent: { blockOfImages: { representation: 'h264', blockOfImagesRef: await sha(stream), metadataArray: [0,3,-2,1,2].map(lambda => ({ width, height, lambda })) } } }] } }));
-      const parts = [new Uint8Array([137,76,70,80,13,10,26,10,0,0,0,1,0,0,0,0])]; let total = 16;
-      for (const [isDirectory, data] of [[true, directory], [false, stream]]) {
-        const header = new Uint8Array(96); header.set([137,76,70,isDirectory?77:67,13,10,26,10]); new DataView(header.buffer).setUint32(12, data.length); header.set(new TextEncoder().encode(await sha(data)), 16);
-        parts.push(header, data); total += 96 + data.length; const padding = (16 - total % 16) % 16; parts.push(new Uint8Array(padding)); total += padding;
-      }
-      const large = new Uint8Array(total); position = 0; for (const part of parts) { large.set(part, position); position += part.length; }
-      return large;
+        const fixture=await window.authorLivePhotoFixture(width,height);
+        authoredFrames+=fixture.authoredFrames;
+        return fixture.bytes;
       };
       let large = await publicFixture(2048,1024);
       const metadata = JSON.parse(await module.decode_archived_refocus(large, 0, new AbortController().signal));

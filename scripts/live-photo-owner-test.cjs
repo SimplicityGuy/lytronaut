@@ -1,7 +1,7 @@
 // MIT public synthetic test tooling. Only an explicit test-harness WASM exposes
 // real mount disposal; ordinary application artifacts do not expose these hooks.
 const assert = require('node:assert/strict');
-module.exports = async ({page, click, delay}) => {
+module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   await page.evaluate(async () => {
     // Same URL as assets/index.html: reuse the already initialized module.
     window.__ownerModule = await import('/client/lytronaut_client.js');
@@ -145,9 +145,9 @@ module.exports = async ({page, click, delay}) => {
   await remount();
   // Observe the existing final successful UI export only. readyVideo has settled;
   // no public JS input clone or independent pair-verifier work enters this trace.
-  await page.waitForFunction(()=>{const image=document.querySelector('.stage img');return image?.complete&&image.naturalWidth===32&&image.naturalHeight===32;});
+  await page.waitForFunction(expected=>{const image=document.querySelector('.stage img');return image?.complete&&image.naturalWidth===expected.width&&image.naturalHeight===expected.height;},{},expectedGeometry);
   const geometry=await page.$eval('.stage img',image=>({width:image.naturalWidth,height:image.naturalHeight}));
-  assert.deepEqual(geometry,{width:32,height:32},'tiny synthetic UI fixture scope');
+  assert.deepEqual(geometry,expectedGeometry,'declared synthetic UI fixture scope');
   await page.evaluate(()=>window.__ownerModule.harness_capacity_start());
   let capacityText;
   try {
@@ -182,5 +182,5 @@ module.exports = async ({page, click, delay}) => {
   await page.evaluate(()=>window.__ownerModule.harness_dispose());await released();
   const counts=await page.evaluate(()=>window.__owner);
   assert.equal(counts.downloads,3,'complete export works after every actual owner disposal');
-  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,partialCapacityTrace:{path:"mounted-ui",geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,...capacities},...counts};
+  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,...capacities},...counts};
 };
