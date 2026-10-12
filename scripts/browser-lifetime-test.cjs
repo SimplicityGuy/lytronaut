@@ -5,7 +5,8 @@ module.exports=async({browser,origin})=>{
   const fixture=await fetch(origin+'/libraries',{signal:AbortSignal.timeout(10000)});assert(fixture.ok);
   const source=(await fixture.json()).items.find(library=>library.state==='ready');assert(source);
   const page=await browser.newPage();page.setDefaultTimeout(30000);
-  const errors=[];page.on('pageerror',()=>errors.push(true));
+  // Public synthetic page only (asserted above): bounded page error text is diagnostic, not content.
+  const errors=[];page.on('pageerror',error=>errors.push(String(error?.message??error).slice(0,240)));
   let phase='setup';
   try {
     await page.evaluateOnNewDocument(source=>{
@@ -132,7 +133,10 @@ module.exports=async({browser,origin})=>{
     await page.waitForFunction(()=>window.__lifetime.urls.size===0);const urls=await page.evaluate(()=>({created:window.__lifetime.created,revoked:window.__lifetime.revoked,logicalJpegBytesMax:window.__lifetime.blobMax}));
     assert(urls.created>0);assert.equal(urls.created,urls.revoked);assert(urls.logicalJpegBytesMax>0);assert.deepEqual(errors,[]);
     return {jpeg,stalledRead:true,stalledCancel:true,remountDrains:true,synchronousCaptureControlBurst:true,reentrantSelected:true,reentrantMain:true,reentrantLibrary:true,actionBeforePollDisposed:true,acceptedMutationRecovery:true,constructorFailure:true,decodeFailure:true,rendererDestroyReentryCovered:false,rendererDestroyReentryPending:true,urlsReleasedBeforeClose:true,...urls,capacityCollection:false,totalMemoryProof:false};
-  }catch{throw Error('public browser lifetime regression failed: '+phase);}
+  }catch(cause){
+    const detail=String(cause?.message??cause).slice(0,480);const pageErrors=errors.length?' pageErrors='+JSON.stringify(errors.slice(0,4)):'';
+    throw Error('public browser lifetime regression failed: '+phase+': '+detail+pageErrors,{cause});
+  }
   finally{
     try{if(!page.isClosed())await page.evaluate(()=>{const p=window.__lifetime;if(!p)return;if(p.hold){p.hold.releaseRead();p.hold.releaseCancel();}if(p.releasePost)p.releasePost();window.__lifetimeModule?.harness_dispose();window.fetch=p.native.fetch;URL.createObjectURL=p.native.create;URL.revokeObjectURL=p.native.revoke;window.Image=p.native.image;HTMLImageElement.prototype.decode=p.native.decode;});}
     finally{await page.close();}
