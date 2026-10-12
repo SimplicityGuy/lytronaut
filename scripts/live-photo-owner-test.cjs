@@ -8,6 +8,7 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
     if (['harness_dispose','harness_remount','harness_capacity_start','harness_capacity_take'].some(name=>typeof window.__ownerModule[name]!=='function')) throw Error('test-harness artifact required');
   });
   const responseReaderProof=shape==='small'?await require('./response-read-test.cjs')(page):null;
+  const browseLifetimeProof=shape==='small'?await require('./browser-lifetime-test.cjs')({browser:page.browser(),origin:new URL(page.url()).origin}):null;
   await page.evaluate(()=>{
     window.__owner = {created:0, closed:0, outputs:0, framesClosed:0, downloads:0, aborts:0};
     window.__ownerNative = {decoder:VideoDecoder, fetch:window.fetch.bind(window), timer:window.setTimeout.bind(window), anchor:HTMLAnchorElement.prototype.click};
@@ -236,7 +237,8 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
     const stage=snapshot.find(row=>row.stage==='retained_stage').bytes;
     assert.equal(stage[3],1,'one actual stage String owner');
     assert(stage[1]>0&&stage[2]<=2*1024*1024,'actual capacity and admitted ASCII stage length are distinct');
-    // Stage is a native ASCII dataURL. Capacity remains distinct from length.
+    // Stage is an ASCII Blob URL; capacity remains distinct from URL UTF16 length.
+    // The positive JPEG payload is tested separately; a short URL is not zero bytes.
     assert(stage[1]>=stage[2],'capacity covers recorded UTF16 units for ASCII stage');
     const counts=snapshot.find(row=>row.stage==='retained_counts').bytes;
     assert(counts[0]>=0&&counts[0]<=24&&counts[1]===24,'current synthetic capture-page and actual completed thumbnail owners');
@@ -310,5 +312,5 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   await page.evaluate(()=>window.__ownerModule.harness_dispose());await released();
   const counts=await page.evaluate(()=>window.__owner);
   assert.equal(counts.downloads,3,'complete export works after every actual owner disposal');
-  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,responseReaderProof,partialRetainedInventory:{snapshotCount:retainedSnapshots.length,complete:true,totalMemoryProof:false,unobserved:["tachys-cached-strings","btree-nodes","signal-infrastructure","dom-storage","physical-blob-sharing","gpu-resources","temporary-future-owners"],targetLayout:retainedSnapshots[0].filter(row=>row.stage.startsWith("retained_layout_"))},partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,platform,...capacities},...counts};
+  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,responseReaderProof,browseLifetimeProof,partialRetainedInventory:{snapshotCount:retainedSnapshots.length,complete:true,totalMemoryProof:false,unobserved:["tachys-cached-strings","btree-nodes","signal-infrastructure","dom-storage","physical-blob-sharing","gpu-resources","temporary-future-owners"],targetLayout:retainedSnapshots[0].filter(row=>row.stage.startsWith("retained_layout_"))},partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,platform,...capacities},...counts};
 };

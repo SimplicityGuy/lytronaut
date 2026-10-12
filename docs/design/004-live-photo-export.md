@@ -551,3 +551,45 @@ before the existing single feature WASM build. The same three public mounted UI
 cases require the five phase rows, five plane descriptors and source-length
 correspondence. Tests and observations are source-only candidates; their execution
 and the remaining 64MiB transient/32MiB retained acceptance are pending.
+
+### Display-only Blob ownership regression candidate
+
+The browser adapter converts only already accepted native JPEG dataURLs to
+`image/jpeg` Blob URLs. Public `Decoded.image`, default JPEG encoding, selected
+pixels, ICC bytes and exported pairs are unchanged. The grid records explicit
+JPEG versus unavailable state. Each unpublished URL has a drop guard; old grid
+and stage URLs are released outside signal/RefCell borrows. A video renderer is
+also dropped outside its borrow, followed by the original selection-token check.
+
+The existing 128 KiB grid and 2 MiB AVC dataURL limits include the 23-byte envelope.
+Thus accepted decoded payload is at most `3*floor((L-23)/4)` bytes: 98,286 bytes
+per grid image and 1,572,846 bytes for an AVC stage image. Twenty-four grid payloads
+plus that stage payload total at most 3,931,710 logical bytes. This is one mode's
+accepted logical payload bound, not the retained or transient budget proof.
+Static previews and native focus derivatives retain their existing other bounds.
+
+Conversion temporarily owns the original Rust dataURL String capacity, its native
+JS representation (conservative UTF16: twice ASCII length), the native `atob`
+binary string (conservative UTF16: twice decoded byte length), a Rust binary
+String whose UTF8 length can be twice decoded byte length for high-bit Latin1,
+and a raw Vec with its actual capacity. Blob construction additionally overlaps
+that Vec with a JS Uint8Array backing and Blob logical payload; sharing is not
+assumed. Returned URL strings and decoded image pixels are separate owners.
+Interop/String/Vec capacities, old/new overlap and physical sharing remain
+unmeasured for the new source; the shorter retained URL never makes payload zero.
+No new 64 MiB/32 MiB acceptance is established by this source change.
+
+The canonical feature owner recipe calls `scripts/browser-lifetime-test.cjs`
+once, in an isolated public synthetic page before its ordinary small-owner
+counts and capacity window. The authored tests compare actual high-bit JPEG
+bytes, SHA and MIME, observe positive Blob sizes, reject malformed/oversize and
+URL-constructor/abort-during-create cases, and require every owned URL revoked
+before the page closes. They exercise both independent read/cancel settlement
+orders across repeated real owner remounts, synchronous capture/control bursts,
+reentrant Main/Selected/library cancellation, pre-first-poll action disposal,
+and an actually accepted backup mutation followed by mounted recovery. Main
+results are compared with an independent rating endpoint, and library tests
+assert the issued Main/Albums alias as well as selected DOM state. Native Image
+constructor/decode failures must actually be observed. All new tests remain
+unexecuted. The absent-GPU page explicitly reports renderer-destroy reentry as
+pending; it cannot stand in for an actually acquired device test.

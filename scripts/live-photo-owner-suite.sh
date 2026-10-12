@@ -22,6 +22,23 @@ for(const [index,report] of reports.entries()){
   assert.equal(trace.platform.complete,true);assert.equal(trace.platform.dropped,0);
   assert.equal(trace.platform.physicalHeapMeasured,false);
   assert.equal(report.downloads,3);
+  const lifetime=report.browseLifetimeProof;
+  if(index===0){
+    assert(lifetime&&typeof lifetime==='object','small canonical owner must execute browser lifetime regressions');
+    const facts=['stalledRead','stalledCancel','remountDrains','synchronousCaptureControlBurst','reentrantSelected','reentrantMain','reentrantLibrary','actionBeforePollDisposed','acceptedMutationRecovery','constructorFailure','decodeFailure','urlsReleasedBeforeClose'];
+    const keys=['jpeg',...facts,'rendererDestroyReentryCovered','rendererDestroyReentryPending','created','revoked','logicalJpegBytesMax','capacityCollection','totalMemoryProof'];
+    assert.deepEqual(Object.keys(lifetime).sort(),keys.sort(),'fixed public lifetime schema');
+    for(const key of facts)assert.equal(lifetime[key],true,`required actual synthetic lifecycle fact: ${key}`);
+    assert.equal(lifetime.rendererDestroyReentryCovered,false);assert.equal(lifetime.rendererDestroyReentryPending,true,'absent-GPU fixture cannot claim device-destroy coverage');
+    assert.equal(lifetime.capacityCollection,false);assert.equal(lifetime.totalMemoryProof,false);
+    for(const key of ['created','revoked','logicalJpegBytesMax'])assert(Number.isSafeInteger(lifetime[key])&&lifetime[key]>0&&lifetime[key]<=64*1024*1024);
+    assert.equal(lifetime.created,lifetime.revoked,'owned synthetic URLs released before closing page');
+    const jpeg=lifetime.jpeg;
+    assert.deepEqual(Object.keys(jpeg).sort(),['byteIdentical','shaIdentical','highBitBytes','mimeVerified','rejections','logicalJpegBytes'].sort());
+    for(const key of ['byteIdentical','shaIdentical','highBitBytes','mimeVerified'])assert.equal(jpeg[key],true);
+    assert.equal(jpeg.rejections,4);assert(Number.isSafeInteger(jpeg.logicalJpegBytes)&&jpeg.logicalJpegBytes>0&&jpeg.logicalJpegBytes<=1572846);
+  }else assert.equal(lifetime,null,'large/padded keep their existing owner workload');
+
   assert(Number.isSafeInteger(report.created)&&report.created>0);assert.equal(report.created,report.closed);
   assert(Number.isSafeInteger(report.outputs)&&report.outputs>0);assert.equal(report.outputs,report.framesClosed);
   assert(/^[0-9a-f]{40}$/.test(report.revision),'exact source revision required');
