@@ -456,7 +456,13 @@ struct Ui {
     next: RwSignal<Option<u32>>,
     files: RwSignal<Vec<PreservedFile>>,
     list_next: RwSignal<Option<u32>>,
+    list_offset: RwSignal<u32>,
+    list_target: RwSignal<u32>,
     album_next: RwSignal<Option<u32>>,
+    album_offset: RwSignal<u32>,
+    album_target: RwSignal<u32>,
+    library_requests: Rc<RefCell<u64>>,
+    album_requests: Rc<RefCell<u64>>,
     generation: Rc<RefCell<u64>>,
     stage_generation: Rc<RefCell<u64>>,
     aborts: Rc<RefCell<Vec<AbortController>>>,
@@ -552,7 +558,13 @@ impl Ui {
             next: RwSignal::new(None),
             files: RwSignal::new(Vec::new()),
             list_next: RwSignal::new(None),
+            list_offset: RwSignal::new(0),
+            list_target: RwSignal::new(0),
             album_next: RwSignal::new(None),
+            album_offset: RwSignal::new(0),
+            album_target: RwSignal::new(0),
+            library_requests: Rc::default(),
+            album_requests: Rc::default(),
             generation: Rc::default(),
             stage_generation: Rc::default(),
             aborts: Rc::default(),
@@ -929,8 +941,14 @@ impl Ui {
         self.export_abort.borrow_mut().take();
         self.watch_export(report).await
     }
+    fn invalidate_sidebar_requests(&self) {
+        *self.library_requests.borrow_mut() += 1;
+        *self.album_requests.borrow_mut() += 1;
+    }
     async fn libraries(&self, offset: u32) -> Result<()> {
-        let generation = *self.generation.borrow();
+        *self.library_requests.borrow_mut() += 1;
+        let request = *self.library_requests.borrow();
+        self.list_target.set(offset);
         let page: Result<Page<LibrarySummary>> = self
             .net
             .json(
@@ -940,25 +958,35 @@ impl Ui {
                 None,
             )
             .await;
-        if *self.generation.borrow() != generation {
+        if self.status.is_disposed() || *self.library_requests.borrow() != request {
             return Ok(());
         }
-        let page = page?;
+        let page = match page {
+            Ok(page) => page,
+            Err(error) => {
+                self.list_target.set(self.list_offset.get_untracked());
+                return Err(error);
+            }
+        };
         self.list_next.set(page.next_offset);
-        if offset == 0 {
-            self.libraries.set(page.items);
-        } else {
-            self.libraries.update(|v| v.extend(page.items));
-        }
+        self.list_offset.set(offset);
+        self.libraries.set(page.items);
         if self.library.get_untracked().is_none()
             && let Some(library) = self.libraries.get_untracked().first()
         {
             self.choose_library(library.clone()).await?;
         }
-        self.status.set("Library ready".into());
+        if !self.status.is_disposed() && *self.library_requests.borrow() == request {
+            self.status.set("Library ready".into());
+        }
         Ok(())
     }
     async fn choose_library(&self, library: LibrarySummary) -> Result<()> {
+        self.invalidate_sidebar_requests();
+        self.list_target.set(self.list_offset.get_untracked());
+        self.album_offset.set(0);
+        self.album_target.set(0);
+        self.album_next.set(None);
         self.clear_assets();
         let generation = *self.generation.borrow();
         self.library.set(Some(library.clone()));
@@ -986,8 +1014,10 @@ impl Ui {
         Ok(())
     }
     async fn load_albums(&self, offset: u32) -> Result<()> {
-        let generation = *self.generation.borrow();
         let library = self.library.get_untracked().ok_or("Select a library")?;
+        *self.album_requests.borrow_mut() += 1;
+        let request = *self.album_requests.borrow();
+        self.album_target.set(offset);
         let page: Result<Page<AlbumSummary>> = self
             .net
             .json(
@@ -1000,21 +1030,24 @@ impl Ui {
                 None,
             )
             .await;
-        if *self.generation.borrow() != generation
+        if self.status.is_disposed()
+            || *self.album_requests.borrow() != request
             || self
                 .library
-                .get_untracked()
-                .is_none_or(|l| l.id != library.id)
+                .with_untracked(|l| l.as_ref().is_none_or(|l| l.id != library.id))
         {
             return Ok(());
         }
-        let page = page?;
+        let page = match page {
+            Ok(page) => page,
+            Err(error) => {
+                self.album_target.set(self.album_offset.get_untracked());
+                return Err(error);
+            }
+        };
         self.album_next.set(page.next_offset);
-        if offset == 0 {
-            self.albums.set(page.items);
-        } else {
-            self.albums.update(|a| a.extend(page.items));
-        }
+        self.album_offset.set(offset);
+        self.albums.set(page.items);
         Ok(())
     }
     async fn load_files(&self, offset: u32) -> Result<()> {
@@ -1863,6 +1896,7 @@ pub fn app() -> impl IntoView {
     let page_event = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
         move |event: web_sys::Event| {
             if event.type_() == "pagehide" {
+                page_state.invalidate_sidebar_requests();
                 page_state.clear_assets();
                 if let Some(abort) = page_state.export_abort.borrow_mut().take() {
                     abort.abort();
@@ -1906,6 +1940,7 @@ pub fn app() -> impl IntoView {
             }
         });
         let cleanup = cleanup.get_value();
+        cleanup.invalidate_sidebar_requests();
         cleanup.clear_assets();
         if let Some(abort) = cleanup.export_abort.borrow_mut().take() {
             abort.abort();
@@ -1955,7 +1990,11 @@ fn Workspace() -> impl IntoView {
     let sort = s.sort;
     let files = s.files;
     let list_next = s.list_next;
+    let list_offset = s.list_offset;
+    let list_target = s.list_target;
     let album_next = s.album_next;
+    let album_offset = s.album_offset;
+    let album_target = s.album_target;
     let busy = s.busy;
     let job = s.job;
     let progress = s.progress;
@@ -1965,13 +2004,13 @@ fn Workspace() -> impl IntoView {
     view! {
         <div class="workstation">
             <nav class="rail" aria-label="Library and albums"><h2>"LIBRARIES"</h2>
-                {move||libraries.get().into_iter().enumerate().map(|(index,l)|{let selected=library;let id=l.id.clone();view!{<button class="rail-item" aria-pressed=move||selected.get().is_some_and(|s|s.id==id) on:click=move |_|{let u=ui();let task=u.clone();let l=l.clone();launch(u,async move{task.choose_library(l).await});}>{format!("Library {}",index+1)}</button>}}).collect_view()}
-                <Show when=move||list_next.get().is_some()><button on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.libraries(list_next.get_untracked().unwrap_or(0)).await});}>"More libraries"</button></Show>
+                {move||libraries.get().into_iter().enumerate().map(|(index,l)|{let selected=library;let id=l.id.clone();view!{<button class="rail-item library-item" aria-pressed=move||selected.get().is_some_and(|s|s.id==id) on:click=move |_|{let u=ui();let task=u.clone();let l=l.clone();launch(u,async move{task.choose_library(l).await});}>{format!("Library {}",list_offset.get() as usize+index+1)}</button>}}).collect_view()}
+                <div class="sidebar-pagination" aria-label="Library pages"><button id="library-prev" disabled=move||list_target.get()==0 on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.libraries(list_target.get_untracked().saturating_sub(PAGE_SIZE)).await});}>"Previous libraries"</button><span id="library-page">{move||format!("Page {}",list_offset.get()/PAGE_SIZE+1)}</span><button id="library-next" disabled=move||list_next.get().is_none() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.libraries(list_next.get_untracked().unwrap_or(0)).await});}>"Next libraries"</button></div>
                 <p>{move||library.get().map(|l|format!("{} captures · {} albums · {:?}",l.captures,l.albums,l.state)).unwrap_or_else(||"No library yet. Import your first library.".into())}</p>
                 <button class="rail-item" on:click=move |_|{let u=ui();u.album.set(None);let task=u.clone();launch(u,async move{task.page(0).await});}>"All captures"</button>
                 <h2>"ALBUMS"</h2>
-                {move||albums.get().into_iter().map(|album|{let selected=ui().album;let id=album.id.as_str().to_owned();let click_id=id.clone();view!{<button class="rail-item" aria-pressed=move||selected.get().as_deref()==Some(&id) on:click=move |_|{let u=ui();u.album.set(Some(click_id.clone()));u.sort.set("order".into());let task=u.clone();launch(u,async move{task.page(0).await});}>{format!("{}{} · {}",album.name,if album.name_truncated{" [truncated]"}else{""},album.captures)}</button>}}).collect_view()}
-                <Show when=move||album_next.get().is_some()><button on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.load_albums(album_next.get_untracked().unwrap_or(0)).await});}>"More albums"</button></Show>
+                {move||albums.get().into_iter().map(|album|{let selected=ui().album;let id=album.id.as_str().to_owned();let click_id=id.clone();view!{<button class="rail-item album-item" aria-pressed=move||selected.get().as_deref()==Some(&id) on:click=move |_|{let u=ui();u.album.set(Some(click_id.clone()));u.sort.set("order".into());let task=u.clone();launch(u,async move{task.page(0).await});}>{format!("{}{} · {}",album.name,if album.name_truncated{" [truncated]"}else{""},album.captures)}</button>}}).collect_view()}
+                <div class="sidebar-pagination" aria-label="Album pages"><button id="album-prev" disabled=move||album_target.get()==0 on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.load_albums(album_target.get_untracked().saturating_sub(PAGE_SIZE)).await});}>"Previous albums"</button><span id="album-page">{move||format!("Page {}",album_offset.get()/PAGE_SIZE+1)}</span><button id="album-next" disabled=move||album_next.get().is_none() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.load_albums(album_next.get_untracked().unwrap_or(0)).await});}>"Next albums"</button></div>
                 <div class="import"><h2>"IMPORT LIBRARY"</h2><label for="directory">"Library directory"</label><input id="directory" type="file" multiple=true node_ref=directory_ref disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let files=input.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();input.set_value("");let u=ui();let task=u.clone();launch(u,async move{task.upload(ImportKind::Directory,files).await});}/>
                     <label for="zip">"ZIP library archive"</label><input id="zip" type="file" accept=".zip,application/zip" disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let files=input.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();input.set_value("");let u=ui();let task=u.clone();launch(u,async move{task.upload(ImportKind::ZipLibrary,files).await});}/>
                     <Show when=move||!job.get().is_empty()><label for="import-progress">"Upload / committed bytes"</label><progress id="import-progress" value=move||progress.get() max=move||total.get()></progress><span>{move||format!("{} / {} bytes",progress.get(),total.get())}</span>

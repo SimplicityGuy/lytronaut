@@ -74,6 +74,8 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    fs.writeFileSync(path.join(root,'owner-results.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
    console.log(JSON.stringify(report));return;
   }
+  let sidebarProof=null;
+  if(!privateMode&&!gpuMode){checkpoint='bounded-sidebars';sidebarProof=await require('./sidebar-test.cjs')({browser,origin});}
   checkpoint='keyboard-navigation';const firstCapture=await page.$eval('.viewer-strip span',e=>e.textContent);
   await page.focus('.stage');await page.keyboard.press('ArrowRight');
   await page.waitForFunction(first=>document.querySelector('.viewer-strip span').textContent!==first,{},firstCapture);
@@ -408,7 +410,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   const direct=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(direct,200);
   await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
   assert.equal(errors.length,0);assert(!responses.includes(429));const urls=await page.evaluate(()=>window.__urls);assert.equal(urls.created,urls.revoked);
-  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,videoHttpRustUi:!privateMode,videoUiProof,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
+  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,sidebarProof,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,videoHttpRustUi:!privateMode,videoUiProof,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
   const clientDir=process.env.LYTRONAUT_CLIENT||'dist';const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
   result.applicationWasmSha256=hash(path.join(clientDir,'lytronaut_client_bg.wasm'));result.generatedGlueSha256=hash(path.join(clientDir,'lytronaut_client.js'));if(binary)result.nativeServiceSha256=hash(binary);
   console.log(JSON.stringify(result));

@@ -470,3 +470,29 @@ add no geometry/codec workload. This source candidate has not run yet and provid
 **partial retained evidence only**, never total 32MiB/64MiB acceptance. The sidebar
 list accumulation and parsed-JSON phase bounds identified in the historical
 `0f2fba4` audit remain unresolved; no admissions or navigation changed here.
+
+
+### Bounded sidebar ownership (source candidate)
+
+Library and album sidebars retain one 24-item page each. Previous/Next controls
+preserve access to all pages; library labels use the absolute page offset. Paging
+a sidebar preserves the selected library, album and capture even if its sidebar
+row is no longer visible. Choosing a different library retains the existing
+album/capture reset behavior. A pending request keeps the last committed page
+visible, while Previous can supersede a pending Next; an error restores the
+requested offset to the committed page so retry and back navigation remain useful.
+
+Independent library/album request epochs reject stale responses after rapid
+paging, library changes and owner cleanup. Capture selection/paging does not
+invalidate an unrelated sidebar response. This replaces accumulated sidebar rows;
+it does not lower catalog admissions or establish the remaining 32MiB retained
+budget. DOM/framework, DTO capacity and parsed-JSON phase gaps remain as above.
+
+The existing public `just browser-test` path includes an isolated synthetic
+sidebar case with 30 legal library and album response DTOs, backed by the existing
+public capture/source fixture. It exercises two-page navigation, absolute labels,
+off-page selections, delayed responses after Previous/library changes, capture
+selection during pending album paging and failed-page retry. All traffic stays
+on the existing loopback service; no fixture mutations or private intake are
+used. The ordinary stale-page reload test remains intact. These new source tests
+have not run; CI account startup and local build headroom remain blocked.
