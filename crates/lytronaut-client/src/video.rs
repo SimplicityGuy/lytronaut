@@ -93,7 +93,7 @@ async fn pause() {
     let _ = JsFuture::from(p).await;
 }
 fn cancelled(signal: &AbortSignal) -> Result<()> {
-    if signal.aborted() {
+    if crate::browser::signal_cancelled(signal) {
         Err("cancelled")
     } else {
         Ok(())
@@ -108,7 +108,7 @@ async fn wait_promise(
     let future = JsFuture::from(promise);
     let interrupted = async {
         loop {
-            if signal.aborted() {
+            if crate::browser::signal_cancelled(signal) {
                 return "cancelled";
             }
             if state.is_some_and(|s| s.borrow().error) {
@@ -305,7 +305,7 @@ async fn attempt(
                         // retaining a second full 8 MiB image beside Rust pixels.
                         let pixel_width = i32::try_from(width).map_err(|_| "frame pixel extent")?;
                         for row in (0..height).step_by(16) {
-                            if export_signal.aborted() {
+                            if crate::browser::signal_cancelled(&export_signal) {
                                 return Err("cancelled");
                             }
                             let pixels = context
@@ -340,7 +340,9 @@ async fn attempt(
                         canvas.0.set_height(0);
                         frame.release();
                         builder
-                            .push(index, &image, || export_signal.aborted())
+                            .push(index, &image, || {
+                                crate::browser::signal_cancelled(&export_signal)
+                            })
                             .map_err(|_| "focus movie encoding failed")?;
                         (export.progress)(builder.completed_planes(), export.total);
                     }

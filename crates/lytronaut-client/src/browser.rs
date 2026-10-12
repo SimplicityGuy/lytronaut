@@ -123,10 +123,12 @@ fn browse_submit(ui: &Ui, lane: BrowseLane, intent: BrowseIntent) {
             abort,
         )
     };
-    // Native abort dispatches synchronous JS listeners. Never retain a runtime
-    // RefCell borrow while entering user/native cancellation callbacks.
+    // The superseded operation observes cancellation now; its native abort and
+    // synchronous JS listeners run after this handler returns (`supersede`), so
+    // a listener re-entering this same control is kept as the newer intent.
+    // No runtime RefCell borrow is held across that later native abort either.
     if let Some(abort) = previous_abort {
-        abort.abort();
+        supersede(abort);
     }
     if !schedule {
         return;
@@ -243,7 +245,7 @@ impl Drop for LiveAbort {
             slot.take();
         }
         drop(slot);
-        self.controller.abort();
+        supersede(self.controller.clone());
     }
 }
 struct BusyGuard(RwSignal<bool>);
@@ -269,8 +271,46 @@ async fn pause(ms: i32) {
     });
     let _ = JsFuture::from(promise).await;
 }
+thread_local! {
+    static CANCELLATIONS: RefCell<DeferredCancellations<AbortController>> =
+        RefCell::new(DeferredCancellations::default());
+}
+/// Cancel superseded or released work without entering native cancellation
+/// from the current call stack. The controller is cancelled for every Rust
+/// observer immediately (`cancelled` / `signal_cancelled`); its native abort and
+/// the synchronous JS listeners that abort dispatches run in one microtask
+/// drain after the originating DOM handler returns. A listener may therefore
+/// re-dispatch an event to that same control and be kept as the newer intent.
+fn supersede(abort: AbortController) {
+    if abort.signal().aborted() {
+        return;
+    }
+    let schedule = CANCELLATIONS.with(|queue| {
+        queue
+            .borrow_mut()
+            .defer(abort, |a, b| js_sys::Object::is(a.as_ref(), b.as_ref()))
+    });
+    if schedule {
+        spawn_local(async {
+            // No queue borrow is held while native listeners run; a listener's
+            // own supersession joins this drain.
+            while let Some(abort) = CANCELLATIONS.with(|queue| queue.borrow_mut().next()) {
+                abort.abort();
+            }
+        });
+    }
+}
+/// Native abort, or a supersession whose native abort is still queued.
+pub(crate) fn signal_cancelled(signal: &web_sys::AbortSignal) -> bool {
+    signal.aborted()
+        || CANCELLATIONS.with(|queue| {
+            queue
+                .borrow()
+                .contains(|abort| js_sys::Object::is(abort.signal().as_ref(), signal.as_ref()))
+        })
+}
 fn cancelled(abort: &AbortController) -> bool {
-    abort.signal().aborted()
+    signal_cancelled(&abort.signal())
 }
 impl Net {
     async fn lease(&self, bytes: u64, abort: &AbortController) -> Result<Lease> {
@@ -655,7 +695,7 @@ impl ReadDrain {
             result.finish(true).await;
             return Err("Browser cancellation unavailable".into());
         }
-        if result.signal.aborted() {
+        if signal_cancelled(&result.signal) {
             result.cancel_once();
         }
         Ok(result)
@@ -667,7 +707,7 @@ impl ReadDrain {
         }
     }
     async fn finish(&mut self, failed: bool) {
-        if failed || self.signal.aborted() {
+        if failed || signal_cancelled(&self.signal) {
             self.cancel_once();
         }
         let cancellation = self.cancellation.borrow().clone();
@@ -943,7 +983,7 @@ impl Ui {
             (runtime.mount, runtime.net.clone(), aborts)
         });
         for abort in aborts.into_iter().flatten() {
-            abort.abort();
+            supersede(abort);
         }
         Self {
             mount: Rc::new(Cell::new(mount)),
@@ -1029,7 +1069,9 @@ impl Ui {
         self.video_label.set(String::new());
         self.displayed_derivative.set(None);
         self.orientation.set(1);
-        // All owned state is cleared before native callbacks can navigate again.
+        // All owned state is cleared and the generation advanced before any
+        // superseded native abort runs; those aborts, and any navigation their
+        // listeners dispatch, follow after the originating handler returns.
         drop(renderer);
         if url.starts_with("blob:") {
             let _ = web_sys::Url::revoke_object_url(&url);
@@ -1038,7 +1080,7 @@ impl Ui {
             .into_iter()
             .flatten()
         {
-            abort.abort();
+            supersede(abort);
         }
         generation
     }
@@ -1063,7 +1105,7 @@ impl Ui {
             }
         }
         for abort in aborts.into_iter().flatten() {
-            abort.abort();
+            supersede(abort);
         }
         generation
     }
@@ -1408,7 +1450,7 @@ impl Ui {
             aborts
         });
         for abort in aborts.into_iter().flatten() {
-            abort.abort();
+            supersede(abort);
         }
     }
     fn take_browse_abort(&self, lane: BrowseLane) -> Option<AbortController> {
@@ -1421,10 +1463,22 @@ impl Ui {
             }
         })
     }
+    /// Upload cancellation is visible to the upload continuation at once; the
+    /// native XHR abort, whose events dispatch synchronously, runs after the
+    /// originating handler returns (see `supersede`).
+    fn cancel_upload(&self) {
+        *self.upload_cancelled.borrow_mut() = true;
+        let xhr = self.upload_abort.borrow().clone();
+        if let Some(xhr) = xhr {
+            spawn_local(async move {
+                let _ = xhr.abort();
+            });
+        }
+    }
     fn cancel_browse(&self, lane: BrowseLane) {
         let abort = self.take_browse_abort(lane);
         if let Some(abort) = abort {
-            abort.abort();
+            supersede(abort);
         }
     }
     fn detach_browse(&self) {
@@ -1437,7 +1491,7 @@ impl Ui {
             }
         });
         for abort in aborts.into_iter().flatten() {
-            abort.abort();
+            supersede(abort);
         }
     }
     fn invalidate_sidebar_requests(&self) {
@@ -1505,7 +1559,7 @@ impl Ui {
         let main_abort = self.take_browse_abort(BrowseLane::Main);
         let generation = self.clear_assets();
         if let Some(abort) = main_abort {
-            abort.abort();
+            supersede(abort);
         }
         if generation != *self.generation.borrow() || !self.attached(self.mount.get()) {
             return;
@@ -1564,7 +1618,7 @@ impl Ui {
             };
             let abort = self.stage_abort.borrow_mut().take();
             if let Some(abort) = abort {
-                abort.abort();
+                supersede(abort);
             }
             generation
         };
@@ -1647,7 +1701,7 @@ impl Ui {
         self.offset.set(0);
         let generation = self.clear_assets();
         for abort in aborts.into_iter().flatten() {
-            abort.abort();
+            supersede(abort);
         }
         if generation != *self.generation.borrow() || !self.attached(self.mount.get()) {
             return;
@@ -2643,12 +2697,9 @@ pub fn app() -> impl IntoView {
                 page_state.clear_assets();
                 let abort = page_state.export_abort.borrow_mut().take();
                 if let Some(abort) = abort {
-                    abort.abort();
+                    supersede(abort);
                 }
-                let xhr = page_state.upload_abort.borrow().clone();
-                if let Some(xhr) = xhr {
-                    let _ = xhr.abort();
-                }
+                page_state.cancel_upload();
             } else if Reflect::get(&event, &"persisted".into())
                 .ok()
                 .and_then(|value| value.as_bool())
@@ -2685,12 +2736,9 @@ pub fn app() -> impl IntoView {
         cleanup.clear_assets();
         let abort = cleanup.export_abort.borrow_mut().take();
         if let Some(abort) = abort {
-            abort.abort();
+            supersede(abort);
         }
-        let xhr = cleanup.upload_abort.borrow().clone();
-        if let Some(xhr) = xhr {
-            let _ = xhr.abort();
-        }
+        cleanup.cancel_upload();
     });
     let status = state.status;
     view! {
@@ -2757,7 +2805,7 @@ fn Workspace() -> impl IntoView {
                 <div class="import"><h2>"IMPORT LIBRARY"</h2><label for="directory">"Library directory"</label><input id="directory" type="file" multiple=true node_ref=directory_ref disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::Directory,files).await}});input.set_value("");}/>
                     <label for="zip">"ZIP library archive"</label><input id="zip" type="file" accept=".zip,application/zip" disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::ZipLibrary,files).await}});input.set_value("");}/>
                     <Show when=move||!job.get().is_empty()><label for="import-progress">"Upload / committed bytes"</label><progress id="import-progress" value=move||progress.get() max=move||total.get()></progress><span>{move||format!("{} / {} bytes",progress.get(),total.get())}</span>
-                        <button disabled=move||!busy.get() || job.get().is_empty() on:click=move |_|{let u=ui();*u.upload_cancelled.borrow_mut()=true;let xhr=u.upload_abort.borrow().clone();if let Some(xhr)=xhr{let _=xhr.abort();}let task=u.clone();launch(u,ActionLane::ImportCancel,move || async move{task.net.mutation(&format!("/imports/{}/cancel",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Cancel import"</button>
+                        <button disabled=move||!busy.get() || job.get().is_empty() on:click=move |_|{let u=ui();u.cancel_upload();let task=u.clone();launch(u,ActionLane::ImportCancel,move || async move{task.net.mutation(&format!("/imports/{}/cancel",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Cancel import"</button>
                         <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.status_job().await});}>"Recover import status"</button>
                         <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.net.mutation(&format!("/imports/{}/finish",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Retry catalog adaptation"</button>
                         <p>"Interrupted uploads: recover status, then reselect the original directory or ZIP to start a new bounded import. Completed original bytes deduplicate."</p>
@@ -2765,7 +2813,7 @@ fn Workspace() -> impl IntoView {
                 </div>
             </nav>
             <main id="content" class="workspace"><div class="toolbar"><h1>"Library explorer"</h1><form class="search" on:submit=move|e|{e.prevent_default();let u=ui();u.request_page(0);}><label for="search">"Search captures"</label><input id="search" type="search" prop:value=move||search.get() on:input=move|e|search.set(event_target_value(&e))/><button type="submit">"Search"</button><label for="sort">"Sort"</label><select id="sort" prop:value=move||sort.get() on:change=move|e|{sort.set(event_target_value(&e));let u=ui();u.request_page(0);}><option value="order">"Library / album order"</option><option value="name">"Name"</option><option value="rating">"Imported rating"</option></select></form></div>
-                <section class="export-controls" aria-label="Export and lossless backup"><button id="backup-library" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.export(None).await});}>"Back up originals and catalog"</button><button id="recover-export" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.recover_export().await});}>"Recover export / restore status"</button><label for="restore-bundle">"Restore private bundle to an isolated store"</label><input id="restore-bundle" type="file" accept=".lytronaut" disabled=move||export_busy.get() on:change=move|e|{let input=event_target::<web_sys::HtmlInputElement>(&e);let file=input.files().and_then(|f|f.get(0));input.set_value("");if let Some(file)=file{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.restore_bundle(file).await});}}/><button id="cancel-restore-upload" disabled=move||!export_busy.get()||export_job.get().is_some() on:click=move |_|{let u=ui();let abort=u.export_abort.borrow_mut().take();if let Some(abort)=abort{abort.abort();}}>"Cancel restore upload"</button><p>"Private backup includes all immutable originals and catalog associations. Pending jobs are excluded. Restore creates a separate store."</p>{move||export_job.get().map(|r|{let id=r.job.id.as_str().to_owned();let recipe_id=id.clone();let cancel_id=id.clone();view!{<p id="export-progress">{format!("{:?} · {} bytes processed",r.job.state,r.job.completed_bytes)}</p><Show when=move||r.job.state==JobState::Succeeded&&r.kind!=ExportKind::Restore><a id="export-download" href=format!("/exports/{id}/download") download="">"Download export / private bundle"</a></Show><Show when=move||r.job.state==JobState::Succeeded&&r.kind==ExportKind::Flatten><a id="export-recipe" href=format!("/exports/{recipe_id}/recipe") download="lytronaut-recipe.json">"Download Lytronaut provenance"</a></Show><button id="cancel-export" disabled=move||matches!(r.job.state,JobState::Cancelled|JobState::Failed) on:click=move |_|{let u=ui();let task=u.clone();let id=cancel_id.clone();launch(u,ActionLane::ExportCancel,move || async move{let r=task.net.json(&format!("/exports/{id}"),"DELETE","mutation",None).await?;task.watch_export(r).await});}>"Cancel or remove result"</button>}})}</section>
+                <section class="export-controls" aria-label="Export and lossless backup"><button id="backup-library" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.export(None).await});}>"Back up originals and catalog"</button><button id="recover-export" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.recover_export().await});}>"Recover export / restore status"</button><label for="restore-bundle">"Restore private bundle to an isolated store"</label><input id="restore-bundle" type="file" accept=".lytronaut" disabled=move||export_busy.get() on:change=move|e|{let input=event_target::<web_sys::HtmlInputElement>(&e);let file=input.files().and_then(|f|f.get(0));input.set_value("");if let Some(file)=file{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.restore_bundle(file).await});}}/><button id="cancel-restore-upload" disabled=move||!export_busy.get()||export_job.get().is_some() on:click=move |_|{let u=ui();let abort=u.export_abort.borrow_mut().take();if let Some(abort)=abort{supersede(abort);}}>"Cancel restore upload"</button><p>"Private backup includes all immutable originals and catalog associations. Pending jobs are excluded. Restore creates a separate store."</p>{move||export_job.get().map(|r|{let id=r.job.id.as_str().to_owned();let recipe_id=id.clone();let cancel_id=id.clone();view!{<p id="export-progress">{format!("{:?} · {} bytes processed",r.job.state,r.job.completed_bytes)}</p><Show when=move||r.job.state==JobState::Succeeded&&r.kind!=ExportKind::Restore><a id="export-download" href=format!("/exports/{id}/download") download="">"Download export / private bundle"</a></Show><Show when=move||r.job.state==JobState::Succeeded&&r.kind==ExportKind::Flatten><a id="export-recipe" href=format!("/exports/{recipe_id}/recipe") download="lytronaut-recipe.json">"Download Lytronaut provenance"</a></Show><button id="cancel-export" disabled=move||matches!(r.job.state,JobState::Cancelled|JobState::Failed) on:click=move |_|{let u=ui();let task=u.clone();let id=cancel_id.clone();launch(u,ActionLane::ExportCancel,move || async move{let r=task.net.json(&format!("/exports/{id}"),"DELETE","mutation",None).await?;task.watch_export(r).await});}>"Cancel or remove result"</button>}})}</section>
                 <section class="viewer" aria-label="Capture viewer"><div class="stage" tabindex="0" aria-label="Capture stage. Left and right arrows change capture" on:keydown=move|e|{if e.key()=="ArrowLeft"{e.prevent_default();ui().navigate(-1);}else if e.key()=="ArrowRight"{e.prevent_default();ui().navigate(1);}}>
                     <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img style:display=move||if gpu_visible.get(){"none"}else{"block"} src=move||stage.get() alt=move||detail.get().map(|d|format!("{}: {}",if !video_lambdas.get().is_empty(){"Archived browser focus derivative"}else if displayed_derivative.get().is_some(){"Stored JPEG focus derivative"}else{"Static JPEG preview"},d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
                     <canvas id="gpu-stage" role="img" aria-label="Verified stored derivative GPU presentation" style:display=move||if gpu_visible.get(){"block"}else{"none"} style="max-width:100%;max-height:100%;object-fit:contain"/>
@@ -2775,7 +2823,7 @@ fn Workspace() -> impl IntoView {
                 </div><nav class="filmstrip" aria-label="Capture filmstrip">{move||captures.get().iter().cloned().enumerate().map(|(i,capture)|{let id=capture.id;view!{<button aria-label=format!("Select capture {}: {}",offset.get_untracked() as usize+i+1,capture.name) on:click=move |_|{let u=ui();u.request_selected(SelectedIntent::Capture(id.clone()));}>{i+1}</button>}}).collect_view()}</nav>
                 <div class="pagination"><button disabled=move||offset.get()==0 on:click=move |_|{let u=ui();u.request_page(offset.get_untracked().saturating_sub(PAGE_SIZE));}>"Previous page"</button><span>{move||format!("Page {}",offset.get()/PAGE_SIZE+1)}</span><button disabled=move||next.get().is_none() on:click=move |_|{let u=ui();u.request_page(next.get_untracked().unwrap_or(0));}>"Next page"</button></div>
                 <Show when=move||!files.get().is_empty()><h2>"Preserved library files"</h2><ul>{move||file_links(files.get())}</ul></Show>
-                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if !video_lambdas.get().is_empty(){"Available · discrete archived browser AVC planes".to_owned()}else if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>{move||if !video_lambdas.get().is_empty(){"Browser AVC · hardware unverified".to_owned()}else{gpu_status.get()}}</dd></dl><h3>"Export verified pixels"</h3><Show when=move||!video_lambdas.get().is_empty()><p id="video-export-unavailable">"PNG/JPEG export from browser AVC planes is unavailable. Select a verified static/JPEG preview to export PNG/JPEG pixels. Live Photo pair export and original backup remain available."</p></Show><button id="export-png" disabled=move||export_busy.get()||stage.get().is_empty()||!video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.export(Some(ExportFormat::Png)).await});}>"Export PNG"</button><button id="export-jpeg" disabled=move||export_busy.get()||stage.get().is_empty()||!video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.export(Some(ExportFormat::Jpeg)).await});}>"Export JPEG"</button><p>"Flattened stored pixels lose refocus ability. PNG preserves decoded JPEG pixels; JPEG adds compression loss. Unknown color profile. Download the separate Lytronaut provenance record."</p><h3>"Live Photo focus animation"</h3><button id="export-live-photo" disabled=move||export_busy.get()||(displayed_derivative.get().is_none()&&video_lambdas.get().is_empty()) on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.live_photo().await});}>"Export Live Photo pair (.zip)"</button><button id="cancel-live-photo" disabled=move||!export_busy.get()||video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let abort=u.live_photo_abort.borrow_mut().take();if let Some(abort)=abort{abort.abort();u.status.set("Live Photo export cancelled; no resource pair published".into());}}>"Cancel browser Live Photo export"</button><p>"A silent three-second generated focus animation from verified stored planes, with your selected key image. Extract the ZIP and import its JPEG and MOV together into Photos. Unknown source color profile; lossy JPEG/chroma conversion. Imported edits remain preserved only. Unsupported codecs or geometry retain ordinary still export."</p><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
+                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if !video_lambdas.get().is_empty(){"Available · discrete archived browser AVC planes".to_owned()}else if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>{move||if !video_lambdas.get().is_empty(){"Browser AVC · hardware unverified".to_owned()}else{gpu_status.get()}}</dd></dl><h3>"Export verified pixels"</h3><Show when=move||!video_lambdas.get().is_empty()><p id="video-export-unavailable">"PNG/JPEG export from browser AVC planes is unavailable. Select a verified static/JPEG preview to export PNG/JPEG pixels. Live Photo pair export and original backup remain available."</p></Show><button id="export-png" disabled=move||export_busy.get()||stage.get().is_empty()||!video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.export(Some(ExportFormat::Png)).await});}>"Export PNG"</button><button id="export-jpeg" disabled=move||export_busy.get()||stage.get().is_empty()||!video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.export(Some(ExportFormat::Jpeg)).await});}>"Export JPEG"</button><p>"Flattened stored pixels lose refocus ability. PNG preserves decoded JPEG pixels; JPEG adds compression loss. Unknown color profile. Download the separate Lytronaut provenance record."</p><h3>"Live Photo focus animation"</h3><button id="export-live-photo" disabled=move||export_busy.get()||(displayed_derivative.get().is_none()&&video_lambdas.get().is_empty()) on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Export,move || async move{task.live_photo().await});}>"Export Live Photo pair (.zip)"</button><button id="cancel-live-photo" disabled=move||!export_busy.get()||video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let abort=u.live_photo_abort.borrow_mut().take();if let Some(abort)=abort{supersede(abort);u.status.set("Live Photo export cancelled; no resource pair published".into());}}>"Cancel browser Live Photo export"</button><p>"A silent three-second generated focus animation from verified stored planes, with your selected key image. Extract the ZIP and import its JPEG and MOV together into Photos. Unknown source color profile; lossy JPEG/chroma conversion. Imported edits remain preserved only. Unsupported codecs or geometry retain ordinary still export."</p><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
             </main>
         </div>
     }
