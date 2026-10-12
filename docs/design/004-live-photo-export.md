@@ -593,3 +593,23 @@ assert the issued Main/Albums alias as well as selected DOM state. Native Image
 constructor/decode failures must actually be observed. All new tests remain
 unexecuted. The absent-GPU page explicitly reports renderer-destroy reentry as
 pending; it cannot stand in for an actually acquired device test.
+
+The GPU acquisition guard is shared by mounted owners. A timed-out adapter or
+request-device bridge keeps its admission slot until creation settles and any
+late renderer is destroyed, including synchronous destruction callbacks. A busy
+slot follows the existing automatic CPU fallback without starting another native
+request. The feature-only `harness_gpu_acquisition_pending` getter exposes this
+one existing boolean for synchronous test assertions; it is absent ordinary
+production builds and does not start or alter GPU work.
+
+`just live-photo-owner-build` builds the separate feature artifact once. After
+that build, the reference-host-only `just live-photo-gpu-owner-test` reuses it,
+requires matching source revision, and exercises real held adapter and device
+promises across three remounts each. Its bounded report records exact raw WASM,
+generated WASM and glue hashes. Actual GPU absence fails this recipe; the Linux
+CPU owner suite and its three geometry cases remain separate. The ordinary GPU
+browser path also tests a real acquired device's synchronous destroy callback
+selecting a newer capture during AVC adoption, independently of its existing
+successful AVC adoption test. These new tests are source-only and unexecuted;
+they do not establish physical memory, counted 64/32 MiB, performance or Photos
+acceptance.

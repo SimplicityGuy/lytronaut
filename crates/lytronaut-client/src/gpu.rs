@@ -57,6 +57,10 @@ mod web {
         // owns this slot while its promise drains and late device is destroyed.
         static ACQUIRING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
+    #[cfg(feature = "test-harness")]
+    pub(crate) fn acquisition_pending() -> bool {
+        ACQUIRING.with(std::cell::Cell::get)
+    }
     struct Acquisition;
     impl Acquisition {
         fn take() -> Result<Self, &'static str> {
@@ -404,6 +408,8 @@ mod web {
 }
 #[cfg(target_arch = "wasm32")]
 pub use web::Renderer;
+#[cfg(all(target_arch = "wasm32", feature = "test-harness"))]
+pub(crate) use web::acquisition_pending;
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -48,3 +48,10 @@ pub fn harness_remount() {
     let handle = leptos::mount::mount_to(parent, browser::app);
     TEST_MOUNT.with(|slot| *slot.borrow_mut() = Some(Box::new(move || drop(handle))));
 }
+
+/// Test-only synchronous admission observation; never starts a native request.
+#[cfg(all(target_arch = "wasm32", feature = "test-harness"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn harness_gpu_acquisition_pending() -> bool {
+    gpu::acquisition_pending()
+}

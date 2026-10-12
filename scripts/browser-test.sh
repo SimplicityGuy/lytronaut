@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ ${LYTRONAUT_GPU_LIFETIME_TEST:-0} == 1 ]]; then
+    test "${LYTRONAUT_GPU_TEST:-0}" = 1
+    test "${LYTRONAUT_PRIVATE_TEST:-0}" != 1
+    test "${LYTRONAUT_OWNER_TEST:-0}" != 1
+    test -z "${LYTRONAUT_VIDEO_PRIVATE_ROOT:-}${LYTRONAUT_PRIVATE_SEALED_ROOT:-}"
+    test -n "${LYTRONAUT_GPU_EVIDENCE:-}"
+fi
 browser_scratch=$(mktemp -d "${TMPDIR:-/tmp}/lytronaut-browser.XXXXXX")
 chmod 700 "$browser_scratch"
 # Keep synthetic screenshot/results for local review; CI scratch contains no private data.
@@ -16,5 +23,10 @@ case "$target_root" in /*) browser_binary="$target_root/debug/lytronaut-service"
 LYTRONAUT_TEST_ROOT="$browser_scratch" LYTRONAUT_BINARY="$browser_binary" node scripts/browser-test.cjs
 if [[ ${LYTRONAUT_OWNER_TEST:-0} == 1 ]]; then
     cp "$browser_scratch/owner-results.json" "$LYTRONAUT_OWNER_EVIDENCE/runtime${LYTRONAUT_OWNER_SUFFIX:-}.json"
+fi
+if [[ ${LYTRONAUT_GPU_LIFETIME_TEST:-0} == 1 ]]; then
+    test -n "${LYTRONAUT_GPU_EVIDENCE:-}"
+    test "$(wc -c < "$browser_scratch/gpu-lifetime-results.json")" -le 16384
+    cp "$browser_scratch/gpu-lifetime-results.json" "$LYTRONAUT_GPU_EVIDENCE/runtime-gpu-lifetime.json"
 fi
 printf 'Synthetic browser artifacts: %s\n' "$browser_scratch"

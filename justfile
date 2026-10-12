@@ -76,9 +76,8 @@ live-photo-browser-test: wasm-build
     npm ci --ignore-scripts --prefix scripts/browser
     node scripts/live-photo-test.cjs
 
-# Separate feature artifact: actual mounted-owner disposal, never production glue.
-live-photo-owner-test:
-    rm -f owner-evidence.tar.gz owner-evidence.tar.gz.partial
+# Separate feature artifact, shared by owner and reference-host GPU recipes.
+live-photo-owner-build:
     just build
     cargo test --locked -p lytronaut-client --features test-harness retained_observations::tests
     cargo test --locked -p lytronaut-format --features test-harness capacity_observations::metadata_tests
@@ -87,9 +86,23 @@ live-photo-owner-test:
     test "$(wasm-bindgen --version)" = "wasm-bindgen 0.2.129"
     wasm-bindgen --target web --out-dir dist-owner "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/debug/lytronaut_client.wasm"
     cp "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/debug/lytronaut_client.wasm" dist-owner/application.wasm
+    git rev-parse HEAD > dist-owner/source-revision
+
+live-photo-owner-test:
+    rm -f owner-evidence.tar.gz owner-evidence.tar.gz.partial
+    just live-photo-owner-build
     npm ci --ignore-scripts --prefix scripts/browser
     mkdir -p owner-evidence
     env -u LYTRONAUT_VIDEO_PRIVATE_ROOT LYTRONAUT_TEST_REVISION="$(git rev-parse HEAD)" LYTRONAUT_CLIENT=dist-owner LYTRONAUT_OWNER_TEST=1 LYTRONAUT_OWNER_EVIDENCE=owner-evidence bash scripts/live-photo-owner-evidence.sh
+
+# Reference-host actual GPU promises/remounts; reuse the current feature build.
+# Fails when no real GPU is available. Not a Linux software/GPU substitution.
+live-photo-gpu-owner-test:
+    test -z "${LYTRONAUT_VIDEO_PRIVATE_ROOT:-}${LYTRONAUT_PRIVATE_SEALED_ROOT:-}"
+    test "${LYTRONAUT_PRIVATE_TEST:-0}" != 1
+    test "$(cat dist-owner/source-revision)" = "$(git rev-parse HEAD)"
+    mkdir -p gpu-owner-evidence
+    env -u LYTRONAUT_VIDEO_PRIVATE_ROOT -u LYTRONAUT_OWNER_TEST LYTRONAUT_TEST_REVISION="$(git rev-parse HEAD)" LYTRONAUT_CLIENT=dist-owner LYTRONAUT_GPU_TEST=1 LYTRONAUT_GPU_LIFETIME_TEST=1 LYTRONAUT_GPU_EVIDENCE=gpu-owner-evidence bash scripts/browser-test.sh
 
 # Public real-encoder experiment only; reuse the current test-harness build.
 live-photo-jpeg-stress-test:

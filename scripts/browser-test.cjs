@@ -9,6 +9,8 @@ const root=process.env.LYTRONAUT_TEST_ROOT;
 assert(root,'LYTRONAUT_TEST_ROOT must point at synthetic fixture/scratch');
 const gpuMode=process.env.LYTRONAUT_GPU_TEST==='1';
 const privateMode=process.env.LYTRONAUT_PRIVATE_TEST==='1';
+const gpuLifetimeMode=process.env.LYTRONAUT_GPU_LIFETIME_TEST==='1';
+if(gpuLifetimeMode)assert(gpuMode&&!privateMode&&process.env.LYTRONAUT_OWNER_TEST!=='1'&&!process.env.LYTRONAUT_VIDEO_PRIVATE_ROOT&&!process.env.LYTRONAUT_PRIVATE_SEALED_ROOT,'reference GPU lifetime fixture rejects incompatible/private flags');
 const binary=process.env.LYTRONAUT_BINARY;
 const origin=process.env.LYTRONAUT_TEST_ORIGIN||'http://127.0.0.1:3017';
 const data=privateMode?root:path.join(root,'data');
@@ -37,7 +39,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
       a.requestDevice=async (...args)=>{
         if(window.__gpuFault==='device')throw Error('Injected device rejection');
         if(window.__gpuFault==='late-device')await new Promise(r=>setTimeout(r,1200));
-        const d=await requestDevice(...args);window.__gpuDevice=d;window.__gpuCounts.created++;const destroy=d.destroy.bind(d);let destroyed=false;d.destroy=()=>{if(!destroyed){destroyed=true;window.__gpuCounts.destroyed++;}return destroy();};
+        const d=await requestDevice(...args);window.__gpuDevice=d;window.__gpuCounts.created++;const destroy=d.destroy.bind(d);let destroyed=false;d.destroy=()=>{if(!destroyed){destroyed=true;window.__gpuCounts.destroyed++;const callback=window.__gpuDestroyCallback;window.__gpuDestroyCallback=null;if(callback)callback();}return destroy();};
         const shader=d.createShaderModule.bind(d);
         d.createShaderModule=desc=>shader(window.__gpuFault==='pipeline'?{...desc,code:'invalid WGSL'}:desc);
         return d;
@@ -45,8 +47,8 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
     };
    }window.__nativeVideoDecoder=window.VideoDecoder;Object.defineProperty(window,'VideoDecoder',{value:undefined,writable:true});
    window.__urls={created:0,revoked:0};const create=URL.createObjectURL,revoke=URL.revokeObjectURL;
-   URL.createObjectURL=function(...args){window.__urls.created++;return create.apply(this,args);};
-   URL.revokeObjectURL=function(...args){window.__urls.revoked++;return revoke.apply(this,args);};
+   URL.createObjectURL=function(...args){window.__urls.created++;const url=create.apply(this,args);window.__lastCreatedUrl=url;return url;};
+   URL.revokeObjectURL=function(...args){window.__urls.revoked++;if(window.__gpuDestroyProbe?.url===args[0])window.__gpuDestroyProbe.revoked=true;return revoke.apply(this,args);};
   },gpuMode);await instrument(page);
   const errors=[],responses=[];const attach=p=>{p.on('pageerror',e=>{errors.push(e.message);if(!privateMode)console.error(e.message);});p.on('response',r=>{if(/\/assets\//.test(r.url()))responses.push(r.status());});};attach(page);
   if(!privateMode)console.error('opening app');await page.goto(origin);checkpoint='direct-entry';await page.waitForSelector('#directory');
@@ -59,6 +61,16 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   }
   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&document.querySelectorAll('.capture').length>0,{timeout:120000});
   assert(await page.$eval('.stage img',e=>e.complete&&e.naturalWidth>0));
+  if(gpuLifetimeMode){
+   checkpoint='gpu-acquisition-lifetime';await page.close();
+   const proof=await require('./gpu-lifetime-test.cjs')({browser,origin});
+   const clientDir=process.env.LYTRONAUT_CLIENT;assert(clientDir);
+   const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+   const report={...proof,revision:process.env.LYTRONAUT_TEST_REVISION,artifactFeature:'test-harness',productionArtifact:false,browser:await browser.version(),applicationWasmSha256:hash(path.join(clientDir,'application.wasm')),generatedWasmSha256:hash(path.join(clientDir,'lytronaut_client_bg.wasm')),generatedGlueSha256:hash(path.join(clientDir,'lytronaut_client.js'))};
+   assert(/^[0-9a-f]{40}$/.test(report.revision));
+   const serialized=JSON.stringify(report);assert(Buffer.byteLength(serialized)<=16*1024);
+   fs.writeFileSync(path.join(root,'gpu-lifetime-results.json'),serialized+'\n',{mode:0o600,flag:'wx'});console.log(serialized);return;
+  }
   if(process.env.LYTRONAUT_OWNER_TEST==='1') {
    assert(!privateMode&&!gpuMode,'owner harness is public synthetic only');
    checkpoint='live-photo-actual-owner';
@@ -190,7 +202,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   };
   let videoUiProof=null;
   if(!privateMode){
-   let gpuVideoFailureRecovery=null;
+   let gpuVideoFailureRecovery=null,rendererDestroyReentry=null;
    checkpoint='video-ui';
    // Prior intentional derivative faults select CPU fallback for this session.
    // Reload establishes a fresh automatic GPU attempt before testing the join.
@@ -266,9 +278,37 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
     const lossStart=Date.now();await page.evaluate(()=>window.__gpuDevice.destroy());await page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.includes('device lost'));
     const lossRecoveryMs=Date.now()-lossStart;assert(lossRecoveryMs<=1000);assert(await page.$eval('.stage img',e=>getComputedStyle(e).display!=='none'&&e.naturalWidth>0));
     gpuVideoFailureRecovery={priorGpuPreserved:true,lossRecoveryMs,verifiedImageFallback:true};await page.evaluate(()=>window.VideoDecoder=window.__nativeVideoDecoder);
+    // A separate successful AVC pass above already proves ordinary adoption.
+    // Here an actual acquired device synchronously selects a newer capture while
+    // the old video's unpublished JPEG guard is held across Renderer::drop.
+    checkpoint='gpu-destroy-reentrant-video';await page.reload();await page.waitForSelector('#directory');await click('All captures');await page.select('#sort','name');
+    await page.waitForFunction(()=>['Synthetic 000','Synthetic 002'].every(name=>[...document.querySelectorAll('.capture span')].some(span=>span.textContent===name))&&[...document.querySelectorAll('.capture img')].every(image=>image.complete&&image.naturalWidth>0));
+    await page.evaluate(()=>{window.VideoDecoder=window.__nativeVideoDecoder;[...document.querySelectorAll('.capture')].find(button=>button.querySelector('span')?.textContent==='Synthetic 002').click();});
+    await page.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 002'&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth===640&&document.querySelector('.stage img')?.naturalHeight===360);
+    const sampleReentryPixels=()=>page.$eval('.stage img',image=>{const canvas=document.createElement('canvas');canvas.width=640;canvas.height=360;try{const context=canvas.getContext('2d');context.drawImage(image,0,0);return [[0,0],[320,180],[205,118],[639,359]].flatMap(([x,y])=>Array.from(context.getImageData(x,y,1,1).data));}finally{canvas.width=canvas.height=0;}});
+    const expectedReentryPixels=await sampleReentryPixels();
+    await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(button=>button.querySelector('span')?.textContent==='Synthetic 000').click());
+    await page.waitForFunction(()=>getComputedStyle(document.querySelector('#gpu-stage')).display!=='none'&&window.__gpuCounts.created>0&&window.__gpuCounts.created-window.__gpuCounts.destroyed===1);
+    await page.evaluate(()=>{
+      const probe=window.__gpuDestroyProbe={calls:0,url:null,published:false,revoked:false};
+      const inspect=records=>{if(probe.url)for(const record of records)if(record.attributeName==='src'&&(record.oldValue===probe.url||record.target.getAttribute('src')===probe.url))probe.published=true;};
+      probe.observer=new MutationObserver(inspect);probe.inspect=inspect;probe.observer.observe(document.querySelector('.stage'),{subtree:true,attributes:true,attributeOldValue:true,attributeFilter:['src']});
+      window.__gpuDestroyCallback=()=>{probe.calls++;probe.url=window.__lastCreatedUrl;const capture=[...document.querySelectorAll('.capture')].find(button=>button.querySelector('span')?.textContent==='Synthetic 002');if(!capture)throw Error('public destroy target missing');capture.click();};
+    });
+    try{
+      await click('Try browser H.264 refocus');
+      await page.waitForFunction(()=>window.__gpuDestroyProbe.calls===1&&document.querySelector('.viewer-strip span')?.textContent==='Synthetic 002'&&document.querySelector('.capture[aria-pressed="true"] span')?.textContent==='Synthetic 002'&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth===640&&document.querySelector('.stage img')?.naturalHeight===360);
+      assert.deepEqual(await sampleReentryPixels(),expectedReentryPixels,'newer static capture pixels survive obsolete AVC destruction');
+      assert(await page.$eval('#gpu-stage',element=>getComputedStyle(element).display==='none'));
+      rendererDestroyReentry=await page.evaluate(()=>{const p=window.__gpuDestroyProbe;p.inspect(p.observer.takeRecords());return {actualDeviceCreated:window.__gpuCounts.created>0,callbackCalls:p.calls,newerCaptureWon:true,unpublishedVideoRevoked:p.revoked,obsoleteVideoPublished:p.published};});
+      assert.deepEqual(rendererDestroyReentry,{actualDeviceCreated:true,callbackCalls:1,newerCaptureWon:true,unpublishedVideoRevoked:true,obsoleteVideoPublished:false});
+    }finally{await page.evaluate(()=>{window.__gpuDestroyCallback=null;window.__gpuDestroyProbe?.observer.disconnect();window.__gpuDestroyProbe=null;});}
+    await page.select('#sort','order');
+    const restoredOrder=await page.evaluate(async()=>{const libraries=await fetch('/libraries',{signal:AbortSignal.timeout(10000)});if(!libraries.ok)throw Error('public library response unavailable');const library=(await libraries.json()).items.find(item=>item.state==='ready');const response=await fetch(`/libraries/${library.id}/captures?limit=24&offset=0`,{signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error('public capture response unavailable');return (await response.json()).items.map(item=>item.name);});
+    await page.waitForFunction(names=>JSON.stringify([...document.querySelectorAll('.capture span')].map(span=>span.textContent))===JSON.stringify(names)&&[...document.querySelectorAll('.capture img')].every(image=>image.complete&&image.naturalWidth>0),{},restoredOrder);
    }
    await selectNamedCapture('Synthetic 002');await page.waitForFunction(()=>document.querySelector('.stage img')?.naturalWidth===640);
-   videoUiProof={actualRustHttp:true,visibleVideo:true,oldGpuHidden:true,obsoleteDeviceReleased:gpuMode,gpuVideoFailureRecovery,flattenedButtonsDisabled:true,injectedFlattenedExportPosts:videoExportPosts,backupAvailable:true,nonmonotonicSelectedBlue:true,corruptOriginalRetainsFrame:true,staleCaptureIgnored:true,absentCodecStaticFallback:true,retryRecovered:true};
+   videoUiProof={actualRustHttp:true,visibleVideo:true,oldGpuHidden:true,obsoleteDeviceReleased:gpuMode,gpuVideoFailureRecovery,rendererDestroyReentry,flattenedButtonsDisabled:true,injectedFlattenedExportPosts:videoExportPosts,backupAvailable:true,nonmonotonicSelectedBlue:true,corruptOriginalRetainsFrame:true,staleCaptureIgnored:true,absentCodecStaticFallback:true,retryRecovered:true};
   }
   checkpoint='capture-pagination';await click('All captures');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 1'&&document.querySelectorAll('.capture img').length===24,{timeout:120000});let seen=0;
   for(;;){
