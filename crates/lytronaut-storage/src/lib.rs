@@ -128,9 +128,7 @@ impl Catalog {
                 ));
             }
         };
-        sqlx::query("INSERT INTO application_job_order(kind,job) VALUES($1,$2) ON CONFLICT(kind,job) DO NOTHING")
-            .bind(kind).bind(job).execute(&mut **tx).await?;
-        Ok(())
+        self.database.record_job_order(tx, kind, job).await
     }
     /// PostgreSQL source identities are binary-safe encoded; generated app IDs are not.
     pub fn encode_source_key(&self, value: &str) -> String {

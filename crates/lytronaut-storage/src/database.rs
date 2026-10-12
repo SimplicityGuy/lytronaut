@@ -297,6 +297,59 @@ impl ApplicationDatabase {
         tx.commit().await
     }
 
+    /// Derived order allocation follows retained rows, not PostgreSQL's
+    /// nontransactional identity sequence. At signed64 exhaustion, rebuild only
+    /// auxiliary ordinals inside the already-admitted write transaction.
+    pub(crate) async fn record_job_order(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        kind: &str,
+        job: &str,
+    ) -> Result<(), sqlx::Error> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM application_job_order WHERE kind=$1 AND job=$2",
+        )
+        .bind(kind)
+        .bind(job)
+        .fetch_one(&mut **tx)
+        .await?;
+        if exists != 0 {
+            return Ok(());
+        }
+        let mut maximum: Option<i64> =
+            sqlx::query_scalar("SELECT max(ordinal) FROM application_job_order")
+                .fetch_one(&mut **tx)
+                .await?;
+        if maximum == Some(i64::MAX) {
+            // A fixed session-local temporary table avoids in-place uniqueness
+            // collisions at MIN/negative/zero/MAX. All original IDs and observable
+            // relative order survive; rollback restores the complete old table.
+            sqlx::query("CREATE TEMPORARY TABLE lytronaut_order_reindex AS SELECT ROW_NUMBER() OVER(ORDER BY ordinal) AS ordinal,kind,job FROM application_job_order")
+                .execute(&mut **tx).await?;
+            sqlx::query("DELETE FROM application_job_order")
+                .execute(&mut **tx)
+                .await?;
+            sqlx::query("INSERT INTO application_job_order(ordinal,kind,job) SELECT ordinal,kind,job FROM lytronaut_order_reindex ORDER BY ordinal")
+                .execute(&mut **tx).await?;
+            sqlx::query("DROP TABLE lytronaut_order_reindex")
+                .execute(&mut **tx)
+                .await?;
+            maximum = sqlx::query_scalar("SELECT max(ordinal) FROM application_job_order")
+                .fetch_one(&mut **tx)
+                .await?;
+        }
+        let next = maximum
+            .map_or(Some(1), |value| value.checked_add(1))
+            .ok_or_else(|| sqlx::Error::Protocol("application job ordering exhausted".into()))?;
+        sqlx::query("INSERT INTO application_job_order(ordinal,kind,job) VALUES($1,$2,$3)")
+            .bind(next)
+            .bind(kind)
+            .bind(job)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
     /// Called by each job owner's additive migration only after its table exists.
     /// Static table names are selected here, never interpolated from imported data.
     pub(crate) async fn backfill_job_order(&self, kind: JobKind) -> Result<(), sqlx::Error> {
@@ -681,6 +734,80 @@ mod tests {
             .unwrap();
         assert!(acquired);
         second.rollback().await.unwrap();
+        fixture.close().await;
+    }
+
+    async fn order_exhaustion_contract(db: &ApplicationDatabase) {
+        db.migrate_job_order().await.unwrap();
+        let original = [i64::MIN, -1, 0, i64::MAX];
+        let mut tx = db.begin_write().await.unwrap();
+        for (index, ordinal) in original.into_iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO application_job_order(ordinal,kind,job) VALUES($1,'intake',$2)",
+            )
+            .bind(ordinal)
+            .bind(format!("source-{index}"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+        let mut tx = db.begin_write().await.unwrap();
+        db.record_job_order(&mut tx, "export", "new-job")
+            .await
+            .unwrap();
+        let ordered: Vec<String> =
+            sqlx::query_scalar("SELECT job FROM application_job_order ORDER BY ordinal")
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            ordered,
+            ["source-0", "source-1", "source-2", "source-3", "new-job"]
+        );
+        tx.rollback().await.unwrap();
+        let restored: Vec<i64> =
+            sqlx::query_scalar("SELECT ordinal FROM application_job_order ORDER BY ordinal")
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(restored, original);
+        let mut tx = db.begin_write().await.unwrap();
+        db.record_job_order(&mut tx, "export", "new-job")
+            .await
+            .unwrap();
+        db.record_job_order(&mut tx, "export", "new-job")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM application_job_order")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 5);
+        let ordered: Vec<String> =
+            sqlx::query_scalar("SELECT job FROM application_job_order ORDER BY ordinal")
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ordered,
+            ["source-0", "source-1", "source-2", "source-3", "new-job"]
+        );
+    }
+    #[tokio::test]
+    async fn sqlite_derived_order_exhaustion_preserves_order_and_rolls_back() {
+        let db = ApplicationDatabase::open(DatabaseConfig::Sqlite(":memory:".into()))
+            .await
+            .unwrap();
+        order_exhaustion_contract(&db).await;
+        db.pool.close().await;
+    }
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL database; deployment CI runs this explicitly"]
+    async fn postgres_derived_order_exhaustion_preserves_order_and_rolls_back() {
+        let fixture = PgFixture::new().await;
+        order_exhaustion_contract(&fixture.db).await;
         fixture.close().await;
     }
 

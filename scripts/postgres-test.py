@@ -26,7 +26,7 @@ def main():
 
     env = dict(os.environ, LYTRONAUT_TEST_BACKEND="postgres")
     cases = [
-        ("storage", 6, ["-p", "lytronaut-storage", "--lib", "database::tests::postgres_", "--", "--ignored", "--test-threads=1"]),
+        ("storage", 7, ["-p", "lytronaut-storage", "--lib", "database::tests::postgres_", "--", "--ignored", "--test-threads=1"]),
         ("desktop", 1, ["-p", "lytronaut-storage", "--test", "desktop", "postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport_and_reopen", "--", "--exact", "--ignored", "--test-threads=1"]),
         # Exact sixth scenario exclusion is temporary: PG portable backup remains
         # pending 1ga. It stays active in the independent default SQLite suite.
@@ -66,9 +66,9 @@ def main():
         if outcome != "ok" or tuple(map(int, (passed, failed, ignored, measured))) != (expected, 0, 0, 0):
             raise SystemExit(f"PostgreSQL {name} count/zero-skip assertion failed")
         total += int(passed)
-    if total != 12:
-        raise SystemExit("PostgreSQL parity requires exactly twelve actual passing tests")
-    print("PostgreSQL parity: 12 passed; 0 failed; 0 ignored (portable backup pending 1ga)")
+    if total != 13:
+        raise SystemExit("PostgreSQL parity requires exactly thirteen actual passing tests")
+    print("PostgreSQL parity: 13 passed; 0 failed; 0 ignored (portable backup pending 1ga)")
 
 
 if __name__ == "__main__":
