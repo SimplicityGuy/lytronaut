@@ -155,8 +155,10 @@ fn owned_tables() -> impl Iterator<Item = &'static str> {
         .flatten()
         .filter_map(|statement| statement.strip_prefix("CREATE TABLE IF NOT EXISTS "))
         .map(|rest| {
+            // The whole identifier up to the column list; unit-tested to be a
+            // plain lowercase SQL identifier for every static DDL statement.
             let end = rest
-                .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+                .find(|c: char| c == '(' || c.is_whitespace())
                 .unwrap_or(rest.len());
             &rest[..end]
         })
@@ -184,10 +186,12 @@ mod tests {
         for name in ["export_jobs", "catalog_item_errors", "restore_ownership"] {
             assert!(owned.contains(&name));
         }
-        assert!(
-            owned.iter().all(|name| !name.is_empty()
-                && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
-        );
+        assert!(owned.iter().all(|name| {
+            name.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        }));
     }
     #[test]
     fn journal_identity_cannot_redirect_cleanup_to_an_arbitrary_schema() {
