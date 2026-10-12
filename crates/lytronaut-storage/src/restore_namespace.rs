@@ -1,4 +1,7 @@
 //! Exact owned PostgreSQL restore namespaces. Never enumerate or drop by prefix.
+//! SQL audit: the only interpolated identifier is `schema`, which `validate()`
+//! (called first in every entry point) re-derives from a 64-hex nonce, so it is
+//! always `lytronaut_restore_[0-9a-f]{32}`; job/nonce values are bound.
 use crate::{Backend, Catalog, StorageError as E};
 use sqlx::{AssertSqlSafe, Row};
 
@@ -46,7 +49,7 @@ impl RestoreNamespace {
             "SELECT job,nonce FROM \"{}\".restore_ownership WHERE singleton=1",
             self.schema
         );
-        let marker = sqlx::query(AssertSqlSafe(&statement))
+        let marker = sqlx::query(AssertSqlSafe(statement.as_str()))
             .fetch_optional(catalog.pool())
             .await?
             .ok_or(E::Conflict)?;
@@ -68,21 +71,21 @@ impl RestoreNamespace {
         }
         let mut tx = catalog.begin_write().await?;
         let create = format!("CREATE SCHEMA \"{}\"", self.schema);
-        sqlx::query(AssertSqlSafe(&create))
+        sqlx::query(AssertSqlSafe(create.as_str()))
             .execute(&mut *tx)
             .await?;
         let marker = format!(
             "CREATE TABLE \"{}\".restore_ownership(singleton BIGINT PRIMARY KEY CHECK(singleton=1),job TEXT NOT NULL,nonce TEXT NOT NULL)",
             self.schema
         );
-        sqlx::query(AssertSqlSafe(&marker))
+        sqlx::query(AssertSqlSafe(marker.as_str()))
             .execute(&mut *tx)
             .await?;
         let insert = format!(
             "INSERT INTO \"{}\".restore_ownership(singleton,job,nonce) VALUES(1,$1,$2)",
             self.schema
         );
-        sqlx::query(AssertSqlSafe(&insert))
+        sqlx::query(AssertSqlSafe(insert.as_str()))
             .bind(&self.job)
             .bind(&self.nonce)
             .execute(&mut *tx)
@@ -112,7 +115,7 @@ impl RestoreNamespace {
             "SELECT job,nonce FROM \"{}\".restore_ownership WHERE singleton=1",
             self.schema
         );
-        let marker = sqlx::query(AssertSqlSafe(&check))
+        let marker = sqlx::query(AssertSqlSafe(check.as_str()))
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(E::Conflict)?;
@@ -122,7 +125,9 @@ impl RestoreNamespace {
             return Err(E::Conflict);
         }
         let drop = format!("DROP SCHEMA \"{}\" CASCADE", self.schema);
-        sqlx::query(AssertSqlSafe(&drop)).execute(&mut *tx).await?;
+        sqlx::query(AssertSqlSafe(drop.as_str()))
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }

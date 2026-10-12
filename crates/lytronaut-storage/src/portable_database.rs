@@ -1,4 +1,8 @@
 //! Trusted logical-row adapters. Archive bytes never supply SQL identifiers.
+//! SQL audit: every dynamic statement interpolates only static `TABLES`
+//! names/columns, the static `filter`/`ORDER` fragments, fixed derived column
+//! names and `$n` placeholders. Table indices come from the decoder's own
+//! sequential counter (the archive byte must equal it), never from input.
 use crate::{
     Backend, Catalog, SourceEntry, StorageError as E,
     portable::{Cell, Column, Decoder, Encoder, Kind, TABLES},
@@ -119,12 +123,12 @@ pub async fn capture<W: Write>(
             table.name,
             filter(index)
         );
-        let count: i64 = sqlx::query_scalar(AssertSqlSafe(&count_sql))
+        let count: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql.as_str()))
             .fetch_one(&mut *tx)
             .await?;
         encoder.table(usize::try_from(count).map_err(|_| E::Invalid)?)?;
         let statement = select(index);
-        let mut rows = sqlx::query(AssertSqlSafe(&statement)).fetch(&mut *tx);
+        let mut rows = sqlx::query(AssertSqlSafe(statement.as_str())).fetch(&mut *tx);
         while let Some(row) = rows.try_next().await? {
             check(cancel)?;
             encoder.row(&logical_row(&row, index, catalog.backend())?)?;
@@ -180,7 +184,7 @@ async fn insert(
         descriptor.name,
         names.join(",")
     );
-    let mut query = sqlx::query(AssertSqlSafe(&statement));
+    let mut query = sqlx::query(AssertSqlSafe(statement.as_str()));
     for (cell, column) in row.iter().zip(descriptor.columns) {
         query = match cell {
             Cell::Integer(value) => query.bind(*value),
@@ -259,7 +263,7 @@ pub async fn import_legacy(
         } else {
             select(table)
         };
-        let mut rows = sqlx::query(AssertSqlSafe(&statement)).fetch(&mut *read);
+        let mut rows = sqlx::query(AssertSqlSafe(statement.as_str())).fetch(&mut *read);
         while let Some(row) = rows.try_next().await? {
             check(cancel)?;
             insert(catalog, &mut write, table, &sqlite_row(&row, table)?).await?;
@@ -308,12 +312,12 @@ async fn capture_sqlite<W: Write>(
             table.name,
             filter(index)
         );
-        let count: i64 = sqlx::query_scalar(AssertSqlSafe(&statement))
+        let count: i64 = sqlx::query_scalar(AssertSqlSafe(statement.as_str()))
             .fetch_one(&mut *tx)
             .await?;
         encoder.table(usize::try_from(count).map_err(|_| E::Invalid)?)?;
         let statement = select(index);
-        let mut rows = sqlx::query(AssertSqlSafe(&statement)).fetch(&mut *tx);
+        let mut rows = sqlx::query(AssertSqlSafe(statement.as_str())).fetch(&mut *tx);
         while let Some(row) = rows.try_next().await? {
             check(cancel)?;
             encoder.row(&sqlite_row(&row, index)?)?;
