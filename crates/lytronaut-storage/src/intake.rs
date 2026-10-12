@@ -297,6 +297,13 @@ impl Store {
         s.recover().await?;
         Ok(s)
     }
+    /// Application-owned scratch root, never a source library.
+    pub fn available_staging_bytes(&self) -> Result<u64, StorageError> {
+        Ok(fs2::available_space(&self.0.staging)?)
+    }
+    pub fn staging_root(&self) -> &Path {
+        &self.0.staging
+    }
     pub fn limits(&self) -> &Limits {
         &self.0.limits
     }

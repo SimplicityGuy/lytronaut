@@ -65,6 +65,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | errno | 0.3.14 | MIT OR Apache-2.0 |
 | event-listener | 5.4.2 | Apache-2.0 OR MIT |
 | event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT |
+| fdeflate | 0.3.7 | MIT OR Apache-2.0 |
 | find-msvc-tools | 0.1.14 | MIT OR Apache-2.0 |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 |
 | flume | 0.12.0 | Apache-2.0/MIT |
@@ -133,6 +134,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
 | memchr | 2.8.3 | Unlicense OR MIT |
 | mime | 0.3.17 | MIT OR Apache-2.0 |
+| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.4 | MIT |
 | moxcms | 0.7.11 | BSD-3-Clause OR Apache-2.0 |
@@ -152,6 +154,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | pin-project-internal | 1.1.13 | Apache-2.0 OR MIT |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
 | pkg-config | 0.3.34 | MIT OR Apache-2.0 |
+| png | 0.18.1 | MIT OR Apache-2.0 |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | prettyplease | 0.3.0 | MIT OR Apache-2.0 |
 | proc-macro-utils | 0.10.0 | MIT OR Apache-2.0 |
@@ -267,6 +270,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | zerotrie | 0.2.5 | Unicode-3.0 |
 | zerovec | 0.11.8 | Unicode-3.0 |
 | zerovec-derive | 0.11.6 | Unicode-3.0 |
+| zlib-rs | 0.6.8 | Zlib |
 | zmij | 1.0.23 | MIT |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib |

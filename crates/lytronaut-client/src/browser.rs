@@ -361,6 +361,9 @@ struct Ui {
     total: RwSignal<u64>,
     upload_abort: Rc<RefCell<Option<web_sys::XmlHttpRequest>>>,
     upload_cancelled: Rc<RefCell<bool>>,
+    export_job: RwSignal<Option<ExportProgress>>,
+    export_busy: RwSignal<bool>,
+    export_abort: Rc<RefCell<Option<AbortController>>>,
 }
 impl Ui {
     fn new() -> Self {
@@ -398,6 +401,9 @@ impl Ui {
             total: RwSignal::new(1),
             upload_abort: Rc::default(),
             upload_cancelled: Rc::default(),
+            export_job: RwSignal::new(None),
+            export_busy: RwSignal::new(false),
+            export_abort: Rc::default(),
         }
     }
     fn fail(&self, error: String) {
@@ -442,6 +448,141 @@ impl Ui {
         self.csrf.set(token.into());
         self.signed_in.set(true);
         self.libraries(0).await
+    }
+    async fn watch_export(&self, mut report: ExportProgress) -> Result<()> {
+        let session = self.csrf.get_untracked();
+        if let Ok(Some(storage)) = web_sys::window().unwrap().session_storage() {
+            let _ = storage.set_item("lytronaut-export", report.job.id.as_str());
+        }
+        loop {
+            self.export_job.set(Some(report.clone()));
+            if matches!(
+                report.job.state,
+                JobState::Succeeded | JobState::Failed | JobState::Cancelled
+            ) {
+                self.status.set(match (report.job.state,report.kind) {
+                    (JobState::Succeeded,ExportKind::Flatten)=>"Flattened export complete. Download the image and separate provenance. Originals are unchanged.",
+                    (JobState::Succeeded,ExportKind::Archive)=>"Private backup complete. Download the originals/catalog bundle.",
+                    (JobState::Succeeded,ExportKind::Restore)=>"Isolated restore complete. Current library unchanged.",
+                    (JobState::Cancelled,_)=>"Export / restore cancelled. Originals are unchanged.",
+                    _=>"Export / restore failed. Remove unsupported operations or select a fresh valid bundle, then retry."
+                }.into());
+                return Ok(());
+            }
+            pause(150).await;
+            if !self.signed_in.get_untracked() || self.csrf.get_untracked() != session {
+                return Ok(());
+            }
+            report = self
+                .net
+                .json(
+                    &format!("/exports/{}", report.job.id.as_str()),
+                    "GET",
+                    "",
+                    None,
+                )
+                .await?;
+        }
+    }
+    async fn recover_export(&self) -> Result<()> {
+        if self.export_busy.get_untracked() {
+            return Ok(());
+        }
+        let id = web_sys::window()
+            .unwrap()
+            .session_storage()
+            .map_err(|_| "Job recovery unavailable")?
+            .and_then(|s| s.get_item("lytronaut-export").ok().flatten())
+            .ok_or("No saved export or restore job")?;
+        OpaqueId::try_from(id.clone()).map_err(|_| "Invalid saved export job")?;
+        self.export_busy.set(true);
+        let _busy = BusyGuard(self.export_busy);
+        let report = self
+            .net
+            .json(&format!("/exports/{id}"), "GET", "", None)
+            .await?;
+        self.watch_export(report).await
+    }
+    async fn export(&self, format: Option<ExportFormat>) -> Result<()> {
+        if self.export_busy.get_untracked() {
+            return Ok(());
+        }
+        self.export_busy.set(true);
+        let _busy = BusyGuard(self.export_busy);
+        let request = if let Some(format) = format {
+            let (asset, plane_index, orientation) =
+                if let Some(d) = self.displayed_derivative.get_untracked() {
+                    (d.id, Some(d.plane_index), d.orientation)
+                } else {
+                    (
+                        self.detail
+                            .get_untracked()
+                            .and_then(|d| d.preview)
+                            .ok_or("Select verified JPEG pixels first")?,
+                        None,
+                        1,
+                    )
+                };
+            ExportRequest::Flatten {
+                version: WireVersion::V1,
+                asset,
+                format,
+                plane_index,
+                orientation,
+                operations: Vec::new(),
+            }
+        } else {
+            ExportRequest::ArchiveOriginals {
+                version: WireVersion::V1,
+            }
+        };
+        self.status.set(
+            "Creating export… Stored pixels only; imported adjustments remain preserved.".into(),
+        );
+        let report = self
+            .net
+            .json(
+                "/exports",
+                "POST",
+                &self.csrf.get_untracked(),
+                Some(serde_json::to_value(request).map_err(|_| "Invalid export")?),
+            )
+            .await?;
+        self.watch_export(report).await
+    }
+    async fn restore_bundle(&self, file: File) -> Result<()> {
+        if self.export_busy.get_untracked() {
+            return Ok(());
+        }
+        self.export_busy.set(true);
+        let _busy = BusyGuard(self.export_busy);
+        if file.size() == 0.0
+            || file.size() > 21.0 * 1024.0 * 1024.0 * 1024.0 + 32.0 * 1024.0 * 1024.0
+        {
+            return Err("Bundle exceeds the server restore limit".into());
+        }
+        self.export_job.set(None);
+        self.status
+            .set("Uploading private bundle for isolated restore…".into());
+        let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
+        *self.export_abort.borrow_mut() = Some(abort.clone());
+        let _lease = self.net.lease(0, &abort).await?;
+        let response = self
+            .net
+            .fetch(
+                "/restores",
+                "POST",
+                &self.csrf.get_untracked(),
+                Some(file.as_ref()),
+                &[("Content-Type", "application/octet-stream")],
+                &abort,
+            )
+            .await?;
+        let report = serde_json::from_slice(&read_cancel(response, JSON_LIMIT, &abort).await?)
+            .map_err(|_| "Invalid restore report")?;
+        drop(_lease);
+        self.export_abort.borrow_mut().take();
+        self.watch_export(report).await
     }
     async fn libraries(&self, offset: u32) -> Result<()> {
         let session = self.csrf.get_untracked();
@@ -1095,6 +1236,9 @@ pub fn app() -> impl IntoView {
     on_cleanup(move || {
         let cleanup = cleanup.get_value();
         cleanup.clear_assets();
+        if let Some(abort) = cleanup.export_abort.borrow_mut().take() {
+            abort.abort();
+        }
         if let Some(xhr) = cleanup.upload_abort.borrow().as_ref() {
             let _ = xhr.abort();
         }
@@ -1170,6 +1314,8 @@ fn Workspace() -> impl IntoView {
     let job = s.job;
     let progress = s.progress;
     let total = s.total;
+    let export_job = s.export_job;
+    let export_busy = s.export_busy;
     view! {
         <div class="workstation">
             <nav class="rail" aria-label="Library and albums"><h2>"LIBRARIES"</h2>
@@ -1191,6 +1337,7 @@ fn Workspace() -> impl IntoView {
                 </div>
             </nav>
             <main id="content" class="workspace"><div class="toolbar"><h1>"Library explorer"</h1><form class="search" on:submit=move|e|{e.prevent_default();let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><label for="search">"Search captures"</label><input id="search" type="search" prop:value=move||search.get() on:input=move|e|search.set(event_target_value(&e))/><button type="submit">"Search"</button><label for="sort">"Sort"</label><select id="sort" prop:value=move||sort.get() on:change=move|e|{sort.set(event_target_value(&e));let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><option value="order">"Library / album order"</option><option value="name">"Name"</option><option value="rating">"Imported rating"</option></select></form></div>
+                <section class="export-controls" aria-label="Export and lossless backup"><button id="backup-library" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(None).await});}>"Back up originals and catalog"</button><button id="recover-export" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.recover_export().await});}>"Recover export / restore status"</button><label for="restore-bundle">"Restore private bundle to an isolated store"</label><input id="restore-bundle" type="file" accept=".lytronaut" disabled=move||export_busy.get() on:change=move|e|{let input=event_target::<web_sys::HtmlInputElement>(&e);let file=input.files().and_then(|f|f.get(0));input.set_value("");if let Some(file)=file{let u=ui();let task=u.clone();launch(u,async move{task.restore_bundle(file).await});}}/><button id="cancel-restore-upload" disabled=move||!export_busy.get()||export_job.get().is_some() on:click=move |_|{let u=ui();if let Some(abort)=u.export_abort.borrow_mut().take(){abort.abort();}}>"Cancel restore upload"</button><p>"Private backup includes all immutable originals and catalog associations. Credentials and pending jobs are excluded. Restore creates a separate store."</p>{move||export_job.get().map(|r|{let id=r.job.id.as_str().to_owned();let recipe_id=id.clone();let cancel_id=id.clone();view!{<p id="export-progress">{format!("{:?} · {} bytes processed",r.job.state,r.job.completed_bytes)}</p><Show when=move||r.job.state==JobState::Succeeded&&r.kind!=ExportKind::Restore><a id="export-download" href=format!("/exports/{id}/download") download="">"Download export / private bundle"</a></Show><Show when=move||r.job.state==JobState::Succeeded&&r.kind==ExportKind::Flatten><a id="export-recipe" href=format!("/exports/{recipe_id}/recipe") download="lytronaut-recipe.json">"Download Lytronaut provenance"</a></Show><button id="cancel-export" disabled=move||matches!(r.job.state,JobState::Cancelled|JobState::Failed) on:click=move |_|{let u=ui();let task=u.clone();let id=cancel_id.clone();launch(u,async move{let r=task.net.json(&format!("/exports/{id}"),"DELETE",&task.csrf.get_untracked(),None).await?;task.watch_export(r).await});}>"Cancel or remove result"</button>}})}</section>
                 <section class="viewer" aria-label="Capture viewer"><div class="stage" tabindex="0" aria-label="Capture stage. Left and right arrows change capture" on:keydown=move|e|{if e.key()=="ArrowLeft"{e.prevent_default();ui().navigate(-1);}else if e.key()=="ArrowRight"{e.prevent_default();ui().navigate(1);}}>
                     <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img src=move||stage.get() alt=move||detail.get().map(|d|format!("{}: {}",if displayed_derivative.get().is_some(){"Stored JPEG focus derivative"}else{"Static JPEG preview"},d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
                 </div><div class="focus-controls"><label for="focus">"Discrete focus · nearest stored plane"</label><input id="focus" type="range" min=move||focus_stack.get().map(|s|s.lambdas[0]).unwrap_or(0.0) max=move||focus_stack.get().map(|s|*s.lambdas.last().unwrap()).unwrap_or(1.0) step="any" prop:value=move||focus_value.get() disabled=move||focus_stack.get().is_none() aria-valuetext=move||focus_stack.get().map(|s|format!("Stored plane {}, lambda {}",s.nearest(focus_value.get()).unwrap_or(0)+1, s.lambdas[s.nearest(focus_value.get()).unwrap_or(0)])).unwrap_or_else(||"Preview only; browser H.264 focus is unverified".into()) on:input=move|e|{if let Ok(value)=event_target_value(&e).parse(){let u=ui();let task=u.clone();launch(u,async move{task.change_focus(value).await});}}/><output for="focus">{move||displayed_derivative.get().map(|d|format!("Displayed: {} × {} source · plane {} · relative lambda {} · EXIF {} · lossy JPEG",d.source_dimensions.width,d.source_dimensions.height,d.plane_index+1,d.lambda,d.orientation)).unwrap_or_else(||"Preview only · H.264 browser verification pending".into())}</output><label for="orientation">"Explicit derivative EXIF orientation"</label><select id="orientation" prop:value=move||orientation.get().to_string() disabled=move||focus_stack.get().is_none() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){orientation.set(value);let u=ui();let task=u.clone();launch(u,async move{task.change_focus(focus_value.get_untracked()).await});}}>{(1..=8).map(|n|view!{<option value=n.to_string()>{n}</option>}).collect_view()}</select><p>"Processed recipe may be baked. Default identity; imported orientation, aperture, perspective, tone, denoise and animation are preserved only."</p></div><div class="viewer-strip"><button on:click=move |_|ui().navigate(-1) disabled=move||captures.get().is_empty()>"Previous capture"</button><span>{move||detail.get().map(|d|format!("{}{}",d.capture.name,if d.capture.name_truncated{" [truncated]"}else{""})).unwrap_or_else(||"No capture selected".into())}</span><button on:click=move |_|ui().navigate(1) disabled=move||captures.get().is_empty()>"Next capture"</button><button on:click=move |_|{if let Some(d)=detail.get_untracked(){let u=ui();let task=u.clone();launch(u,async move{task.select(d.capture.id).await});}}>"Retry preview"</button></div></section>
@@ -1199,7 +1346,7 @@ fn Workspace() -> impl IntoView {
                 </div><nav class="filmstrip" aria-label="Capture filmstrip">{move||captures.get().into_iter().enumerate().map(|(i,capture)|{let id=capture.id;view!{<button aria-label=format!("Select capture {}: {}",offset.get_untracked() as usize+i+1,capture.name) on:click=move |_|{let u=ui();let task=u.clone();let id=id.clone();launch(u,async move{task.select(id).await});}>{i+1}</button>}}).collect_view()}</nav>
                 <div class="pagination"><button disabled=move||offset.get()==0 on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(offset.get_untracked().saturating_sub(PAGE_SIZE)).await});}>"Previous page"</button><span>{move||format!("Page {}",offset.get()/PAGE_SIZE+1)}</span><button disabled=move||next.get().is_none() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(next.get_untracked().unwrap_or(0)).await});}>"Next page"</button></div>
                 <Show when=move||!files.get().is_empty()><h2>"Preserved library files"</h2><ul>{move||file_links(files.get())}</ul></Show>
-                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>"Optional renderer and codec not implemented"</dd></dl><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
+                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>"Optional renderer and codec not implemented"</dd></dl><h3>"Export verified pixels"</h3><button id="export-png" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Png)).await});}>"Export PNG"</button><button id="export-jpeg" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Jpeg)).await});}>"Export JPEG"</button><p>"Flattened stored pixels lose refocus ability. PNG preserves decoded JPEG pixels; JPEG adds compression loss. Unknown color profile. Download the separate Lytronaut provenance record."</p><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
             </main>
         </div>
     }

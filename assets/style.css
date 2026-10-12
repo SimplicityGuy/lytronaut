@@ -5,3 +5,4 @@
 .focus-controls p { flex-basis:100%; margin:0; }
 .focus-controls input { min-width:100px; flex:1 1 140px; max-width:100%; }
 .focus-controls output { overflow-wrap:anywhere; }
+.export-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;border:1px solid #31404b;background:#151d24;padding:.85rem;margin-bottom:1rem;border-radius:.6rem}.export-controls p{flex-basis:100%;margin:.2rem 0;color:#b1c0ca}.export-controls a{color:#66def1;margin-right:1rem}.export-controls input{max-width:19rem}

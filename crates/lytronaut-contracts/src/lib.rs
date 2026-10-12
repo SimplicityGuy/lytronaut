@@ -698,3 +698,149 @@ mod derivative_tests {
         assert!(serde_json::from_value::<FocusDerivative>(invalid).is_err());
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFormat {
+    Jpeg,
+    Png,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExportRequest {
+    Flatten {
+        version: WireVersion,
+        asset: OpaqueId,
+        format: ExportFormat,
+        plane_index: Option<usize>,
+        orientation: u8,
+        operations: Vec<String>,
+    },
+    ArchiveOriginals {
+        version: WireVersion,
+    },
+}
+impl ExportRequest {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if let Self::Flatten {
+            orientation,
+            operations,
+            plane_index,
+            ..
+        } = self
+        {
+            if !(1..=8).contains(orientation) || plane_index.is_some_and(|v| v >= 64) {
+                return Err(ContractError("select EXIF 1–8 and a stored plane"));
+            }
+            if !operations.is_empty() {
+                return Err(ContractError(
+                    "imported aperture/perspective/tone/denoise/animation are unsupported; remove operations and export verified stored pixels",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+/// Separate Lytronaut record. Legacy sidecars are preserved without alteration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportRecipe {
+    pub version: WireVersion,
+    pub asset: OpaqueId,
+    pub source_variant: String,
+    pub plane_index: Option<usize>,
+    pub lambda: Option<f64>,
+    pub orientation: u8,
+    pub source_dimensions: Dimensions,
+    pub output_dimensions: Dimensions,
+    /// Full verified stored image: x, y, width, height. No inferred sensor crop.
+    pub visible_geometry: [u32; 4],
+    pub format: ExportFormat,
+    pub color_space: ColorSpace,
+    pub encoded_bytes: u64,
+    pub content_sha256: ContentDigest,
+    pub processing_loss: String,
+    pub color_policy: String,
+    pub refocus_loss: bool,
+    pub imported_adjustments: String,
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    #[test]
+    fn export_request_rejects_unknown_operations_versions_and_orientation() {
+        let valid = serde_json::json!({"kind":"flatten","version":1,"asset":"synthetic-jpeg","format":"png","plane_index":null,"orientation":1,"operations":[]});
+        serde_json::from_value::<ExportRequest>(valid.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        for (key, value) in [
+            ("orientation", serde_json::json!(0)),
+            ("orientation", serde_json::json!(9)),
+            ("plane_index", serde_json::json!(64)),
+            ("operations", serde_json::json!(["aperture"])),
+            ("operations", serde_json::json!(["perspective"])),
+            ("operations", serde_json::json!(["tone"])),
+            ("operations", serde_json::json!(["denoise"])),
+            ("operations", serde_json::json!(["animation"])),
+        ] {
+            let mut v = valid.clone();
+            v[key] = value;
+            assert!(
+                serde_json::from_value::<ExportRequest>(v)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        for (key, value) in [
+            ("version", serde_json::json!(2)),
+            ("source_path", serde_json::json!("../private")),
+            ("format", serde_json::json!("video")),
+        ] {
+            let mut v = valid.clone();
+            v[key] = value;
+            assert!(serde_json::from_value::<ExportRequest>(v).is_err());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportKind {
+    Flatten,
+    Archive,
+    Restore,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportProgress {
+    #[serde(flatten)]
+    pub job: JobReport,
+    pub kind: ExportKind,
+}
+#[cfg(test)]
+mod export_progress_tests {
+    use super::*;
+    #[test]
+    fn typed_export_progress_roundtrip_and_terminal_validation() {
+        let p = ExportProgress {
+            job: JobReport {
+                version: WireVersion::V1,
+                id: "synthetic-export".to_owned().try_into().unwrap(),
+                state: JobState::Succeeded,
+                completed_bytes: 12,
+                total_bytes: 12,
+                error: None,
+            },
+            kind: ExportKind::Flatten,
+        };
+        let value = serde_json::to_value(&p).unwrap();
+        let got: ExportProgress = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(got.kind, p.kind);
+        assert_eq!(got.job.state, p.job.state);
+        let mut invalid = value;
+        invalid["completed_bytes"] = serde_json::json!(13);
+        assert!(serde_json::from_value::<ExportProgress>(invalid).is_err());
+    }
+}

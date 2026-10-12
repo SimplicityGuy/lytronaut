@@ -2,6 +2,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 pub mod api;
 pub mod auth;
+pub mod bundle;
 pub mod diagnostics;
 pub mod local;
 pub mod uploads;
