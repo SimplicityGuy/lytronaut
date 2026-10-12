@@ -96,3 +96,29 @@ pub fn database_file(path: &Path) -> Result<(), AuthError> {
         Err(AuthError)
     }
 }
+
+/// Resolve only an administrator-selected filename inside the private data directory.
+pub fn application_database(data: &Path) -> Result<std::path::PathBuf, AuthError> {
+    let name = std::env::var("LYTRONAUT_DATABASE").unwrap_or_else(|_| "catalog.db".into());
+    database_path(data, &name)
+}
+pub fn database_path(data: &Path, name: &str) -> Result<std::path::PathBuf, AuthError> {
+    if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+        return Err(AuthError);
+    }
+    Ok(data.join(name))
+}
+#[cfg(test)]
+mod browser_config_tests {
+    use super::*;
+    #[test]
+    fn database_filename_stays_inside_private_root() {
+        assert_eq!(
+            database_path(Path::new("data"), "app.db").unwrap(),
+            Path::new("data/app.db")
+        );
+        for name in ["", "../a", "/a", "a/b", "a\\b", ".", ".."] {
+            assert!(database_path(Path::new("data"), name).is_err());
+        }
+    }
+}

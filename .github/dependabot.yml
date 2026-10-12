@@ -1,4 +1,4 @@
-# Only Cargo and GitHub Actions exist at bootstrap. Add container ecosystems
+# Cargo, Actions and browser-test npm tooling are present. Add container ecosystems
 # when Dockerfile/compose manifests land. Tool pins in mise are updated separately.
 version: 2
 updates:
@@ -38,5 +38,24 @@ updates:
         applies-to: version-updates
         patterns: ['*']
       actions-security-updates:
+        applies-to: security-updates
+        patterns: ['*']
+  - package-ecosystem: npm
+    directory: /scripts/browser
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: America/Los_Angeles
+    commit-message:
+      prefix: test
+      include: scope
+    labels: [dependencies, ci]
+    assignees: [SimplicityGuy]
+    groups:
+      browser-version-updates:
+        applies-to: version-updates
+        patterns: ['*']
+      browser-security-updates:
         applies-to: security-updates
         patterns: ['*']

@@ -40,7 +40,7 @@ async fn run() -> Result<(), AuthError> {
     let directory = std::env::var_os("LYTRONAUT_DATA").unwrap_or_else(|| "data".into());
     let directory = std::path::Path::new(&directory);
     local::private_directory(directory)?;
-    let database = directory.join("catalog.db");
+    let database = local::application_database(directory)?;
     local::database_file(&database)?;
     let bootstrap_path = directory.join("bootstrap.secret");
     let catalog = lytronaut_storage::Catalog::open_application_database(&database)
@@ -71,19 +71,36 @@ async fn run() -> Result<(), AuthError> {
     let api = lytronaut_service::api::Api::open(catalog.clone(), store.clone())
         .await
         .map_err(|_| AuthError)?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listen = std::env::var("LYTRONAUT_LISTEN").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let listener = tokio::net::TcpListener::bind(&listen)
         .await
         .map_err(|_| AuthError)?;
-    eprintln!("Lytronaut listening on loopback port 3000");
+    let client_dir = std::env::var_os("LYTRONAUT_CLIENT").unwrap_or_else(|| "dist".into());
+    let client_dir = std::path::Path::new(&client_dir);
+    let javascript =
+        std::fs::read(client_dir.join("lytronaut_client.js")).map_err(|_| AuthError)?;
+    let wasm = std::fs::read(client_dir.join("lytronaut_client_bg.wasm")).map_err(|_| AuthError)?;
+    let client = lytronaut_service::ClientAssets {
+        html: include_bytes!("../../../assets/index.html")
+            .as_slice()
+            .into(),
+        css: include_bytes!("../../../assets/style.css")
+            .as_slice()
+            .into(),
+        javascript: javascript.into(),
+        wasm: wasm.into(),
+    };
+    eprintln!("Lytronaut listening with Rust browser client");
     axum::serve(
         listener,
-        lytronaut_service::router_with_routes(
+        lytronaut_service::router_with_client_assets(
             AppState {
                 catalog,
                 auth,
                 security,
             },
             lytronaut_service::uploads::routes(store).merge(api.routes()),
+            client,
         ),
     )
     .with_graceful_shutdown(async {

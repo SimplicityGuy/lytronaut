@@ -1,0 +1,1039 @@
+use crate::model::*;
+use js_sys::{Array, Reflect, Uint8Array};
+use leptos::prelude::*;
+use lytronaut_contracts::*;
+use serde::de::DeserializeOwned;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{
+    AbortController, Blob, BlobPropertyBag, File, Request, RequestCredentials, RequestInit,
+    Response,
+};
+
+type Result<T> = std::result::Result<T, String>;
+#[derive(Clone, Default)]
+struct Net {
+    admission: Rc<RefCell<Admission>>,
+}
+struct BusyGuard(RwSignal<bool>);
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+struct Lease {
+    net: Net,
+    bytes: u64,
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.net.admission.borrow_mut().release(self.bytes);
+    }
+}
+async fn pause(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+    });
+    let _ = JsFuture::from(promise).await;
+}
+fn cancelled(abort: &AbortController) -> bool {
+    abort.signal().aborted()
+}
+impl Net {
+    async fn lease(&self, bytes: u64, abort: &AbortController) -> Result<Lease> {
+        loop {
+            if cancelled(abort) {
+                return Err("Cancelled".into());
+            }
+            if self.admission.borrow_mut().acquire(bytes) {
+                return Ok(Lease {
+                    net: self.clone(),
+                    bytes,
+                });
+            }
+            pause(30).await;
+        }
+    }
+    async fn fetch(
+        &self,
+        path: &str,
+        method: &str,
+        csrf: &str,
+        body: Option<&JsValue>,
+        extra: &[(&str, &str)],
+        abort: &AbortController,
+    ) -> Result<Response> {
+        let init = RequestInit::new();
+        init.set_method(method);
+        init.set_credentials(RequestCredentials::SameOrigin);
+        init.set_signal(Some(&abort.signal()));
+        if let Some(body) = body {
+            init.set_body(body);
+        }
+        let req = Request::new_with_str_and_init(path, &init).map_err(|_| "Request unavailable")?;
+        if !csrf.is_empty() {
+            req.headers()
+                .set("X-Lytronaut-Csrf", csrf)
+                .map_err(|_| "Request unavailable")?;
+        }
+        for (k, v) in extra {
+            req.headers().set(k, v).map_err(|_| "Request unavailable")?;
+        }
+        for attempt in 0..3 {
+            if cancelled(abort) {
+                return Err("Cancelled".into());
+            }
+            let response = JsFuture::from(web_sys::window().unwrap().fetch_with_request(&req))
+                .await
+                .map_err(|_| {
+                    if cancelled(abort) {
+                        "Cancelled"
+                    } else {
+                        "Connection interrupted. Retry when the service is available"
+                    }
+                })?
+                .dyn_into::<Response>()
+                .map_err(|_| "Invalid response")?;
+            if response.status() == 429 && method == "GET" && attempt < 2 {
+                if let Some(stream) = response.body() {
+                    let _ = JsFuture::from(stream.cancel()).await;
+                }
+                pause(250 * (attempt + 1)).await;
+                continue;
+            }
+            if !response.ok() {
+                let message = match response.status() {
+                    401 => "Session expired or credentials denied. Sign in again",
+                    429 => "Resource limit reached. Wait, then retry",
+                    400 => "Selection or request was rejected. Check the input and retry",
+                    404 => "This item is no longer available",
+                    _ => {
+                        "The service could not complete this request. Retry or inspect import status"
+                    }
+                };
+                if let Some(stream) = response.body() {
+                    let _ = JsFuture::from(stream.cancel()).await;
+                }
+                return Err(message.into());
+            }
+            return Ok(response);
+        }
+        Err("Resource limit reached".into())
+    }
+    async fn json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        method: &str,
+        csrf: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<T> {
+        let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
+        let body = body.map(|b| JsValue::from_str(&b.to_string()));
+        let response = self
+            .fetch(
+                path,
+                method,
+                csrf,
+                body.as_ref(),
+                &[("Content-Type", "application/json")],
+                &abort,
+            )
+            .await?;
+        let bytes = read_cancel(response, JSON_LIMIT, &abort).await?;
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid or oversized service response".into())
+    }
+    async fn mutation(&self, path: &str, csrf: &str) -> Result<()> {
+        let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
+        self.fetch(path, "POST", csrf, None, &[], &abort).await?;
+        Ok(())
+    }
+    async fn preview(&self, id: &OpaqueId, abort: &AbortController, grid: bool) -> Result<String> {
+        let manifest_lease = self.lease(0, abort).await?;
+        let response = self
+            .fetch(
+                &format!("/assets/{}/manifest", id.as_str()),
+                "GET",
+                "",
+                None,
+                &[],
+                abort,
+            )
+            .await?;
+        let manifest: AssetManifest =
+            serde_json::from_slice(&read_cancel(response, JSON_LIMIT, abort).await?)
+                .map_err(|_| "Invalid preview manifest")?;
+        let bytes = viewer_bytes(&manifest).map_err(str::to_owned)?;
+        // Reserve 32 MiB for persistent stage (<=28 MiB) and 24 downsampled grid images.
+        let limit = if grid {
+            64 * 1024 * 1024
+        } else {
+            28 * 1024 * 1024
+        };
+        if bytes > limit || manifest.id != *id {
+            return Err("Preview exceeds display budget. Download the original instead".into());
+        }
+        drop(manifest_lease);
+        let _lease = self.lease(bytes, abort).await?;
+        let mut encoded = Vec::with_capacity(manifest.encoded_bytes as usize);
+        for (index, chunk) in manifest.chunks.iter().enumerate() {
+            if cancelled(abort) {
+                return Err("Cancelled".into());
+            }
+            let response = self
+                .fetch(
+                    &format!("/assets/{}/chunks/{index}", id.as_str()),
+                    "GET",
+                    "",
+                    None,
+                    &[],
+                    abort,
+                )
+                .await?;
+            let part = read_cancel(response, chunk.length as usize, abort).await?;
+            if part.len() as u64 != chunk.length {
+                return Err("Preview length mismatch".into());
+            }
+            encoded.extend(part);
+        }
+        if cancelled(abort) {
+            return Err("Cancelled".into());
+        }
+        if !verified(&encoded, &manifest) {
+            return Err("Preview integrity check failed. Originals remain downloadable".into());
+        }
+        let parts = Array::new();
+        parts.push(&Uint8Array::from(encoded.as_slice()));
+        let options = BlobPropertyBag::new();
+        options.set_type("image/jpeg");
+        let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+            .map_err(|_| "Preview unavailable")?;
+        let url =
+            web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| "Preview unavailable")?;
+        if grid {
+            downsample(&url, abort).await
+        } else {
+            Ok(url)
+        }
+    }
+}
+// Rust-controlled browser JPEG decode/downsample; original bytes are unchanged.
+async fn downsample(url: &str, abort: &AbortController) -> Result<String> {
+    let image = match web_sys::HtmlImageElement::new() {
+        Ok(image) => image,
+        Err(_) => {
+            let _ = web_sys::Url::revoke_object_url(url);
+            return Err("Image decode unavailable".into());
+        }
+    };
+    image.set_src(url);
+    let decoded = JsFuture::from(image.decode()).await;
+    let result = (|| {
+        if decoded.is_ok() && !cancelled(abort) {
+            let canvas = web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .create_element("canvas")
+                .map_err(|_| "Canvas unavailable")?
+                .dyn_into::<web_sys::HtmlCanvasElement>()
+                .map_err(|_| "Canvas unavailable")?;
+            canvas.set_width(128);
+            canvas.set_height(128);
+            let context = canvas
+                .get_context("2d")
+                .map_err(|_| "Canvas unavailable")?
+                .ok_or("Canvas unavailable")?
+                .dyn_into::<web_sys::CanvasRenderingContext2d>()
+                .map_err(|_| "Canvas unavailable")?;
+            let scale =
+                (128.0 / image.natural_width() as f64).min(128.0 / image.natural_height() as f64);
+            let width = image.natural_width() as f64 * scale;
+            let height = image.natural_height() as f64 * scale;
+            context
+                .draw_image_with_html_image_element_and_dw_and_dh(
+                    &image,
+                    (128.0 - width) / 2.0,
+                    (128.0 - height) / 2.0,
+                    width,
+                    height,
+                )
+                .map_err(|_| "Thumbnail unavailable")?;
+            let data = canvas
+                .to_data_url_with_type("image/jpeg")
+                .map_err(|_| "Thumbnail unavailable")?;
+            if data.len() > 128 * 1024 {
+                return Err("Thumbnail exceeds persistent budget".into());
+            }
+            Ok(data)
+        } else {
+            Err("Preview cancelled or decode failed".into())
+        }
+    })();
+    image.set_src("");
+    let _ = web_sys::Url::revoke_object_url(url);
+    result
+}
+async fn read_cancel(response: Response, limit: usize, abort: &AbortController) -> Result<Vec<u8>> {
+    let result = read(response, limit).await;
+    if cancelled(abort) {
+        Err("Cancelled".into())
+    } else {
+        result
+    }
+}
+async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
+    if response
+        .headers()
+        .get("Content-Length")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|v| v > limit)
+    {
+        if let Some(body) = response.body() {
+            let _ = JsFuture::from(body.cancel()).await;
+        }
+        return Err("Response exceeds resource budget".into());
+    }
+    let stream = response.body().ok_or("Response body missing")?;
+    let reader = stream
+        .get_reader()
+        .dyn_into::<web_sys::ReadableStreamDefaultReader>()
+        .map_err(|_| "Response stream unavailable")?;
+    let mut bytes = Vec::new();
+    loop {
+        let part = JsFuture::from(reader.read())
+            .await
+            .map_err(|_| "Response interrupted")?;
+        if Reflect::get(&part, &"done".into())
+            .ok()
+            .and_then(|v| v.as_bool())
+            == Some(true)
+        {
+            break;
+        }
+        let part = Uint8Array::new(
+            &Reflect::get(&part, &"value".into()).map_err(|_| "Invalid response stream")?,
+        );
+        if bytes.len().saturating_add(part.length() as usize) > limit {
+            let _ = JsFuture::from(reader.cancel()).await;
+            return Err("Response exceeds resource budget".into());
+        }
+        bytes.extend(part.to_vec());
+    }
+    Ok(bytes)
+}
+#[derive(Clone)]
+struct Ui {
+    net: Net,
+    csrf: RwSignal<String>,
+    signed_in: RwSignal<bool>,
+    status: RwSignal<String>,
+    libraries: RwSignal<Vec<LibrarySummary>>,
+    library: RwSignal<Option<LibrarySummary>>,
+    albums: RwSignal<Vec<AlbumSummary>>,
+    album: RwSignal<Option<String>>,
+    captures: RwSignal<Vec<CaptureSummary>>,
+    detail: RwSignal<Option<CaptureDetail>>,
+    thumbs: RwSignal<BTreeMap<String, String>>,
+    stage: RwSignal<String>,
+    search: RwSignal<String>,
+    sort: RwSignal<String>,
+    offset: RwSignal<u32>,
+    next: RwSignal<Option<u32>>,
+    files: RwSignal<Vec<PreservedFile>>,
+    list_next: RwSignal<Option<u32>>,
+    album_next: RwSignal<Option<u32>>,
+    generation: Rc<RefCell<u64>>,
+    stage_generation: Rc<RefCell<u64>>,
+    aborts: Rc<RefCell<Vec<AbortController>>>,
+    stage_abort: Rc<RefCell<Option<AbortController>>>,
+    busy: RwSignal<bool>,
+    job: RwSignal<String>,
+    progress: RwSignal<u64>,
+    total: RwSignal<u64>,
+    upload_abort: Rc<RefCell<Option<web_sys::XmlHttpRequest>>>,
+    upload_cancelled: Rc<RefCell<bool>>,
+}
+impl Ui {
+    fn new() -> Self {
+        Self {
+            net: Net::default(),
+            csrf: RwSignal::new(String::new()),
+            signed_in: RwSignal::new(false),
+            status: RwSignal::new("Connecting to local service…".into()),
+            libraries: RwSignal::new(Vec::new()),
+            library: RwSignal::new(None),
+            albums: RwSignal::new(Vec::new()),
+            album: RwSignal::new(None),
+            captures: RwSignal::new(Vec::new()),
+            detail: RwSignal::new(None),
+            thumbs: RwSignal::new(BTreeMap::new()),
+            stage: RwSignal::new(String::new()),
+            search: RwSignal::new(String::new()),
+            sort: RwSignal::new("order".into()),
+            offset: RwSignal::new(0),
+            next: RwSignal::new(None),
+            files: RwSignal::new(Vec::new()),
+            list_next: RwSignal::new(None),
+            album_next: RwSignal::new(None),
+            generation: Rc::default(),
+            stage_generation: Rc::default(),
+            aborts: Rc::default(),
+            stage_abort: Rc::default(),
+            busy: RwSignal::new(false),
+            job: RwSignal::new(String::new()),
+            progress: RwSignal::new(0),
+            total: RwSignal::new(1),
+            upload_abort: Rc::default(),
+            upload_cancelled: Rc::default(),
+        }
+    }
+    fn fail(&self, error: String) {
+        if error.starts_with("Session expired") {
+            self.clear_assets();
+            self.csrf.set(String::new());
+            self.signed_in.set(false);
+        }
+        self.status.set(error);
+    }
+    fn clear_stage(&self) {
+        *self.stage_generation.borrow_mut() += 1;
+        if let Some(a) = self.stage_abort.borrow_mut().take() {
+            a.abort();
+        }
+        let url = self.stage.get_untracked();
+        if !url.is_empty() {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        }
+        self.stage.set(String::new());
+        self.detail.set(None);
+    }
+    fn clear_assets(&self) {
+        *self.generation.borrow_mut() += 1;
+        for a in self.aborts.borrow_mut().drain(..) {
+            a.abort();
+        }
+        for url in self.thumbs.get_untracked().values() {
+            if url.starts_with("blob:") {
+                let _ = web_sys::Url::revoke_object_url(url);
+            }
+        }
+        self.thumbs.set(BTreeMap::new());
+        self.clear_stage();
+    }
+    async fn session(&self) -> Result<()> {
+        let session: serde_json::Value = self.net.json("/auth/session", "GET", "", None).await?;
+        let token = session["csrf"].as_str().ok_or("Invalid session response")?;
+        self.csrf.set(token.into());
+        self.signed_in.set(true);
+        self.libraries(0).await
+    }
+    async fn libraries(&self, offset: u32) -> Result<()> {
+        let session = self.csrf.get_untracked();
+        let page: Result<Page<LibrarySummary>> = self
+            .net
+            .json(
+                &format!("/libraries?limit=24&offset={offset}"),
+                "GET",
+                "",
+                None,
+            )
+            .await;
+        if !self.signed_in.get_untracked() || self.csrf.get_untracked() != session {
+            return Ok(());
+        }
+        let page = page?;
+        self.list_next.set(page.next_offset);
+        if offset == 0 {
+            self.libraries.set(page.items);
+        } else {
+            self.libraries.update(|v| v.extend(page.items));
+        }
+        if self.library.get_untracked().is_none()
+            && let Some(library) = self.libraries.get_untracked().first()
+        {
+            self.choose_library(library.clone()).await?;
+        }
+        self.status.set("Library ready".into());
+        Ok(())
+    }
+    async fn choose_library(&self, library: LibrarySummary) -> Result<()> {
+        let session = self.csrf.get_untracked();
+        self.clear_assets();
+        self.library.set(Some(library.clone()));
+        self.album.set(None);
+        self.albums.set(Vec::new());
+        self.files.set(Vec::new());
+        self.offset.set(0);
+        if library.state == LibraryState::Ready {
+            self.load_albums(0).await?;
+            if self.csrf.get_untracked() != session
+                || !self.signed_in.get_untracked()
+                || self
+                    .library
+                    .get_untracked()
+                    .is_none_or(|l| l.id != library.id)
+            {
+                return Ok(());
+            }
+            self.page(0).await?;
+        } else {
+            self.captures.set(Vec::new());
+            self.load_files(0).await?;
+            self.status
+                .set("Library is preserved only; browse and download originals below".into());
+        }
+        Ok(())
+    }
+    async fn load_albums(&self, offset: u32) -> Result<()> {
+        let session = self.csrf.get_untracked();
+        let library = self.library.get_untracked().ok_or("Select a library")?;
+        let page: Result<Page<AlbumSummary>> = self
+            .net
+            .json(
+                &format!(
+                    "/libraries/{}/albums?limit=24&offset={offset}",
+                    library.id.as_str()
+                ),
+                "GET",
+                "",
+                None,
+            )
+            .await;
+        if !self.signed_in.get_untracked()
+            || self.csrf.get_untracked() != session
+            || self
+                .library
+                .get_untracked()
+                .is_none_or(|l| l.id != library.id)
+        {
+            return Ok(());
+        }
+        let page = page?;
+        self.album_next.set(page.next_offset);
+        if offset == 0 {
+            self.albums.set(page.items);
+        } else {
+            self.albums.update(|a| a.extend(page.items));
+        }
+        Ok(())
+    }
+    async fn load_files(&self, offset: u32) -> Result<()> {
+        let session = self.csrf.get_untracked();
+        self.clear_assets();
+        let generation = *self.generation.borrow();
+        let library = self.library.get_untracked().ok_or("Select a library")?;
+        let page: Result<Page<PreservedFile>> = self
+            .net
+            .json(
+                &format!(
+                    "/libraries/{}/files?limit=24&offset={offset}",
+                    library.id.as_str()
+                ),
+                "GET",
+                "",
+                None,
+            )
+            .await;
+        if !self.signed_in.get_untracked()
+            || self.csrf.get_untracked() != session
+            || generation != *self.generation.borrow()
+            || self
+                .library
+                .get_untracked()
+                .is_none_or(|l| l.id != library.id)
+        {
+            return Ok(());
+        }
+        let page = page?;
+        self.next.set(page.next_offset);
+        self.offset.set(offset);
+        self.files.set(page.items);
+        Ok(())
+    }
+    async fn page(&self, offset: u32) -> Result<()> {
+        let session = self.csrf.get_untracked();
+        let library = self.library.get_untracked().ok_or("Select a library")?;
+        if library.state != LibraryState::Ready {
+            return self.load_files(offset).await;
+        }
+        let query = query(
+            &self.search.get_untracked(),
+            &self.sort.get_untracked(),
+            offset,
+        )
+        .map_err(str::to_owned)?;
+        self.clear_assets();
+        let generation = *self.generation.borrow();
+        self.status.set("Loading captures…".into());
+        self.captures.set(Vec::new());
+        let base = self
+            .album
+            .get_untracked()
+            .map(|a| format!("/albums/{a}/captures"))
+            .unwrap_or_else(|| format!("/libraries/{}/captures", library.id.as_str()));
+        let page: Result<Page<CaptureSummary>> = self
+            .net
+            .json(&format!("{base}?{query}"), "GET", "", None)
+            .await;
+        if generation != *self.generation.borrow()
+            || self.csrf.get_untracked() != session
+            || !self.signed_in.get_untracked()
+        {
+            return Ok(());
+        }
+        let page = page?;
+        self.offset.set(offset);
+        self.next.set(page.next_offset);
+        self.captures.set(page.items.clone());
+        self.status.set(if page.items.is_empty() {
+            "No captures match this search".into()
+        } else {
+            format!("Showing {} captures on this page", page.items.len())
+        });
+        // Two workers share the same admission controller with stage requests.
+        for worker in 0..2 {
+            let ui = self.clone();
+            let items = page.items.clone();
+            spawn_local(async move {
+                for capture in items.into_iter().skip(worker).step_by(2) {
+                    if generation != *ui.generation.borrow() {
+                        break;
+                    }
+                    let abort = AbortController::new().unwrap();
+                    ui.aborts.borrow_mut().push(abort.clone());
+                    let result = async {
+                        let response = ui
+                            .net
+                            .fetch(
+                                &format!("/captures/{}", capture.id.as_str()),
+                                "GET",
+                                "",
+                                None,
+                                &[],
+                                &abort,
+                            )
+                            .await?;
+                        let detail: CaptureDetail = serde_json::from_slice(
+                            &read_cancel(response, JSON_LIMIT, &abort).await?,
+                        )
+                        .map_err(|_| "Invalid capture details")?;
+                        if let Some(id) = detail.preview {
+                            ui.net.preview(&id, &abort, true).await
+                        } else {
+                            Err("Preview unavailable; originals preserved".into())
+                        }
+                    }
+                    .await;
+                    if generation != *ui.generation.borrow() {
+                        if let Ok(url) = result {
+                            let _ = web_sys::Url::revoke_object_url(&url);
+                        }
+                        break;
+                    }
+                    ui.thumbs.update(|map| {
+                        map.insert(
+                            capture.id.as_str().into(),
+                            result.unwrap_or_else(|_| "unavailable".into()),
+                        );
+                    });
+                }
+            });
+        }
+        if let Some(capture) = page.items.first() {
+            self.select(capture.id.clone()).await?;
+        }
+        Ok(())
+    }
+    async fn select(&self, id: OpaqueId) -> Result<()> {
+        self.clear_stage();
+        let generation = *self.stage_generation.borrow();
+        let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
+        *self.stage_abort.borrow_mut() = Some(abort.clone());
+        self.status.set("Loading capture…".into());
+        let response = self
+            .net
+            .fetch(
+                &format!("/captures/{}", id.as_str()),
+                "GET",
+                "",
+                None,
+                &[],
+                &abort,
+            )
+            .await?;
+        let detail: CaptureDetail =
+            serde_json::from_slice(&read_cancel(response, JSON_LIMIT, &abort).await?)
+                .map_err(|_| "Invalid capture details")?;
+        if generation != *self.stage_generation.borrow() {
+            return Ok(());
+        }
+        self.detail.set(Some(detail.clone()));
+        if let Some(id) = detail.preview {
+            let result = self.net.preview(&id, &abort, false).await;
+            if generation != *self.stage_generation.borrow() {
+                if let Ok(url) = result {
+                    let _ = web_sys::Url::revoke_object_url(&url);
+                }
+                return Ok(());
+            }
+            match result {
+                Ok(url) => {
+                    self.stage.set(url);
+                    self.status
+                        .set("Static JPEG preview ready. Color profile unverified".into());
+                }
+                Err(error) => self.fail(error),
+            }
+        } else {
+            self.status
+                .set("Preview unavailable. Preserved originals remain downloadable".into());
+        }
+        Ok(())
+    }
+    fn navigate(&self, delta: i32) {
+        let items = self.captures.get_untracked();
+        let index = self
+            .detail
+            .get_untracked()
+            .and_then(|d| items.iter().position(|c| c.id == d.capture.id))
+            .unwrap_or(0);
+        if let Some(index) = adjacent(index, delta, items.len()) {
+            let ui = self.clone();
+            let id = items[index].id.clone();
+            spawn_local(async move {
+                if let Err(e) = ui.select(id).await
+                    && e != "Cancelled"
+                {
+                    ui.fail(e);
+                }
+            });
+        }
+    }
+    async fn status_job(&self) -> Result<()> {
+        let id = self.job.get_untracked();
+        if id.is_empty() {
+            return Err("No retained import to recover".into());
+        }
+        let progress: ImportProgress = self
+            .net
+            .json(&format!("/imports/{id}"), "GET", "", None)
+            .await?;
+        self.progress.set(progress.intake.completed_bytes);
+        self.total.set(progress.intake.total_bytes.max(1));
+        self.status.set(format!(
+            "Import: {:?}; catalog: {:?}. Committed {} of {} bytes",
+            progress.phase,
+            progress.catalog_state,
+            progress.intake.completed_bytes,
+            progress.intake.total_bytes
+        ));
+        if progress.phase == ImportPhase::CatalogComplete {
+            self.libraries(0).await?;
+            if let Some(id) = progress.library
+                && let Some(library) = self.libraries.get_untracked().iter().find(|l| l.id == id)
+            {
+                self.choose_library(library.clone()).await?;
+            }
+        }
+        Ok(())
+    }
+    async fn upload(&self, kind: ImportKind, files: Vec<File>) -> Result<()> {
+        if self.busy.get_untracked() {
+            return Err("An import is already in progress".into());
+        }
+        self.busy.set(true);
+        let _busy_guard = BusyGuard(self.busy);
+        self.job.set(String::new());
+        *self.upload_cancelled.borrow_mut() = false;
+        self.status
+            .set("Preparing bounded import selection…".into());
+        let session = self.csrf.get_untracked();
+        let (mut declared_bytes, mut declared_files) = declaration(
+            kind,
+            &files.iter().map(|f| f.size() as u64).collect::<Vec<_>>(),
+        )
+        .map_err(str::to_owned)?;
+        self.clear_assets();
+        let metadata_abort =
+            AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
+        let metadata_lease = self.net.lease(VIEWER_BUDGET, &metadata_abort).await?;
+        let mut path_bytes = 0;
+        if kind == ImportKind::Directory {
+            for file in &files {
+                let path = Reflect::get(file, &"webkitRelativePath".into())
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_else(|| file.name());
+                path_bytes = path_metadata(path_bytes, &path).map_err(str::to_owned)?;
+            }
+        } else {
+            if files.len() != 1 {
+                return Err("Select one ZIP archive".into());
+            }
+            let file = &files[0];
+            let size = file.size() as u64;
+            let tail = file
+                .slice_with_f64_and_f64(size.saturating_sub(65577) as f64, size as f64)
+                .map_err(|_| "ZIP read unavailable")?;
+            let tail = Uint8Array::new(
+                &JsFuture::from(tail.array_buffer())
+                    .await
+                    .map_err(|_| "ZIP read unavailable")?,
+            )
+            .to_vec();
+            let zip64 =
+                if let Some(offset) = zip64_record_offset(&tail, size).map_err(str::to_owned)? {
+                    let record = file
+                        .slice_with_f64_and_f64(offset as f64, (offset + 56) as f64)
+                        .map_err(|_| "ZIP64 read unavailable")?;
+                    Some(
+                        Uint8Array::new(
+                            &JsFuture::from(record.array_buffer())
+                                .await
+                                .map_err(|_| "ZIP64 read unavailable")?,
+                        )
+                        .to_vec(),
+                    )
+                } else {
+                    None
+                };
+            let (offset, length) =
+                zip_extent_with_record(&tail, size, zip64.as_deref()).map_err(str::to_owned)?;
+            let central = file
+                .slice_with_f64_and_f64(offset as f64, (offset + length as u64) as f64)
+                .map_err(|_| "ZIP metadata unavailable")?;
+            let central = Uint8Array::new(
+                &JsFuture::from(central.array_buffer())
+                    .await
+                    .map_err(|_| "ZIP metadata unavailable")?,
+            )
+            .to_vec();
+            (declared_bytes, declared_files) = zip_declaration(&central).map_err(str::to_owned)?;
+        }
+        drop(metadata_lease);
+        if !self.signed_in.get_untracked() || self.csrf.get_untracked() != session {
+            return Err("Cancelled".into());
+        }
+        self.progress.set(0);
+        self.total
+            .set(files.iter().map(|f| f.size() as u64).sum::<u64>().max(1));
+        let result=async {
+            let value:serde_json::Value=self.net.json("/imports","POST",&self.csrf.get_untracked(),Some(serde_json::json!({"version":1,"kind":kind,"declared_bytes":declared_bytes,"declared_files":declared_files}))).await?;
+            let id:OpaqueId=value["id"].as_str().ok_or("Invalid import identifier")?.to_owned().try_into().map_err(|_|"Invalid import identifier")?;
+            self.job.set(id.as_str().into());
+            // Only the opaque job ID is retained; never account, CSRF or source paths.
+            if let Ok(Some(storage))=web_sys::window().unwrap().session_storage(){let _=storage.set_item("lytronaut-import",id.as_str());}
+            let mut base=0;
+            for (index,file) in files.iter().enumerate() {
+                if *self.upload_cancelled.borrow(){return Err("Import cancelled. Originals already committed remain preserved".into());}
+                self.status.set(format!("Uploading file {} of {}",index+1,files.len()));
+                let route=if kind==ImportKind::Directory {format!("/imports/{}/file",id.as_str())} else {format!("/imports/{}/zip",id.as_str())};
+                let hex=if kind==ImportKind::Directory {let path=Reflect::get(file,&"webkitRelativePath".into()).ok().and_then(|v|v.as_string()).unwrap_or_else(||file.name());Some(path_hex(&path).map_err(str::to_owned)?)}else{None};
+                self.send_file(&route,file,hex.as_deref(),base).await?;base+=file.size() as u64;
+            }
+            self.net.mutation(&format!("/imports/{}/finish",id.as_str()),&self.csrf.get_untracked()).await?;
+            self.status_job().await
+        }.await;
+        self.upload_abort.borrow_mut().take();
+        result
+    }
+    async fn send_file(&self, path: &str, file: &File, hex: Option<&str>, base: u64) -> Result<()> {
+        let xhr = web_sys::XmlHttpRequest::new().map_err(|_| "Upload unavailable")?;
+        xhr.open_with_async("PUT", path, true)
+            .map_err(|_| "Upload unavailable")?;
+        xhr.set_with_credentials(true);
+        xhr.set_request_header("X-Lytronaut-Csrf", &self.csrf.get_untracked())
+            .map_err(|_| "Upload unavailable")?;
+        if let Some(hex) = hex {
+            xhr.set_request_header("X-Lytronaut-Path-Hex", hex)
+                .map_err(|_| "Upload unavailable")?;
+            xhr.set_request_header("X-Lytronaut-Entry-Type", "file")
+                .map_err(|_| "Upload unavailable")?;
+        }
+        let progress = self.progress;
+        let onprogress = Closure::<dyn FnMut(web_sys::ProgressEvent)>::new(
+            move |event: web_sys::ProgressEvent| {
+                progress.set(base + event.loaded() as u64);
+            },
+        );
+        let upload = xhr.upload().map_err(|_| "Upload unavailable")?;
+        upload.set_onprogress(Some(onprogress.as_ref().unchecked_ref()));
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let sender = Rc::new(RefCell::new(Some(sender)));
+        let tx = sender.clone();
+        let done = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            if let Some(tx) = tx.borrow_mut().take() {
+                let _ = tx.send(());
+            }
+        });
+        xhr.set_onloadend(Some(done.as_ref().unchecked_ref()));
+        *self.upload_abort.borrow_mut() = Some(xhr.clone());
+        let sent = xhr.send_with_opt_blob(Some(file));
+        if sent.is_ok() {
+            let _ = receiver.await;
+        }
+        xhr.set_onloadend(None);
+        upload.set_onprogress(None);
+        if sent.is_err() {
+            return Err("Upload could not start".into());
+        }
+        if *self.upload_cancelled.borrow() {
+            return Err("Import cancelled. Choose files again to retry".into());
+        }
+        if !(200..300).contains(&xhr.status().unwrap_or(0)) {
+            return Err(
+                "Upload failed. Inspect status, then select the original files again to retry"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+fn launch(ui: Ui, task: impl std::future::Future<Output = Result<()>> + 'static) {
+    spawn_local(async move {
+        if let Err(e) = task.await
+            && e != "Cancelled"
+        {
+            ui.fail(e);
+        }
+    });
+}
+fn file_links(files: Vec<PreservedFile>) -> impl IntoView {
+    files.into_iter().map(|file|view!{<li><a href=format!("/assets/{}/download",file.id.as_str()) download="">{format!("Download {:?} · {} bytes",file.role,file.encoded_bytes)}</a></li>}).collect_view()
+}
+fn ui() -> Ui {
+    use_context::<StoredValue<Ui, LocalStorage>>()
+        .expect("application context")
+        .get_value()
+}
+pub fn app() -> impl IntoView {
+    let state = Ui::new();
+    provide_context(StoredValue::new_local(state.clone()));
+    if let Ok(Some(storage)) = web_sys::window().unwrap().session_storage()
+        && let Ok(Some(id)) = storage.get_item("lytronaut-import")
+        && OpaqueId::try_from(id.clone()).is_ok()
+    {
+        state.job.set(id);
+    }
+    let startup = state.clone();
+    spawn_local(async move {
+        if startup.session().await.is_err() {
+            startup
+                .status
+                .set("Sign in or set up this local library".into());
+        }
+    });
+    let cleanup = StoredValue::new_local(state.clone());
+    on_cleanup(move || {
+        let cleanup = cleanup.get_value();
+        cleanup.clear_assets();
+        if let Some(xhr) = cleanup.upload_abort.borrow().as_ref() {
+            let _ = xhr.abort();
+        }
+    });
+    let signed = state.signed_in;
+    let status = state.status;
+    view! {
+        <a class="skip" href="#content">"Skip to library"</a>
+        <header class="header"><a class="brand" href="/">"◉ LYTRONAUT"</a><span>"an explorer for your light-field library"</span>
+            <Show when=move||signed.get()><button on:click=move |_| {let u=ui();let task=u.clone();launch(u,async move{task.net.mutation("/auth/logout",&task.csrf.get_untracked()).await?;task.clear_assets();task.library.set(None);task.libraries.set(Vec::new());task.albums.set(Vec::new());task.files.set(Vec::new());task.captures.set(Vec::new());task.csrf.set(String::new());task.signed_in.set(false);task.status.set("Signed out".into());Ok(())});}>"Sign out"</button></Show>
+        </header>
+        <div class="status" role="status" aria-live="polite" aria-atomic="true">{move||status.get()}</div>
+        <Show when=move||signed.get() fallback=||view!{<Authentication/>}><Workspace/></Show>
+    }
+}
+#[component]
+fn Authentication() -> impl IntoView {
+    let username = RwSignal::new(String::new());
+    let password = RwSignal::new(String::new());
+    let bootstrap = RwSignal::new(String::new());
+    let setup = RwSignal::new(false);
+    let pending = RwSignal::new(false);
+    view! {
+        <main id="content" class="authentication"><section class="panel"><h1>{move||if setup.get(){"Set up your library"}else{"Welcome back"}}</h1>
+            <p>"Private, local access to your light-field originals."</p>
+            <form on:submit=move |event|{event.prevent_default();if pending.get_untracked(){return;}pending.set(true);let u=ui();spawn_local(async move{
+                let result=async {
+                    let abort=AbortController::new().map_err(|_|"Browser cancellation unavailable")?;
+                    let intent=if setup.get_untracked(){"setup"}else{"login"};
+                    let body=if setup.get_untracked(){serde_json::json!({"username":username.get_untracked(),"password":password.get_untracked(),"bootstrap":bootstrap.get_untracked()})}else{serde_json::json!({"username":username.get_untracked(),"password":password.get_untracked()})};
+                    u.net.fetch(&format!("/auth/{intent}"),"POST","",Some(&JsValue::from_str(&body.to_string())),&[("Content-Type","application/json"),("X-Lytronaut-Intent",intent)],&abort).await?;
+                    password.set(String::new());bootstrap.set(String::new());
+                    if setup.get_untracked(){setup.set(false);u.status.set("Administrator created. Sign in with your credentials".into());Ok(())}else{u.session().await}
+                }.await;
+                pending.set(false);if let Err(e)=result{u.fail(e);}
+            });}>
+                <label for="username">"Username"</label><input id="username" autocomplete="username" required maxlength="64" prop:value=move||username.get() on:input=move|e|username.set(event_target_value(&e))/>
+                <label for="password">"Password"</label><input id="password" type="password" autocomplete=move||if setup.get(){"new-password"}else{"current-password"} required minlength="12" maxlength="1024" prop:value=move||password.get() on:input=move|e|password.set(event_target_value(&e))/>
+                <Show when=move||setup.get()><label for="bootstrap">"Local bootstrap secret"</label><input id="bootstrap" type="password" autocomplete="off" required minlength="64" maxlength="64" prop:value=move||bootstrap.get() on:input=move|e|bootstrap.set(event_target_value(&e))/><p>"Read bootstrap.secret from your private application data directory. This secret is consumed once."</p></Show>
+                <button class="primary" type="submit" disabled=move||pending.get()>{move||if pending.get(){"Working…"}else if setup.get(){"Create administrator"}else{"Sign in"}}</button>
+            </form><button on:click=move |_|setup.update(|s|*s = !*s) disabled=move||pending.get()>{move||if setup.get(){"Back to sign in"}else{"First run? Set up administrator"}}</button>
+        </section></main>
+    }
+}
+#[component]
+fn Workspace() -> impl IntoView {
+    let directory_ref = NodeRef::<leptos::html::Input>::new();
+    Effect::new(move |_| {
+        if let Some(node) = directory_ref.get() {
+            let _ = node.set_attribute("webkitdirectory", "");
+        }
+    });
+    let s = ui();
+    let library = s.library;
+    let albums = s.albums;
+    let libraries = s.libraries;
+    let captures = s.captures;
+    let detail = s.detail;
+    let stage = s.stage;
+    let thumbs = s.thumbs;
+    let next = s.next;
+    let offset = s.offset;
+    let search = s.search;
+    let sort = s.sort;
+    let files = s.files;
+    let list_next = s.list_next;
+    let album_next = s.album_next;
+    let busy = s.busy;
+    let job = s.job;
+    let progress = s.progress;
+    let total = s.total;
+    view! {
+        <div class="workstation">
+            <nav class="rail" aria-label="Library and albums"><h2>"LIBRARIES"</h2>
+                {move||libraries.get().into_iter().enumerate().map(|(index,l)|{let selected=library;let id=l.id.clone();view!{<button class="rail-item" aria-pressed=move||selected.get().is_some_and(|s|s.id==id) on:click=move |_|{let u=ui();let task=u.clone();let l=l.clone();launch(u,async move{task.choose_library(l).await});}>{format!("Library {}",index+1)}</button>}}).collect_view()}
+                <Show when=move||list_next.get().is_some()><button on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.libraries(list_next.get_untracked().unwrap_or(0)).await});}>"More libraries"</button></Show>
+                <p>{move||library.get().map(|l|format!("{} captures · {} albums · {:?}",l.captures,l.albums,l.state)).unwrap_or_else(||"No library yet. Import your first library.".into())}</p>
+                <button class="rail-item" on:click=move |_|{let u=ui();u.album.set(None);let task=u.clone();launch(u,async move{task.page(0).await});}>"All captures"</button>
+                <h2>"ALBUMS"</h2>
+                {move||albums.get().into_iter().map(|album|{let selected=ui().album;let id=album.id.as_str().to_owned();let click_id=id.clone();view!{<button class="rail-item" aria-pressed=move||selected.get().as_deref()==Some(&id) on:click=move |_|{let u=ui();u.album.set(Some(click_id.clone()));u.sort.set("order".into());let task=u.clone();launch(u,async move{task.page(0).await});}>{format!("{}{} · {}",album.name,if album.name_truncated{" [truncated]"}else{""},album.captures)}</button>}}).collect_view()}
+                <Show when=move||album_next.get().is_some()><button on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.load_albums(album_next.get_untracked().unwrap_or(0)).await});}>"More albums"</button></Show>
+                <div class="import"><h2>"IMPORT LIBRARY"</h2><label for="directory">"Library directory"</label><input id="directory" type="file" multiple=true node_ref=directory_ref disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let files=input.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();input.set_value("");let u=ui();let task=u.clone();launch(u,async move{task.upload(ImportKind::Directory,files).await});}/>
+                    <label for="zip">"ZIP library archive"</label><input id="zip" type="file" accept=".zip,application/zip" disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let files=input.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();input.set_value("");let u=ui();let task=u.clone();launch(u,async move{task.upload(ImportKind::ZipLibrary,files).await});}/>
+                    <Show when=move||!job.get().is_empty()><label for="import-progress">"Upload / committed bytes"</label><progress id="import-progress" value=move||progress.get() max=move||total.get()></progress><span>{move||format!("{} / {} bytes",progress.get(),total.get())}</span>
+                        <button disabled=move||!busy.get() || job.get().is_empty() on:click=move |_|{let u=ui();*u.upload_cancelled.borrow_mut()=true;if let Some(xhr)=u.upload_abort.borrow().as_ref(){let _=xhr.abort();}let task=u.clone();launch(u,async move{task.net.mutation(&format!("/imports/{}/cancel",task.job.get_untracked()),&task.csrf.get_untracked()).await?;task.status_job().await});}>"Cancel import"</button>
+                        <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.status_job().await});}>"Recover import status"</button>
+                        <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.net.mutation(&format!("/imports/{}/finish",task.job.get_untracked()),&task.csrf.get_untracked()).await?;task.status_job().await});}>"Retry catalog adaptation"</button>
+                        <p>"Interrupted uploads: recover status, then reselect the original directory or ZIP to start a new bounded import. Completed original bytes deduplicate."</p>
+                    </Show>
+                </div>
+            </nav>
+            <main id="content" class="workspace"><div class="toolbar"><h1>"Library explorer"</h1><form class="search" on:submit=move|e|{e.prevent_default();let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><label for="search">"Search captures"</label><input id="search" type="search" prop:value=move||search.get() on:input=move|e|search.set(event_target_value(&e))/><button type="submit">"Search"</button><label for="sort">"Sort"</label><select id="sort" prop:value=move||sort.get() on:change=move|e|{sort.set(event_target_value(&e));let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><option value="order">"Library / album order"</option><option value="name">"Name"</option><option value="rating">"Imported rating"</option></select></form></div>
+                <section class="viewer" aria-label="Capture viewer"><div class="stage" tabindex="0" aria-label="Capture stage. Left and right arrows change capture" on:keydown=move|e|{if e.key()=="ArrowLeft"{e.prevent_default();ui().navigate(-1);}else if e.key()=="ArrowRight"{e.prevent_default();ui().navigate(1);}}>
+                    <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img src=move||stage.get() alt=move||detail.get().map(|d|format!("Static JPEG preview: {}",d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
+                </div><div class="viewer-strip"><button on:click=move |_|ui().navigate(-1) disabled=move||captures.get().is_empty()>"Previous capture"</button><span>{move||detail.get().map(|d|format!("{}{}",d.capture.name,if d.capture.name_truncated{" [truncated]"}else{""})).unwrap_or_else(||"No capture selected".into())}</span><button on:click=move |_|ui().navigate(1) disabled=move||captures.get().is_empty()>"Next capture"</button><button on:click=move |_|{if let Some(d)=detail.get_untracked(){let u=ui();let task=u.clone();launch(u,async move{task.select(d.capture.id).await});}}>"Retry preview"</button></div></section>
+                <div class="lower"><section class="browser-panel" aria-label="Capture grid and filmstrip"><h2>"Captures"</h2><div class="capture-grid">
+                    {move||captures.get().into_iter().map(|capture|{let id=capture.id.as_str().to_owned();let thumb_id=StoredValue::new(id.clone());let selected_id=capture.id.clone();let click_id=capture.id.clone();view!{<button class="capture" aria-pressed=move||detail.get().is_some_and(|d|d.capture.id==selected_id) on:click=move |_|{let u=ui();let task=u.clone();let id=click_id.clone();launch(u,async move{task.select(id).await});}><Show when=move||thumbs.get().get(&id).is_some_and(|u|u.starts_with("data:image/jpeg")) fallback=||view!{<div class="thumb-empty">"◉"</div>}><img src=move||thumbs.get().get(&thumb_id.get_value()).cloned().unwrap_or_default() alt=""/></Show><span>{format!("{}{}",capture.name,if capture.name_truncated{" [truncated]"}else{""})}</span></button>}}).collect_view()}
+                </div><nav class="filmstrip" aria-label="Capture filmstrip">{move||captures.get().into_iter().enumerate().map(|(i,capture)|{let id=capture.id;view!{<button aria-label=format!("Select capture {}: {}",offset.get_untracked() as usize+i+1,capture.name) on:click=move |_|{let u=ui();let task=u.clone();let id=id.clone();launch(u,async move{task.select(id).await});}>{i+1}</button>}}).collect_view()}</nav>
+                <div class="pagination"><button disabled=move||offset.get()==0 on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(offset.get_untracked().saturating_sub(PAGE_SIZE)).await});}>"Previous page"</button><span>{move||format!("Page {}",offset.get()/PAGE_SIZE+1)}</span><button disabled=move||next.get().is_none() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(next.get_untracked().unwrap_or(0)).await});}>"Next page"</button></div>
+                <Show when=move||!files.get().is_empty()><h2>"Preserved library files"</h2><ul>{move||file_links(files.get())}</ul></Show>
+                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{format!("{:?} · not implemented yet",d.capabilities.discrete_focus)}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>"Optional renderer and codec not implemented"</dd></dl><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
+            </main>
+        </div>
+    }
+}

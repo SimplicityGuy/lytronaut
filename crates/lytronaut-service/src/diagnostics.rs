@@ -159,7 +159,7 @@ async fn run_inner(operation: &str, source: &Path, data: &Path) -> Result<Suppor
         return Err(());
     }
     local::private_directory(data).map_err(|_| ())?;
-    let database = data.join("catalog.db");
+    let database = local::application_database(data).map_err(|_| ())?;
     local::database_file(&database).map_err(|_| ())?;
     let catalog = Catalog::open_application_database(&database)
         .await

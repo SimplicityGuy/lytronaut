@@ -554,3 +554,32 @@ async fn zip_completion_adapts_without_an_extra_finish_request() {
         204
     );
 }
+
+#[tokio::test]
+async fn polling_during_catalog_publication_keeps_completed_import_visible() {
+    let s = Server::new().await;
+    let (cookie, mutation) = s.session().await;
+    for iteration in 0..6 {
+        let (job, _) = s.upload(&mutation, 24 + iteration).await;
+        let finish_path = format!("/imports/{job}/finish");
+        let finish = s.request("POST", &finish_path, &mutation, b"");
+        let path = format!("/imports/{job}");
+        let polling = async {
+            for _ in 0..40 {
+                let (a, b, c) = tokio::join!(
+                    s.request("GET", &path, &cookie, b""),
+                    s.request("GET", &path, &cookie, b""),
+                    s.request("GET", &path, &cookie, b"")
+                );
+                for response in [a, b, c] {
+                    assert_eq!(response.0, 200);
+                }
+            }
+        };
+        let (response, ()) = tokio::join!(finish, polling);
+        assert_eq!(response.0, 204);
+        let progress = s.get(&path, &cookie).await;
+        assert_eq!(progress["phase"], "catalog_complete");
+        assert_eq!(progress["catalog_state"], "preserved_only");
+    }
+}

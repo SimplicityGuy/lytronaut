@@ -148,7 +148,9 @@ pub struct ImportSummary {
 
 /// Additive migration; a failed DDL transaction rolls back without touching auth/intake.
 pub async fn migrate(catalog: &Catalog) -> Result<(), CatalogError> {
-    let mut tx = catalog.pool().begin().await?;
+    // Schema statements are writes even when an existing object makes them no-ops.
+    // Reserve the writer before SQLite reads its schema to avoid BUSY upgrades.
+    let mut tx = catalog.pool().begin_with("BEGIN IMMEDIATE").await?;
     for sql in [
         "CREATE TABLE IF NOT EXISTS catalog_versions(id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL UNIQUE, source_job TEXT NOT NULL REFERENCES intake_jobs(id), library_uuid TEXT, state TEXT NOT NULL, reason TEXT, conflict INTEGER NOT NULL DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS catalog_sources(version INTEGER NOT NULL REFERENCES catalog_versions(id), job TEXT NOT NULL, path TEXT NOT NULL, digest TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(version,path), FOREIGN KEY(job,path) REFERENCES intake_sources(job,path))",

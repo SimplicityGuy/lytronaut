@@ -133,7 +133,7 @@ async fn migrate(c: &Catalog) -> Result<()> {
             ErrorCode::StorageUnavailable,
         )
     })?;
-    let mut tx = c.pool().begin().await?;
+    let mut tx = c.pool().begin_with("BEGIN IMMEDIATE").await?;
     for sql in [
         "CREATE TABLE IF NOT EXISTS api_ids(id TEXT PRIMARY KEY,kind TEXT NOT NULL,version INTEGER NOT NULL REFERENCES catalog_versions(id),source_key TEXT NOT NULL,UNIQUE(kind,version,source_key))",
         "CREATE TABLE IF NOT EXISTS api_imports(job TEXT PRIMARY KEY REFERENCES intake_jobs(id),version INTEGER NOT NULL REFERENCES catalog_versions(id))",
@@ -161,7 +161,9 @@ async fn migrate(c: &Catalog) -> Result<()> {
 }
 /// Idempotent mapping transaction, including deduplicated intakes whose catalog source_job differs.
 async fn map_version(c: &Catalog, job: &str, version: i64) -> Result<String> {
-    let mut tx = c.pool().begin().await?;
+    // Reserve the writer before reading keys: a deferred read upgrade can fail
+    // immediately with SQLITE_BUSY when import progress holds another writer.
+    let mut tx = c.pool().begin_with("BEGIN IMMEDIATE").await?;
     let mut keys = vec![("library".to_string(), String::new())];
     for (kind, sql) in [
         (
@@ -1281,6 +1283,70 @@ mod tests {
         sqlx::raw_sql("DROP TABLE api_adaptation_errors;CREATE VIEW api_adaptation_errors AS SELECT 'invalid' AS job").execute(catalog.pool()).await.unwrap();
         assert!(Api::open(catalog.clone(), store.clone()).await.is_err());
         drop(api);
+        drop(store);
+        drop(catalog);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn catalog_publication_waits_for_an_existing_writer() {
+        let root = std::env::temp_dir().join(random_id().unwrap());
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        let catalog = Catalog::open_application_database(&root.join("catalog.db"))
+            .await
+            .unwrap();
+        let store = Store::open(
+            catalog.clone(),
+            &root.join("originals"),
+            &root.join("staging"),
+            lytronaut_storage::Limits {
+                free_floor: 0,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let job = store
+            .begin(&ImportRequest {
+                version: WireVersion::V1,
+                kind: ImportKind::Directory,
+                declared_bytes: 3,
+                declared_files: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .append_directory_file(&job, "unknown.bin", Cursor::new(b"abc".to_vec()))
+            .await
+            .unwrap();
+        store.finish(&job).await.unwrap();
+        migrate(&catalog).await.unwrap();
+        let version = desktop::import_desktop(&catalog, &store, &job)
+            .await
+            .unwrap()
+            .version_id;
+        let mut writer = catalog.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
+        sqlx::query("UPDATE catalog_versions SET reason=reason WHERE id=?")
+            .bind(version)
+            .execute(&mut *writer)
+            .await
+            .unwrap();
+        let c = catalog.clone();
+        let j = job.clone();
+        let publishing = tokio::spawn(async move { map_version(&c, &j, version).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !publishing.is_finished(),
+            "publication must wait for writer, not fail its read-to-write upgrade"
+        );
+        writer.commit().await.unwrap();
+        publishing.await.unwrap().unwrap();
+        assert_eq!(
+            progress(&catalog, &store, &job).await.unwrap().phase,
+            ImportPhase::CatalogComplete
+        );
         drop(store);
         drop(catalog);
         std::fs::remove_dir_all(root).unwrap();
