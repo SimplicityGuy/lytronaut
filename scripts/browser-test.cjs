@@ -53,9 +53,75 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   await page.focus('.stage');await page.keyboard.press('ArrowRight');
   await page.waitForFunction(first=>document.querySelector('.viewer-strip span').textContent!==first,{},firstCapture);
   await page.keyboard.press('ArrowLeft');await page.waitForFunction(first=>document.querySelector('.viewer-strip span').textContent===first,{},firstCapture);
+  checkpoint='discrete-focus-corpus';
+  // Aggregate-only actual native generation + Chrome decoding; never log source IDs/pixels.
+  const focusProof=await page.evaluate(async()=>{
+   const libraries=(await (await fetch('/libraries')).json()).items.filter(l=>l.state==='ready');
+   let stacks=0,planes=0,maxSourceBytes=0;const times=[];
+   for(const library of libraries){let offset=0;for(;;){const captures=await (await fetch(`/libraries/${library.id}/captures?limit=100&offset=${offset}`)).json();
+    for(const capture of captures.items){const detail=await (await fetch(`/captures/${capture.id}`)).json();
+     const file=detail.originals.find(f=>f.role==='jpeg_focus_stack');if(!file)continue;
+     const response=await fetch(`/assets/${file.id}/focus`);if(!response.ok)throw Error('focus metadata failed');
+     const stack=await response.json();if(stack.lambdas.some((v,i)=>!Number.isFinite(v)||(i&&v<=stack.lambdas[i-1])))throw Error('invalid focus order');
+     stacks++;maxSourceBytes=Math.max(maxSourceBytes,file.encoded_bytes);
+     for(let i=0;i<stack.lambdas.length;i++){
+      const start=performance.now();const response=await fetch(`/assets/${file.id}/focus/${i}/1`);if(!response.ok)throw Error('focus derivative failed');
+      const meta=JSON.parse(response.headers.get('X-Lytronaut-Derivative'));const bytes=await response.arrayBuffer();
+      const digest=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(v=>v.toString(16).padStart(2,'0')).join('');
+      if(meta.representation!=='jpeg_focus_plane'||meta.plane_index!==i||meta.lambda!==stack.lambdas[i]||meta.encoded_bytes!==bytes.byteLength||meta.content_sha256!==digest||meta.orientation!==1)throw Error('derivative metadata or integrity failed');
+      const bitmap=await createImageBitmap(new Blob([bytes],{type:'image/jpeg'}));
+      if(bitmap.width!==meta.output_dimensions.width||bitmap.height!==meta.output_dimensions.height)throw Error('derivative decoded geometry failed');bitmap.close();
+      times.push(performance.now()-start);planes++;
+     }
+    }if(captures.next_offset==null)break;offset=captures.next_offset;
+   }}
+   times.sort((a,b)=>a-b);return {stacks,planes,maxSourceBytes,p95NativeHttpDecodeMs:times[Math.ceil(times.length*.95)-1]};
+  });
+  assert.equal(focusProof.stacks,privateMode?58:1);assert.equal(focusProof.planes,privateMode?420:3);assert(focusProof.maxSourceBytes<=8*1024*1024);
+  if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusProof.p95NativeHttpDecodeMs<=100);
+  checkpoint='focus-ui-benchmark';
+  await click('All captures');
+  const focusCaptureIndex=await page.evaluate(async()=>{const l=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');let offset=0;for(;;){const page=await (await fetch(`/libraries/${l.id}/captures?limit=24&offset=${offset}`)).json();for(let i=0;i<page.items.length;i++){const d=await (await fetch(`/captures/${page.items[i].id}`)).json();if(d.capabilities.discrete_focus.state==='available')return offset+i;}if(page.next_offset==null)return -1;offset=page.next_offset;}});
+  assert(focusCaptureIndex>=0);await page.waitForFunction(()=>document.querySelectorAll('.capture').length===24);
+  for(let offset=0;offset<Math.floor(focusCaptureIndex/24);offset++){await click('Next page');await page.waitForFunction(p=>document.querySelector('.pagination span').textContent===`Page ${p}`,{},offset+2);}
+  await page.evaluate(i=>document.querySelectorAll('.capture')[i].click(),focusCaptureIndex%24);
+  await page.waitForFunction(()=>!document.querySelector('#focus').disabled&&document.querySelector('.status').textContent.includes('Discrete focus:'));
+  const measureFocusUi=async()=>page.evaluate(async()=>{const times=[];const pendingGridAtStart=document.querySelectorAll('.capture').length-[...document.querySelectorAll('.capture img')].filter(i=>i.complete&&i.naturalWidth>0).length;const range=document.querySelector('#focus');for(let i=0;i<24;i++){
+   const image=document.querySelector('.stage img'),old=image.src;const start=performance.now();range.value=i%2?range.min:range.max;
+   const displayed=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(Error('focus interaction timeout'));},5000);const observer=new MutationObserver(()=>{if(image.src!==old){clearTimeout(timer);observer.disconnect();resolve();}});observer.observe(image,{attributes:true,attributeFilter:['src']});});
+   range.dispatchEvent(new Event('input',{bubbles:true}));await displayed;await image.decode();await new Promise(requestAnimationFrame);times.push(performance.now()-start);
+  }times.sort((a,b)=>a-b);return {samples:times.length,pendingGridAtStart,p50InputToDecodedFrameReadyMs:times[Math.ceil(times.length*.5)-1],p95InputToDecodedFrameReadyMs:times[Math.ceil(times.length*.95)-1],maxInputToDecodedFrameReadyMs:times[times.length-1]};});
+  const focusUiLoadContendedTimes=await measureFocusUi();
+  await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&[...document.querySelectorAll('.capture img')].every(i=>i.complete&&i.naturalWidth>0),{timeout:120000});
+  const focusUiTimes=await measureFocusUi();
+  if(privateMode)console.log(JSON.stringify({focusProof,focusUiLoadContendedTimes,focusUiTimes}));
+  if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusUiTimes.p95InputToDecodedFrameReadyMs<=100&&focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs<=100);
+  if(!privateMode){
+   checkpoint='focus-controls';await page.waitForFunction(()=>!document.querySelector('#focus').disabled&&document.querySelector('.status').textContent.includes('Discrete focus:'));
+   assert.deepEqual(await page.$eval('.stage img',e=>[e.naturalWidth,e.naturalHeight]),[360,240]);
+   const corners=async()=>page.evaluate(async()=>{const img=document.querySelector('.stage img');await img.decode();const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);const samples=[[20,20],[c.width-20,20],[20,c.height-20],[c.width-20,c.height-20]].map(([x,y])=>[...ctx.getImageData(x,y,1,1).data].slice(0,3));c.width=c.height=0;return samples.map(rgb=>rgb.map(v=>v>180?'H':'L').join(''));});
+   assert.deepEqual(await corners(),['HLL','LHL','LLH','HHL'],'baked8/sidecar6 conflict defaults to identity');
+   checkpoint='focus-keyboard-end';await page.focus('#focus');await page.keyboard.press('End');await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('stored plane 3 of 3'));
+   checkpoint='focus-keyboard-home';await page.keyboard.press('Home');await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('stored plane 1 of 3'));
+   checkpoint='focus-orientation6';await page.select('#orientation','6');await page.waitForFunction(()=>document.querySelector('.stage img')?.naturalWidth===240&&document.querySelector('.status').textContent.includes('EXIF 6'));
+   assert.deepEqual(await corners(),['LLH','HLL','HHL','LHL']);
+   checkpoint='focus-orientation1';await page.select('#orientation','1');await page.waitForFunction(()=>document.querySelector('.stage img')?.naturalWidth===360&&document.querySelector('.status').textContent.includes('EXIF 1'));
+   // Corrupt a real derivative while retaining its genuine typed header. Old verified frame stays usable.
+   checkpoint='focus-integrity';const focusFile=await page.evaluate(async()=>{const l=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');const c=(await (await fetch(`/libraries/${l.id}/captures?limit=100`)).json()).items.find(c=>c.name==='Synthetic 000');return (await (await fetch(`/captures/${c.id}`)).json()).originals.find(f=>f.role==='jpeg_focus_stack').id;});
+   const genuine=await page.evaluate(async id=>{const r=await fetch(`/assets/${id}/focus/2/1`);return {meta:r.headers.get('X-Lytronaut-Derivative'),size:JSON.parse(r.headers.get('X-Lytronaut-Derivative')).encoded_bytes};},focusFile);
+   await page.setRequestInterception(true);let corruptFocus=true;
+   const badFocus=r=>{if(corruptFocus&&r.url().endsWith('/focus/2/1'))r.respond({status:200,headers:{'Content-Type':'image/jpeg','X-Lytronaut-Derivative':genuine.meta},body:Buffer.alloc(genuine.size)}).catch(()=>{});else r.continue().catch(()=>{});};page.on('request',badFocus);
+   await page.focus('#focus');await page.keyboard.press('End');await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Derivative integrity check failed'));
+   assert.deepEqual(await corners(),['HLL','LHL','LLH','HHL']);corruptFocus=false;await page.setRequestInterception(false);page.off('request',badFocus);
+   // Cancel held focus work by changing capture; a late response cannot replace the static frame.
+   checkpoint='focus-cancellation';let heldFocus;await page.setRequestInterception(true);const staleFocus=r=>{if(r.url().includes('/focus/1/')&&!heldFocus)heldFocus=r;else r.continue().catch(()=>{});};page.on('request',staleFocus);
+   await page.$eval('#focus',e=>{e.value='0';e.dispatchEvent(new Event('input',{bubbles:true}));});for(let i=0;i<100&&!heldFocus;i++)await delay(10);assert(heldFocus);
+   const selectedStatic=await page.evaluate(()=>{const button=[...document.querySelectorAll('.capture')].find(b=>b.textContent!=='Synthetic 000');const name=button.textContent;button.click();return name;});await heldFocus.continue().catch(()=>{});await page.waitForFunction(name=>document.querySelector('#focus').disabled&&document.querySelector('.viewer-strip span').textContent===name,{},selectedStatic);await delay(100);
+   assert(await page.$eval('#focus',e=>e.disabled));assert(await page.$eval('.stage img',e=>e.naturalWidth===640));await page.setRequestInterception(false);page.off('request',staleFocus);
+  }
   const contrast=await page.evaluate(()=>{const luminance=c=>{const rgb=c.match(/[\d.]+/g).slice(0,3).map(x=>{let v=Number(x)/255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};const ratio=(a,b)=>{a=luminance(a);b=luminance(b);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);};const root=getComputedStyle(document.documentElement),button=getComputedStyle(document.querySelector('.search button'));return {text:ratio(root.color,root.backgroundColor),control:ratio(button.borderTopColor,button.backgroundColor)};});
   assert(contrast.text>=4.5);assert(contrast.control>=3);
-  checkpoint='capture-pagination';let seen=0;
+  checkpoint='capture-pagination';await click('All captures');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 1'&&document.querySelectorAll('.capture img').length===24,{timeout:120000});let seen=0;
   for(;;){
    const count=await page.$$eval('.capture img',imgs=>imgs.filter(i=>i.complete&&i.naturalWidth>0).length);seen+=count;
    const next=await page.evaluateHandle(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Next page'));
@@ -136,6 +202,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await click('Library '+(readyIndex+1));
    await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===24,{timeout:120000});
    checkpoint='corrupt-preview';
+   await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(b=>b.textContent!=='Synthetic 000').click());await page.waitForFunction(()=>document.querySelector('#focus').disabled&&document.querySelector('.stage img')?.naturalWidth===640);
    // Corrupt transfer bytes reject preview integrity while original downloads work.
    let corrupt=true;await page.setRequestInterception(true);
    const corruptResponse=request=>{if(corrupt&&request.url().includes('/chunks/'))request.respond({status:200,body:Buffer.alloc(10154)}).catch(()=>{});else request.continue().catch(()=>{});};page.on('request',corruptResponse);
@@ -187,8 +254,8 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   checkpoint='final-logout';await click('Sign out');await page.waitForSelector('#username');
   const unauthorized=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(unauthorized,401);
   assert.equal(errors.length,0);assert(!responses.includes(429));const urls=await page.evaluate(()=>window.__urls);assert.equal(urls.created,urls.revoked);
-  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',startupMs,faultSuite:!privateMode,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:true,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
+  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug',startupMs,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:true,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
   console.log(JSON.stringify(result));
-  fs.writeFileSync(path.join(root,privateMode?'browser-aggregate.json':'browser-results.json'),JSON.stringify(result,null,2),{mode:0o600});
+  fs.writeFileSync(process.env.LYTRONAUT_BROWSER_REPORT||path.join(root,privateMode?'browser-aggregate.json':'browser-results.json'),JSON.stringify(result,null,2),{mode:0o600});
  }finally{if(browser)await browser.close();fs.rmSync(path.join(root,'browser-profile-'+process.pid),{recursive:true,force:true});server.kill('SIGINT');}
-})().catch(e=>{console.error(privateMode?'Browser validation failed at '+checkpoint+' '+(e.stack?.match(/browser-test.cjs:\d+:\d+/)?.[0]||'')+' (details redacted)':'checkpoint '+checkpoint+' '+e);process.exitCode=1;});
+})().catch(e=>{console.error(privateMode?'Browser validation failed at '+checkpoint+' '+(e.stack?.match(/browser-test.cjs:\d+:\d+/)?.[0]||'')+' (details redacted)':'checkpoint '+checkpoint+' '+e.stack);process.exitCode=1;});

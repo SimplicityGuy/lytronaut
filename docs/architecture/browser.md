@@ -145,3 +145,84 @@ behavior suite does not emit profraw on its stable build. The final denominator
 must include browser.rs and all first-party application source, audit test/helper
 lines separately and fail when application files lack instrumented evidence.
 No coverage-driven application exclusions or unsupported 95% claim are acceptable.
+
+### Discrete JPEG focus and explicit orientation
+
+The Rust/WASM viewer now selects the deterministic nearest **stored** JPEG plane,
+with a native labelled range, keyboard values, accessible plane/lambda text and
+actual source dimensions (360 × 360 for the validated private LFE 11 stacks).
+There is no calibrated focus synthesis. A separate explicit EXIF 1–8 selector
+changes verified derivative pixels; the default is identity because processed
+recipes may be baked. Imported sidecar/embedded/catalog orientation stays
+preserved. The interoperability source records 109/109 numerically matching
+sidecar-v4/embedded-view fields, but this establishes correspondence rather than
+rendering parity. Unknown or conflicting edits are not combined. Synthetic
+embedded orientation 8 versus sidecar 6 verifies default identity and explicit
+viewer precedence. Catalog 0 is rejected as EXIF.
+
+Source bytes use the authenticated native CPU flow documented in `api.md`.
+Each response carries a typed selection, geometry, generated-byte hash and lossy
+provenance. The Rust client checks these before actual JPEG decoding/display.
+Stage requests share the existing two-transfer browser admission; each focus
+operation reserves 20 MiB within the 64 MiB transient viewer allowance, leaving
+32 MiB for persistent stage/grid within the common 96 MiB CPU/WASM budget.
+Changing focus, capture, library or session aborts obsolete requests; generation
+checks discard late results. Temporary decode objects are released, superseded
+Blob URLs are revoked, and logout clears the displayed derivative. There is no
+unbounded plane cache. Failed derivatives retain the previous verified frame and
+preserved downloads; the output label describes the frame actually displayed.
+
+The independent synthetic browser suite now exercises all public stored planes,
+SHA256/typed extents and actual Chrome decode, rectangular colored-corner EXIF
+rotation, baked/sidecar disagreement, keyboard Home/End, corrupt derivative
+retention, held-request cancellation and static fallback without GPU/video.
+Existing import/recovery, ZIP/ZIP64, preview corruption, original-byte equality,
+pre-restart URL/canvas cleanup, sorting, actual 200% DPR/CSS zoom, responsive,
+forced-colors, reduced-motion and AX checks remain required. AX inspection does
+not certify manual VoiceOver behavior. Native tests cover all eight EXIF rotation/
+reflection coordinate maps, inverse geometry, hostile metadata and resource
+limits, exact source preservation, authentication and response permit lifecycle.
+
+Latency measurement is input event through verified Rust/WASM derivative decode,
+stage image decode and the next animation-frame callback: **decoded frame ready**,
+not a claim that physical display presentation has completed. The release CPU
+100 ms p95 gate uses 24 repeated interactions on declared hardware after grid
+images finish loading. Aggregate-only corpus checks decode every stored plane.
+Debug build timing does not establish this performance target. Final first-party
+native plus WASM Rust line coverage instrumentation and its failing 95% floor
+remain the acceptance bead's experimental tooling gate; these tests do not claim
+95% measured application coverage.
+
+The development `just serve` and canonical `wasm-build` use debug profiles. A
+public synthetic diagnostic run measured 111 ms p95 HTTP/decode and 153.6 ms p95
+input-to-frame-ready with debug native/WASM builds. An initial private WIP run
+with release native but debug WASM passed all 58/420 native/Chrome decodes and
+missed the 100 ms UI gate; detailed UI percentiles were not retained because
+that gate failed before its report was written. These results do not meet the
+performance target and are retained as development limitations. Grid contention
+was a candidate contributor, not a measured cause.
+
+Reproduce the optimized profiles separately; the generated client is still Rust
+WASM plus the pinned wasm-bindgen glue:
+
+```sh
+mise exec -- cargo build --locked --release -p lytronaut-service
+mise exec -- cargo build --locked --release -p lytronaut-client --target wasm32-unknown-unknown
+mise exec -- wasm-bindgen --target web --out-dir dist/release \
+  "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/lytronaut_client.wasm"
+LYTRONAUT_CLIENT=dist/release \
+  "${CARGO_TARGET_DIR:-target}/release/lytronaut-service"
+```
+
+The aggregate-only private harness can point at an explicitly approved sealed
+scratch catalog using `LYTRONAUT_PRIVATE_TEST=1`, `LYTRONAUT_TEST_ROOT`, the
+release `LYTRONAUT_BINARY`, `LYTRONAUT_CLIENT`, an isolated loopback
+`LYTRONAUT_TEST_ORIGIN`, and `LYTRONAUT_RELEASE_BENCHMARK=1`. Set
+`LYTRONAUT_TEST_REVISION` to the actual checked-out commit and
+`LYTRONAUT_BROWSER_REPORT` to a new protected report path. The harness records
+both the first 24 interactions and 24 subsequent interactions after all grid
+images decode; each records its observed pending-grid count, p50/p95/max, and
+must independently satisfy the unchanged 100 ms p95 target. A first batch is
+load-contended evidence only if its pending-grid count is nonzero. Separate
+native/WASM artifact hashes and OS/browser/hardware bind the report to the tested
+builds. No private paths, source hashes, identifiers or pixels belong in reports.

@@ -348,3 +348,219 @@ fn reference_path_amplification_is_bounded() {
         FormatError::Budget
     );
 }
+
+#[test]
+fn exif_all_eight_corner_patterns_geometry_and_inverse() {
+    let limits = Limits::default();
+    // Asymmetric six pixels: independent row-major coordinate oracle.
+    let expected = [
+        vec![1, 2, 3, 4, 5, 6],
+        vec![3, 2, 1, 6, 5, 4],
+        vec![6, 5, 4, 3, 2, 1],
+        vec![4, 5, 6, 1, 2, 3],
+        vec![1, 4, 2, 5, 3, 6],
+        vec![4, 1, 5, 2, 6, 3],
+        vec![6, 3, 5, 2, 4, 1],
+        vec![3, 6, 2, 5, 1, 4],
+    ];
+    for code in 1..=8 {
+        let rgba = (1..=6).flat_map(|n| [n, 10 * n, 20 * n, 255]).collect();
+        let result = orient_derivative(
+            DecodedJpeg {
+                geometry: Geometry {
+                    width: 3,
+                    height: 2,
+                },
+                rgba,
+            },
+            code,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(
+            result.geometry,
+            if code >= 5 {
+                Geometry {
+                    width: 2,
+                    height: 3,
+                }
+            } else {
+                Geometry {
+                    width: 3,
+                    height: 2,
+                }
+            }
+        );
+        assert_eq!(
+            result
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| p[0])
+                .collect::<Vec<_>>(),
+            expected[code as usize - 1]
+        );
+        assert!(
+            result
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[1] == p[0] * 10 && p[2] == p[0] * 20 && p[3] == 255)
+        );
+        let inverse = if code == 6 {
+            8
+        } else if code == 8 {
+            6
+        } else {
+            code
+        };
+        let original = orient_derivative(result, inverse, limits).unwrap();
+        assert_eq!(
+            original
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| p[0])
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 6]
+        );
+    }
+    for code in [0, 9, 255] {
+        assert!(
+            orient_derivative(
+                DecodedJpeg {
+                    geometry: Geometry {
+                        width: 1,
+                        height: 1
+                    },
+                    rgba: vec![0; 4]
+                },
+                code,
+                limits
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        orient_derivative(
+            DecodedJpeg {
+                geometry: Geometry {
+                    width: 2,
+                    height: 1
+                },
+                rgba: vec![0; 4]
+            },
+            1,
+            limits
+        )
+        .is_err()
+    );
+    let limited = Limits {
+        decoder_working_bytes: 7,
+        ..limits
+    };
+    assert!(
+        orient_derivative(
+            DecodedJpeg {
+                geometry: Geometry {
+                    width: 1,
+                    height: 1
+                },
+                rgba: vec![0; 4]
+            },
+            2,
+            limited
+        )
+        .is_err()
+    );
+    let decoded = decode_jpeg(&jpeg(), limits).unwrap();
+    let encoded = encode_derivative(&decoded, limits).unwrap();
+    assert_eq!(
+        decode_jpeg(&encoded, limits).unwrap().geometry,
+        decoded.geometry
+    );
+    assert!(
+        encode_derivative(
+            &decoded,
+            Limits {
+                jpeg_bytes: 1,
+                ..limits
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn encoder_admits_working_memory_before_allocating_and_caps_writes() {
+    let limits = Limits::default();
+    let image = DecodedJpeg {
+        geometry: Geometry {
+            width: 1,
+            height: 1,
+        },
+        rgba: vec![240, 20, 20, 255],
+    };
+    assert_eq!(
+        encode_derivative(
+            &image,
+            Limits {
+                decoder_working_bytes: 1,
+                ..limits
+            }
+        )
+        .unwrap_err(),
+        FormatError::Budget
+    );
+    assert_eq!(
+        encode_derivative(
+            &image,
+            Limits {
+                jpeg_bytes: 1,
+                ..limits
+            }
+        )
+        .unwrap_err(),
+        FormatError::Budget
+    );
+    assert_eq!(
+        encode_derivative(
+            &image,
+            Limits {
+                jpeg_bytes: 0,
+                ..limits
+            }
+        )
+        .unwrap_err(),
+        FormatError::Budget
+    );
+    let bounded = Limits {
+        jpeg_bytes: 4096,
+        decoder_working_bytes: 64 * 1024,
+        ..limits
+    };
+    let encoded = encode_derivative(&image, bounded).unwrap();
+    assert!(encoded.len() <= 4096);
+    assert_eq!(
+        decode_jpeg(&encoded, bounded).unwrap().geometry,
+        image.geometry
+    );
+    let pointer = image.rgba.as_ptr();
+    let unchanged = orient_derivative(
+        image,
+        1,
+        Limits {
+            decoder_working_bytes: 4,
+            ..limits
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        unchanged.rgba.as_ptr(),
+        pointer,
+        "identity does not allocate another pixel frame"
+    );
+}

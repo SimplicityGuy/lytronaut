@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Independently authored schema-23 records; synthetic JPEG provided by Rust encoder."""
-import pathlib, sqlite3, sys, zipfile
+import pathlib, sqlite3, sys, zipfile, json, hashlib, struct
 root = pathlib.Path(sys.argv[1]); root.mkdir(mode=0o700, parents=True, exist_ok=True)
 source = root / 'Synthetic.lytrolibrary'; source.mkdir(exist_ok=True)
 (source / 'lytrolibrary.db').unlink(missing_ok=True)
@@ -17,10 +17,24 @@ CREATE TABLE imported_picture_history(hash TEXT);''')
 for i in range(30):
     uid = f'synthetic-{i:03}'
     c.execute('INSERT INTO picture VALUES(?,?,?,?,?,?,?)',(uid,'bin','event',f'Synthetic {i:03}',f'Independent generated scene {i}', i % 6, 0))
-    c.execute('INSERT INTO picture_metadata VALUES(?,?,?)',(uid,10,0))
+    c.execute('INSERT INTO picture_metadata VALUES(?,?,?)',(uid,11 if i == 0 else 10,0))
     folder = source / 'bin' / uid; folder.mkdir(parents=True,exist_ok=True)
     (folder / 'thumbnail.jpg').write_bytes((root / 'synthetic.jpg').read_bytes())
     (folder / 'raw.lfp').write_bytes(b'independent preservation fixture')
+    if i == 0:
+        planes = [(root / f'synthetic.focus{n}.jpg').read_bytes() for n in range(3)]
+        identity = lambda b: 'sha1-' + hashlib.sha1(b).hexdigest()
+        # Conflicting recipes intentionally remain preserved; viewer identity must not replay either.
+        directory = {'version': {'major': 1, 'minor': 0}, 'picture': {'recipe': {'orientation': 8, 'tone': 0.8, 'unknown': 'preserve'}, 'accelerationArray': [{'type': 'com.lytro.acceleration.refocusStack', 'vendorContent': {'imageArray': [{'representation': 'jpeg', 'width': 360, 'height': 240, 'lambda': n-1, 'imageRef': identity(b)} for n,b in enumerate(planes)]}}]}}
+        payload = json.dumps(directory, separators=(',', ':')).encode()
+        framed = bytearray(b'\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0')
+        for is_directory,b in [(True,payload)]+[(False,b) for b in planes]:
+            framed.extend(b'\x89LFM\r\n\x1a\n' if is_directory else b'\x89LFC\r\n\x1a\n')
+            framed.extend(b'\0'*4+struct.pack('>I',len(b))+identity(b).encode()+b'\0'*35+b)
+            framed.extend(b'\0'*(-len(framed)%16))
+        (folder / 'stacklq.lfp').write_bytes(framed)
+        (folder / 'view_parameters.json').write_text('{"version":"4","orientation":6,"tone":0.3,"unknown":"preserve"}')
+
 for a in range(3):
     c.execute('INSERT INTO album VALUES(?,?,?,?)',(f'album-{a}',f'Album {a}',a,0))
     for i in range(a*10,a*10+10): c.execute('INSERT INTO album_to_picture VALUES(?,?,?)',(f'album-{a}',f'synthetic-{i:03}',9-i%10))

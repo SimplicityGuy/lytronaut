@@ -107,3 +107,13 @@ application. Fixture provenance lives in fixtures/synthetic/PROVENANCE.md.
 
 The authenticated browsing, semantic import phases, typed original roles, bounded
 search/pagination and immutable transfer contracts are documented in [api.md](api.md).
+
+`FocusStack` supplies the finite ordered stored lambdas and source geometry for
+explicit discrete selection. `nearest()` clamps requests to the stored endpoints;
+exact midpoint ties choose the lower-index plane, and nonfinite requests fail.
+Lambdas are relative vendor values, never metres. `FocusDerivative` is the typed
+selection/orientation/extent/content-hash/provenance response for a newly encoded
+lossy JPEG. A consumer must validate it against its selected stack and verify its
+bytes and decoded geometry. GPU presentation and flattened export can consume
+this contract without source keys or replaying an imported recipe. Original
+fields, scalar types, recipes and bytes remain immutable.

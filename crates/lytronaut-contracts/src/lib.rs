@@ -383,6 +383,98 @@ pub struct PreservedFile {
     pub encoded_bytes: u64,
     pub role: OriginalRole,
 }
+/// A newly encoded, lossy JPEG of a stored plane after an explicit viewer transform.
+/// Sent with the single bounded response in X-Lytronaut-Derivative; no source hashes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FocusDerivative {
+    pub version: WireVersion,
+    pub representation: Representation,
+    pub id: OpaqueId,
+    pub plane_index: usize,
+    pub lambda: f64,
+    pub source_dimensions: Dimensions,
+    pub output_dimensions: Dimensions,
+    pub orientation: u8,
+    pub encoded_bytes: u64,
+    pub content_sha256: ContentDigest,
+    pub color_space: ColorSpace,
+    pub provenance: String,
+}
+impl FocusDerivative {
+    pub fn validate(&self, stack: &FocusStack) -> Result<(), ContractError> {
+        stack.validate()?;
+        let source = &stack.source_dimensions;
+        let (w, h) = if self.orientation >= 5 {
+            (source.height, source.width)
+        } else {
+            (source.width, source.height)
+        };
+        if self.representation != Representation::JpegFocusPlane
+            || self.id != stack.id
+            || self.plane_index >= stack.lambdas.len()
+            || self.lambda != stack.lambdas[self.plane_index]
+            || !(1..=8).contains(&self.orientation)
+            || self.source_dimensions != *source
+            || self.output_dimensions.width != w
+            || self.output_dimensions.height != h
+            || self.encoded_bytes == 0
+            || self.encoded_bytes > 2 * 1024 * 1024
+            || self.color_space != ColorSpace::Unknown
+            || self.provenance.len() > 512
+        {
+            return Err(ContractError("invalid focus derivative"));
+        }
+        Ok(())
+    }
+}
+/// Public derivative selection metadata; source identities and recipes remain private.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FocusStack {
+    pub version: WireVersion,
+    pub id: OpaqueId,
+    pub lambdas: Vec<f64>,
+    pub source_dimensions: Dimensions,
+    /// Explicit viewer transform only. Imported processed recipes are never replayed.
+    pub orientation_policy: String,
+}
+impl FocusStack {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        self.source_dimensions.validate()?;
+        if self.orientation_policy.len() > 512
+            || self.lambdas.is_empty()
+            || self.lambdas.len() > 64
+            || self.source_dimensions.width > 512
+            || self.source_dimensions.height > 512
+            || self.lambdas.iter().any(|v| !v.is_finite())
+            || self.lambdas.windows(2).any(|v| v[0] >= v[1])
+        {
+            return Err(ContractError("invalid discrete focus stack"));
+        }
+        Ok(())
+    }
+    /// Clamp naturally to endpoints; exact midpoint ties choose the lower stored plane.
+    pub fn nearest(&self, requested: f64) -> Result<usize, ContractError> {
+        self.validate()?;
+        if !requested.is_finite() {
+            return Err(ContractError("invalid focus value"));
+        }
+        if requested <= self.lambdas[0] {
+            return Ok(0);
+        }
+        if requested >= *self.lambdas.last().unwrap() {
+            return Ok(self.lambdas.len() - 1);
+        }
+        let mut best = 0;
+        for i in 1..self.lambdas.len() {
+            if (self.lambdas[i] - requested).abs() < (self.lambdas[best] - requested).abs() {
+                best = i;
+            }
+        }
+        Ok(best)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureDetail {
     pub version: WireVersion,
@@ -478,5 +570,131 @@ mod tests {
             value["chunks"] = chunks;
             assert!(serde_json::from_value::<AssetManifest>(value.clone()).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    fn stack() -> FocusStack {
+        FocusStack {
+            version: WireVersion::V1,
+            id: OpaqueId::try_from("synthetic-focus".to_owned()).unwrap(),
+            lambdas: vec![-2.0, 0.0, 3.0],
+            source_dimensions: Dimensions {
+                width: 360,
+                height: 360,
+            },
+            orientation_policy: "Explicit viewer transform only".into(),
+        }
+    }
+    #[test]
+    fn focus_clamps_ties_and_rejects_hostile_metadata() {
+        let mut s = stack();
+        for (value, index) in [
+            (-100.0, 0),
+            (-2.0, 0),
+            (-1.0, 0),
+            (0.0, 1),
+            (1.5, 1),
+            (1.5001, 2),
+            (100.0, 2),
+        ] {
+            assert_eq!(s.nearest(value).unwrap(), index);
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(s.nearest(value).is_err());
+        }
+        for lambdas in [
+            vec![],
+            vec![0.0, 0.0],
+            vec![1.0, 0.0],
+            vec![f64::NAN],
+            vec![0.0; 65],
+        ] {
+            s.lambdas = lambdas;
+            assert!(s.validate().is_err());
+        }
+        s = stack();
+        s.source_dimensions.width = 513;
+        assert!(s.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod derivative_tests {
+    use super::*;
+    fn fixture() -> (FocusStack, FocusDerivative) {
+        let id = OpaqueId::try_from("synthetic-focus".to_owned()).unwrap();
+        let dimensions = Dimensions {
+            width: 360,
+            height: 240,
+        };
+        let stack = FocusStack {
+            version: WireVersion::V1,
+            id: id.clone(),
+            lambdas: vec![-1.0, 1.0],
+            source_dimensions: dimensions.clone(),
+            orientation_policy: "Processed edits preserved".into(),
+        };
+        let derivative = FocusDerivative {
+            version: WireVersion::V1,
+            representation: Representation::JpegFocusPlane,
+            id,
+            plane_index: 0,
+            lambda: -1.0,
+            source_dimensions: dimensions.clone(),
+            output_dimensions: dimensions,
+            orientation: 1,
+            encoded_bytes: 32,
+            content_sha256: "a".repeat(64).try_into().unwrap(),
+            color_space: ColorSpace::Unknown,
+            provenance: "Lossy re-encode, processed recipe preserved".into(),
+        };
+        (stack, derivative)
+    }
+    #[test]
+    fn derivative_extent_selection_transform_provenance_and_versions_are_checked() {
+        let (stack, derivative) = fixture();
+        derivative.validate(&stack).unwrap();
+        for code in 1..=8 {
+            let mut d = derivative.clone();
+            d.orientation = code;
+            if code >= 5 {
+                d.output_dimensions = Dimensions {
+                    width: 240,
+                    height: 360,
+                };
+            }
+            d.validate(&stack).unwrap();
+        }
+        let valid = serde_json::to_value(&derivative).unwrap();
+        for (key, value) in [
+            ("id", serde_json::json!("different")),
+            ("lambda", serde_json::json!(0.0)),
+            ("plane_index", serde_json::json!(64)),
+            ("orientation", serde_json::json!(0)),
+            ("encoded_bytes", serde_json::json!(0)),
+            ("encoded_bytes", serde_json::json!(2097153)),
+            ("color_space", serde_json::json!("srgb")),
+            ("representation", serde_json::json!("original")),
+            ("provenance", serde_json::json!("a".repeat(513))),
+            (
+                "output_dimensions",
+                serde_json::json!({"width":240,"height":360}),
+            ),
+            (
+                "source_dimensions",
+                serde_json::json!({"width":360,"height":360}),
+            ),
+        ] {
+            let mut mutated = valid.clone();
+            mutated[key] = value;
+            let d: FocusDerivative = serde_json::from_value(mutated).unwrap();
+            assert!(d.validate(&stack).is_err(), "accepted {key}");
+        }
+        let mut invalid = valid;
+        invalid["version"] = serde_json::json!(2);
+        assert!(serde_json::from_value::<FocusDerivative>(invalid).is_err());
     }
 }
