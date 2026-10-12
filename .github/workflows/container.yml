@@ -26,13 +26,16 @@ jobs:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       LYTRONAUT_TEST_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-      LYTRONAUT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/lytronaut-container-evidence
     steps:
+      - name: Prepare evidence directory outside the checkout
+        run: |
+          evidence_directory="$RUNNER_TEMP/lytronaut-container-evidence"
+          mkdir -p "$evidence_directory"
+          printf 'LYTRONAUT_EVIDENCE_DIRECTORY=%s\n' "$evidence_directory" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
-      - run: mkdir -p "$LYTRONAUT_EVIDENCE_DIRECTORY"
       - run: mise exec -- just setup
       - run: mise exec -- cargo build --locked -p lytronaut-service --example synthetic_jpeg
       - run: docker compose config --quiet
