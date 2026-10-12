@@ -274,8 +274,13 @@ are true extrema; nearest selection chooses the lower archived index on ties,
 including robust comparison of hostile finite values whose differences overflow.
 The default is explicit EXIF identity. The video orientation selector remains
 disabled, and imported orientation/aperture/perspective/color/animation are never
-replayed. Browser-video flattened export remains unverified; JPEG/static export
-and preserved originals retain their own gates.
+replayed. While browser-video pixels are displayed, flattened PNG/JPEG controls
+are disabled with an explanation and their handler rejects injected/stale calls.
+Select a verified static/JPEG preview before exporting pixels; original backup
+remains available. Successful video adoption hides the old GPU canvas and drops
+its renderer/device. Failed video attempts preserve verified GPU imagery and
+rearm its loss watcher; later device loss still restores the verified image.
+Only owned Blob URLs are revoked when replacing or clearing the stage.
 
 The [integrated private proof](../validation/lytronaut-hyy-video.md) passed all
 109 standard blocks / 654 frames and both five-frame LFE representatives on the

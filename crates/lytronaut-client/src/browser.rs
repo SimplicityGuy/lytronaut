@@ -441,7 +441,7 @@ impl Ui {
             a.abort();
         }
         let url = self.stage.get_untracked();
-        if !url.is_empty() {
+        if url.starts_with("blob:") {
             let _ = web_sys::Url::revoke_object_url(&url);
         }
         self.stage.set(String::new());
@@ -527,6 +527,9 @@ impl Ui {
         self.watch_export(report).await
     }
     async fn export(&self, format: Option<ExportFormat>) -> Result<()> {
+        if format.is_some() && !self.video_lambdas.get_untracked().is_empty() {
+            return Err("Browser video export is unavailable. Select a verified static/JPEG preview before exporting pixels".into());
+        }
         if self.export_busy.get_untracked() {
             return Ok(());
         }
@@ -1060,7 +1063,7 @@ impl Ui {
                 self.displayed_derivative.set(Some(derivative));
                 let old = self.stage.get_untracked();
                 self.stage.set(url);
-                if !old.is_empty() {
+                if old.starts_with("blob:") {
                     let _ = web_sys::Url::revoke_object_url(&old);
                 }
                 self.status.set(format!("Discrete focus: stored plane {} of {}, lambda {} · {} × {} source · explicit EXIF {}. Imported edits preserved only", index+1, stack.lambdas.len(), stack.lambdas[index], stack.source_dimensions.width, stack.source_dimensions.height, self.orientation.get_untracked()));
@@ -1185,30 +1188,7 @@ impl Ui {
                     budget.width, budget.height
                 ));
                 *self.gpu.borrow_mut() = renderer;
-                let task = self.clone();
-                spawn_local(async move {
-                    // Loss/error flag originates from wgpu callbacks. Polling bounds UI
-                    // recovery without retaining browser/GPU objects in a Send callback.
-                    loop {
-                        pause(100).await;
-                        if generation != *task.stage_generation.borrow() {
-                            break;
-                        }
-                        let failed = task.gpu.borrow().as_ref().is_some_and(|r| r.is_failed());
-                        if failed {
-                            task.gpu_visible.set(false);
-                            task.gpu.borrow_mut().take();
-                            task.gpu_enabled.set(false);
-                            task.gpu_status.set(
-                                "CPU fallback · GPU device lost or presentation failed".into(),
-                            );
-                            break;
-                        }
-                        if !task.gpu_enabled.get_untracked() {
-                            break;
-                        }
-                    }
-                });
+                self.watch_gpu(generation);
             }
             Err(error) => {
                 self.gpu_visible.set(false);
@@ -1218,6 +1198,31 @@ impl Ui {
                 ));
             }
         }
+    }
+    fn watch_gpu(&self, generation: u64) {
+        let task = self.clone();
+        spawn_local(async move {
+            // Each stage attempt rearms loss recovery for any retained GPU frame.
+            // The generation and missing-renderer checks stop obsolete watchers.
+            loop {
+                pause(100).await;
+                if generation != *task.stage_generation.borrow()
+                    || !task.gpu_enabled.get_untracked()
+                    || task.gpu.borrow().is_none()
+                {
+                    break;
+                }
+                let failed = task.gpu.borrow().as_ref().is_some_and(|r| r.is_failed());
+                if failed {
+                    task.gpu_visible.set(false);
+                    task.gpu.borrow_mut().take();
+                    task.gpu_enabled.set(false);
+                    task.gpu_status
+                        .set("CPU fallback · GPU device lost or presentation failed".into());
+                    break;
+                }
+            }
+        });
     }
     fn navigate(&self, delta: i32) {
         let items = self.captures.get_untracked();
@@ -1281,6 +1286,9 @@ impl Ui {
         }
         *self.stage_generation.borrow_mut() += 1;
         let generation = *self.stage_generation.borrow();
+        if self.gpu_visible.get_untracked() {
+            self.watch_gpu(generation);
+        }
         if let Some(a) = self.stage_abort.borrow_mut().take() {
             a.abort();
         }
@@ -1335,6 +1343,10 @@ impl Ui {
         }
         match result {
             Ok(decoded) => {
+                self.gpu_visible.set(false);
+                self.gpu.borrow_mut().take();
+                self.gpu_status
+                    .set("Browser AVC verified frame · GPU device released".into());
                 self.orientation.set(1);
                 self.video_lambdas.set(decoded.lambdas);
                 self.video_label.set(format!("Displayed: {} × {} visible · plane {} · relative lambda {} · browser AVC · EXIF identity · color unverified", decoded.width, decoded.height, decoded.index + 1, decoded.lambda));
@@ -1657,7 +1669,7 @@ fn Workspace() -> impl IntoView {
                 </div><nav class="filmstrip" aria-label="Capture filmstrip">{move||captures.get().into_iter().enumerate().map(|(i,capture)|{let id=capture.id;view!{<button aria-label=format!("Select capture {}: {}",offset.get_untracked() as usize+i+1,capture.name) on:click=move |_|{let u=ui();let task=u.clone();let id=id.clone();launch(u,async move{task.select(id).await});}>{i+1}</button>}}).collect_view()}</nav>
                 <div class="pagination"><button disabled=move||offset.get()==0 on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(offset.get_untracked().saturating_sub(PAGE_SIZE)).await});}>"Previous page"</button><span>{move||format!("Page {}",offset.get()/PAGE_SIZE+1)}</span><button disabled=move||next.get().is_none() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(next.get_untracked().unwrap_or(0)).await});}>"Next page"</button></div>
                 <Show when=move||!files.get().is_empty()><h2>"Preserved library files"</h2><ul>{move||file_links(files.get())}</ul></Show>
-                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if !video_lambdas.get().is_empty(){"Available · discrete archived browser AVC planes".to_owned()}else if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>{move||if !video_lambdas.get().is_empty(){"Browser AVC · hardware unverified".to_owned()}else{gpu_status.get()}}</dd></dl><h3>"Export verified pixels"</h3><button id="export-png" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Png)).await});}>"Export PNG"</button><button id="export-jpeg" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Jpeg)).await});}>"Export JPEG"</button><p>"Flattened stored pixels lose refocus ability. PNG preserves decoded JPEG pixels; JPEG adds compression loss. Unknown color profile. Download the separate Lytronaut provenance record."</p><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
+                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if !video_lambdas.get().is_empty(){"Available · discrete archived browser AVC planes".to_owned()}else if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>{move||if !video_lambdas.get().is_empty(){"Browser AVC · hardware unverified".to_owned()}else{gpu_status.get()}}</dd></dl><h3>"Export verified pixels"</h3><Show when=move||!video_lambdas.get().is_empty()><p id="video-export-unavailable">"Browser video export is unavailable. Select a verified static/JPEG preview to export pixels. Original backup remains available."</p></Show><button id="export-png" disabled=move||export_busy.get()||stage.get().is_empty()||!video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Png)).await});}>"Export PNG"</button><button id="export-jpeg" disabled=move||export_busy.get()||stage.get().is_empty()||!video_lambdas.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Jpeg)).await});}>"Export JPEG"</button><p>"Flattened stored pixels lose refocus ability. PNG preserves decoded JPEG pixels; JPEG adds compression loss. Unknown color profile. Download the separate Lytronaut provenance record."</p><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
             </main>
         </div>
     }

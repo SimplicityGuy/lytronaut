@@ -6,11 +6,15 @@ module.exports=async function gpuTest(page,click){
  const captureName=await page.$eval('.viewer-strip span',e=>e.textContent);
  const initialize=async fault=>{
   const script=await page.evaluateOnNewDocument(f=>{window.__gpuFault=f;if(f==='missing-api')Object.defineProperty(navigator,'gpu',{value:undefined,configurable:true});},fault);
-  await page.reload();await page.waitForSelector('#directory');
-  await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&document.querySelectorAll('.capture').length>0&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
+  await page.reload();await page.waitForSelector('#directory');await click('All captures');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 1');
+  const firstNames=await page.evaluate(async()=>{const l=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');return (await (await fetch(`/libraries/${l.id}/captures?limit=24&offset=0`)).json()).items.map(c=>c.name);});
+  await page.waitForFunction(names=>JSON.stringify([...document.querySelectorAll('.capture span')].map(b=>b.textContent))===JSON.stringify(names)&&document.querySelectorAll('.capture span').length>0&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0,{},firstNames);
   for(let pageIndex=0;pageIndex<2;pageIndex++){
-   const found=await page.evaluate(name=>{const b=[...document.querySelectorAll('.capture')].find(b=>b.textContent===name);if(!b)return false;b.click();return true;},captureName);
-   if(found)break;await click('Next page');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 2');
+   const found=await page.evaluate(name=>{const b=[...document.querySelectorAll('.capture')].find(b=>b.querySelector('span').textContent===name);if(!b)return false;b.click();return true;},captureName);
+   if(found)break;
+   const nextState=await page.evaluate(()=>({disabled:[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Next page')?.disabled,names:[...document.querySelectorAll('.capture span')].map(b=>b.textContent),pagination:document.querySelector('.pagination span')?.textContent,status:document.querySelector('.status')?.textContent,selected:document.querySelector('.viewer-strip span')?.textContent,search:document.querySelector('#search')?.value,sort:document.querySelector('#sort')?.value}));
+   assert.equal(nextState.disabled,false,process.env.LYTRONAUT_PRIVATE_TEST==='1'?'GPU recovery selection unavailable':JSON.stringify({captureName,fault,pageIndex,...nextState}));
+   const oldNames=nextState.names;await click('Next page');await page.waitForFunction(old=>document.querySelector('.pagination span').textContent==='Page 2'&&JSON.stringify([...document.querySelectorAll('.capture span')].map(b=>b.textContent))!==JSON.stringify(old)&&document.querySelectorAll('.capture span').length>0,{},oldNames);
   }
   await page.removeScriptToEvaluateOnNewDocument(script.identifier);
   await page.waitForFunction(()=>!document.querySelector('#focus').disabled&&document.querySelector('output[for=focus]').textContent.includes('Displayed:'));
