@@ -123,7 +123,7 @@ impl ApplicationDatabase {
                     getrandom::fill(&mut random).map_err(|_| DatabaseError::Configuration)?;
                     options = options
                         .filename(format!(
-                            "lytronaut-memory-{:x}",
+                            "file:lytronaut-memory-{:x}",
                             u128::from_le_bytes(random)
                         ))
                         .in_memory(true)
@@ -131,9 +131,19 @@ impl ApplicationDatabase {
                 } else {
                     options = options.filename(&path);
                 }
-                let url = options.to_url_lossy();
-                let any_options = AnyConnectOptions::from_str(url.as_str())
-                    .map_err(|_| DatabaseError::Configuration)?;
+                // SQLx's filename-to-URL helper treats a relative file: URI as
+                // an authority and panics on its colon. An opaque sqlite: URL
+                // preserves the named memory URI across Any driver reparsing.
+                let url = if path == Path::new(":memory:") {
+                    format!(
+                        "sqlite:{}?mode=memory&cache=shared",
+                        options.get_filename().display()
+                    )
+                } else {
+                    options.to_url_lossy().to_string()
+                };
+                let any_options =
+                    AnyConnectOptions::from_str(&url).map_err(|_| DatabaseError::Configuration)?;
                 (Backend::Sqlite, any_options, Some(options))
             }
             DatabaseConfig::Postgres(url) => {
@@ -324,6 +334,14 @@ mod tests {
     }
 
     async fn engine_contract(db: &ApplicationDatabase) {
+        let version: String = sqlx::query_scalar(match db.backend {
+            Backend::Sqlite => "SELECT sqlite_version()",
+            Backend::Postgres => "SHOW server_version",
+        })
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        println!("actual application engine {:?}: {version}", db.backend);
         let ddl = match db.backend {
             Backend::Sqlite => {
                 "CREATE TABLE database_contract(id INTEGER PRIMARY KEY,value INTEGER NOT NULL,payload BLOB NOT NULL)"
@@ -445,13 +463,30 @@ mod tests {
                 .execute(&mut admin)
                 .await
                 .unwrap();
-            let options = options.options([("search_path", schema.as_str())]);
-            let config = DatabaseConfig::from_deployment(
-                Path::new("unused"),
-                Some(options.to_url_lossy().as_str()),
-            )
-            .unwrap();
+            // Preserve the original deployment URL: PgConnectOptions::to_url_lossy
+            // drops server options. Explicitly append our owned schema selection.
+            let mut selected = AnyConnectOptions::from_str(&url).unwrap().database_url;
+            selected
+                .query_pairs_mut()
+                .append_pair("options", &format!("-c search_path={schema}"));
+            let config =
+                DatabaseConfig::from_deployment(Path::new("unused"), Some(selected.as_str()))
+                    .unwrap();
             let db = ApplicationDatabase::open(config).await.unwrap();
+            let mut connections = Vec::new();
+            for _ in 0..4 {
+                let mut connection = db.pool.acquire().await.unwrap();
+                let actual: String = sqlx::query_scalar("SELECT current_schema()::text")
+                    .fetch_one(&mut *connection)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    actual, schema,
+                    "each pooled connection must select only the owned schema"
+                );
+                connections.push(connection);
+            }
+            drop(connections);
             Self { db, admin, schema }
         }
         async fn close(mut self) {

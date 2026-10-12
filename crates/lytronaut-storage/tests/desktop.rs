@@ -451,13 +451,22 @@ async fn postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport
         .execute(&mut admin)
         .await
         .unwrap();
-    let config = DatabaseConfig::Postgres(
-        options
-            .options([("search_path", schema.as_str())])
-            .to_url_lossy()
-            .to_string(),
-    );
+    let mut selected = sqlx::any::AnyConnectOptions::from_str(&base)
+        .unwrap()
+        .database_url;
+    selected
+        .query_pairs_mut()
+        .append_pair("options", &format!("-c search_path={schema}"));
+    let config = DatabaseConfig::Postgres(selected.to_string());
     let f = Fixture::with_database(Some(config.clone())).await;
+    let actual_schema: String = sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(f.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(actual_schema, schema);
+    let outside_owned_schema: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('intake_jobs','application_job_order','catalog_versions')")
+        .fetch_one(f.catalog.pool()).await.unwrap();
+    assert_eq!(outside_owned_schema, 0);
     let source = f.source("UPDATE picture SET name='Alpha'||char(0)||'hidden', caption='Café 🌌'||char(0)||'tail' WHERE uuid='p1'").await;
     let expected_source = source.clone();
     let job = f.intake(source.clone(), false, false).await;

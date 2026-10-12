@@ -139,3 +139,37 @@ accepted restored range. Added actual-engine tests exercise empty, signed64 MIN,
 negative-only, -1, zero and positive retained tables, comparing PostgreSQL
 allocation and rollback directly with the linked SQLite engine. These source
 cases also await the shared validation slot; no runtime parity claim is made.
+
+
+## Preliminary actual-engine results
+
+The auth-era storage-only checkpoint passed 31 SQLite tests (12 unit, five Desktop,
+14 intake) on the actual linked SQLite 3.51.3 and seven explicitly selected
+PostgreSQL tests (six unit, one Desktop) on an actual PostgreSQL 18.6 / 180006
+service. Both commands enforce nonzero expected counts and zero ignored tests;
+PostgreSQL tests run serially under a role without superuser, create-role,
+create-database or replication privileges. All four pooled PostgreSQL connections
+assert the exact owned schema and Desktop migration checks that no app tables
+appear in public. The original deployment URL is preserved when selecting the
+owned schema because SQLx's lossy typed-options URL omits server options.
+
+Actual execution exposed and corrected named SQLite in-memory connection isolation:
+the shared name requires a file URI, and SQLx's lossy URL builder cannot handle its
+relative colon. The stable opaque sqlite:file URL now roundtrips the named memory
+identity through Any while retaining the typed snapshot options. Memory sharing,
+independent-open isolation and snapshot visibility now pass. Initial failures were
+retained rather than counted as successful runs. Earlier executables could not be
+retrospectively frozen because their expected paths were absent; fresh green
+executables and complete tested source manifests are frozen outside the worktree.
+
+The PostgreSQL dependency closure adds 43 package identities without changing or
+removing any of the 304 prior locked identities/checksums. Notice generation
+retains ring's Apache-2.0 AND ISC obligations and each upstream legal text, selects
+MIT where rustls/whoami explicitly offer that alternative, and retains the full
+[CDLA-Permissive-2.0](https://cdla.dev/permissive-2-0/) agreement for webpki-roots
+certificate data. These notices do not change the original project's MIT license.
+
+This is preliminary evidence, not final submission: canonical login-removal
+integration, service API/export/migration adverse-path testing, whole-application
+checks, and the release coverage threshold remain required. Portable cross-backend
+backup and deployment CI remain owned by their approved downstream beads.
