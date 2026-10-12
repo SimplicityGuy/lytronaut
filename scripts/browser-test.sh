@@ -9,4 +9,7 @@ LYTRONAUT_VIDEO_FIXTURE_OUT="$browser_scratch/synthetic.video.lfp" node scripts/
 python3 scripts/synthetic-library.py "$browser_scratch"
 case "$target_root" in /*) browser_binary="$target_root/debug/lytronaut-service";; *) browser_binary="$(pwd)/$target_root/debug/lytronaut-service";; esac
 LYTRONAUT_TEST_ROOT="$browser_scratch" LYTRONAUT_BINARY="$browser_binary" node scripts/browser-test.cjs
+if [[ ${LYTRONAUT_OWNER_TEST:-0} == 1 ]]; then
+    cp "$browser_scratch/owner-results.json" "$LYTRONAUT_OWNER_EVIDENCE/runtime.json"
+fi
 printf 'Synthetic browser artifacts: %s\n' "$browser_scratch"

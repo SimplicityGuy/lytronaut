@@ -9,6 +9,10 @@ publish.workspace = true
 workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
+[features]
+default = []
+# Explicit synthetic lifecycle harness; absent from normal application artifacts.
+test-harness = []
 [dependencies]
 lytronaut-contracts.workspace = true
 lytronaut-format.workspace = true

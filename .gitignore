@@ -1,5 +1,8 @@
 /target/
 /dist/
+/dist-owner/
+/owner-evidence/
+/owner-evidence.tar.gz
 /.beads/
 /.codex/
 /.claude/settings.local.json

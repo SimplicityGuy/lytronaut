@@ -76,6 +76,20 @@ live-photo-browser-test: wasm-build
     npm ci --ignore-scripts --prefix scripts/browser
     node scripts/live-photo-test.cjs
 
+# Separate feature artifact: actual mounted-owner disposal, never production glue.
+live-photo-owner-test: build
+    cargo clippy --locked -p lytronaut-client --target wasm32-unknown-unknown --features test-harness -- -D warnings
+    cargo build --locked -p lytronaut-client --target wasm32-unknown-unknown --features test-harness
+    test "$(wasm-bindgen --version)" = "wasm-bindgen 0.2.129"
+    wasm-bindgen --target web --out-dir dist-owner "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/debug/lytronaut_client.wasm"
+    cp "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/debug/lytronaut_client.wasm" dist-owner/application.wasm
+    npm ci --ignore-scripts --prefix scripts/browser
+    mkdir -p owner-evidence
+    env -u LYTRONAUT_VIDEO_PRIVATE_ROOT LYTRONAUT_TEST_REVISION="$(git rev-parse HEAD)" LYTRONAUT_CLIENT=dist-owner LYTRONAUT_OWNER_TEST=1 LYTRONAUT_OWNER_EVIDENCE=owner-evidence bash scripts/browser-test.sh
+    git archive HEAD | gzip -1 > owner-evidence/source.tar.gz
+    tar -czf owner-evidence.tar.gz dist-owner owner-evidence
+    node -e 'if(require("node:fs").statSync("owner-evidence.tar.gz").size > 128*1024*1024) throw Error("owner evidence exceeds 128 MiB")'
+
 # macOS resource-loader check only; does not open Photos or prove GUI import.
 [positional-arguments]
 live-photo-apple output:

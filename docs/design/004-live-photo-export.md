@@ -75,6 +75,7 @@ Run these through the mise-pinned environment after normal setup:
 mise exec -- just live-photo-test
 mise exec -- just live-photo-native /tmp/task-specific-output
 mise exec -- just live-photo-browser-test
+mise exec -- just live-photo-owner-test
 mise exec -- just live-photo-apple /tmp/task-specific-apple-output
 ```
 
@@ -86,6 +87,16 @@ Live Photo harness after the service/UI proof. `live-photo-apple` first generate
 the native public fixture, then compiles/runs the Apple-framework verifier with
 a task-specific module cache. It requires macOS and does not run in Linux CI;
 it does not open a Photos library or replace the isolated GUI import gate.
+
+`live-photo-owner-test` builds the explicit `test-harness` feature into separate
+`dist-owner` glue. Normal builds keep their existing root mount and expose no
+dispose/remount hooks. This harness drops Leptos's actual mounted view/owner during
+pending source fetch, decoder flush, queued codec callbacks and the final download
+timer, then remounts the same app and checks recovery. CI preserves its synthetic
+aggregate, source archive, raw WASM and generated glue in a bounded 128 MiB evidence
+archive. Feature identity and hashes are distinct from production artifacts. This
+source addition still requires actual browser validation; pagehide is not owner
+disposal, and neither test proves whole-browser memory or Photos GUI recognition.
 
 Private fixture verification is a separate explicit command:
 

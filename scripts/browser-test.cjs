@@ -59,6 +59,17 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   }
   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&document.querySelectorAll('.capture').length>0,{timeout:120000});
   assert(await page.$eval('.stage img',e=>e.complete&&e.naturalWidth>0));
+  if(process.env.LYTRONAUT_OWNER_TEST==='1') {
+   assert(!privateMode&&!gpuMode,'owner harness is public synthetic only');
+   checkpoint='live-photo-actual-owner';
+   const proof=await require('./live-photo-owner-test.cjs')({page,click,delay});
+   assert.deepEqual(errors,[],'actual owner cleanup and late futures cannot panic');
+   const clientDir=process.env.LYTRONAUT_CLIENT;
+   const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+   const report={...proof,revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',browser:await browser.version(),artifactFeature:'test-harness',productionArtifact:false,applicationWasmSha256:hash(path.join(clientDir,'application.wasm')),generatedWasmSha256:hash(path.join(clientDir,'lytronaut_client_bg.wasm')),photosGuiAcceptancePending:true,wholeBrowserMemoryAcceptancePending:true};
+   fs.writeFileSync(path.join(root,'owner-results.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
+   console.log(JSON.stringify(report));return;
+  }
   checkpoint='keyboard-navigation';const firstCapture=await page.$eval('.viewer-strip span',e=>e.textContent);
   await page.focus('.stage');await page.keyboard.press('ArrowRight');
   await page.waitForFunction(first=>document.querySelector('.viewer-strip span').textContent!==first,{},firstCapture);
