@@ -22,13 +22,51 @@ module.exports = async ({page, click, delay}) => {
     window.VideoDecoder = window.__ownerTracked;
   });
   const readyVideo = async () => {
-    await page.waitForSelector('#directory');
-    await click('All captures');
-    await page.waitForFunction(()=>[...document.querySelectorAll('.capture')].some(b=>b.querySelector('span')?.textContent==='Synthetic 000'));
-    await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(b=>b.querySelector('span')?.textContent==='Synthetic 000').click());
-    await page.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 000'&&!document.querySelector('#focus').disabled);
-    await click('Try browser H.264 refocus');
-    await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Archived discrete browser focus decoded')&&!document.querySelector('#export-live-photo').disabled);
+    let phase='directory';
+    try {
+      await page.waitForSelector('#directory');
+      phase='all-captures';
+      await click('All captures');
+      // The library has 30 captures and a 24-item page. Default library order
+      // falls back to opaque IDs, so Synthetic 000 need not be on page one.
+      // Exercise the real name-sort UI rather than assuming identity ordering.
+      phase='name-sort';
+      await page.select('#sort','name');
+      phase='synthetic-capture';
+      await page.waitForFunction(()=>[...document.querySelectorAll('.capture')].some(b=>b.querySelector('span')?.textContent==='Synthetic 000'));
+      phase='select-capture';
+      await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(b=>b.querySelector('span')?.textContent==='Synthetic 000').click());
+      await page.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 000'&&!document.querySelector('#focus').disabled);
+      phase='decode-video';
+      await click('Try browser H.264 refocus');
+      await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Archived discrete browser focus decoded')&&!document.querySelector('#export-live-photo').disabled);
+    } catch(error) {
+      // Synthetic-only diagnostics: fixed categories, counts and booleans. Never
+      // relay status text, capture names, library IDs, URLs or search contents.
+      const diagnostic=await page.evaluate(()=>{
+        const status=document.querySelector('.status')?.textContent||'';
+        const statusCategory=status==='Loading captures…'?'loading-captures':status==='No captures match this search'?'empty-search':/^Showing \d+ captures on this page$/.test(status)?'showing-captures':status==='Library ready'?'library-ready':status.includes('Connection interrupted')?'connection-interrupted':status.includes('Select a library')?'library-missing':'other';
+        const sort=document.querySelector('#sort')?.value;
+        const pagination=/^Page (\d+)$/.exec(document.querySelector('.pagination span')?.textContent||'');
+        const pageNumber=pagination?Number(pagination[1]):0;
+        return {
+          statusCategory,
+          captureCount:Math.min(document.querySelectorAll('.capture').length,1024),
+          targetPresent:[...document.querySelectorAll('.capture span')].some(s=>s.textContent==='Synthetic 000'),
+          searchEmpty:document.querySelector('#search')?.value==='',
+          sort:['order','name','rating'].includes(sort)?sort:'unknown',
+          pageNumber:Number.isSafeInteger(pageNumber)&&pageNumber<=1000000?pageNumber:0,
+          previousDisabled:document.querySelector('.pagination button')?.disabled===true,
+          nextDisabled:document.querySelector('.pagination button:last-child')?.disabled===true,
+          importBusy:document.querySelector('#directory')?.disabled===true,
+          selectedTarget:document.querySelector('.viewer-strip span')?.textContent==='Synthetic 000',
+          focusEnabled:document.querySelector('#focus')?.disabled===false,
+          mounted:document.querySelector('#directory')!==null,
+        };
+      });
+      console.error(JSON.stringify({publicOwnerReadiness:{phase,...diagnostic}}));
+      throw error;
+    }
   };
   const dispose = async (lateCallbacks=false) => {
     const before = await page.evaluate(()=>window.__owner.aborts);
