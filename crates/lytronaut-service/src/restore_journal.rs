@@ -57,21 +57,26 @@ impl Journal {
         };
         value.validate()?;
         let result = value.result(root);
-        // Ownership is exclusive; never adopt an already-present result directory.
-        fs::DirBuilder::new().mode(0o700).create(&result)?;
-        let created = (|| {
-            let mut marker = new_file(&result.join("restore-owner"))?;
-            marker.write_all(value.nonce.as_bytes())?;
-            marker.sync_all()?;
-            File::open(&result)?.sync_all()?;
-            value.persist_new(root)?;
-            Ok::<_, E>(())
-        })();
-        if let Err(error) = created {
-            // Only our just-created directory is removed; no SQL has been created.
-            let _ = fs::remove_dir_all(&result);
-            return Err(error);
+        // Preserve an existing final result before writing any intent record.
+        match fs::symlink_metadata(&result) {
+            Ok(_) => return Err(E::Conflict),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(E::Unavailable),
         }
+        // This durable intent precedes BOTH filesystem and SQL creation. If an
+        // initial mkdir/marker write is interrupted, recovery retains this record
+        // and quota until exact ownership is proved; it never guesses by job name.
+        value.persist_new(root)?;
+        fault("prepared")?;
+        let pending = value.pending(root);
+        fs::DirBuilder::new().mode(0o700).create(&pending)?;
+        fault("mkdir")?;
+        let mut marker = new_file(&pending.join("restore-owner"))?;
+        marker.write_all(value.nonce.as_bytes())?;
+        fault("marker")?;
+        marker.sync_all()?;
+        File::open(&pending)?.sync_all()?;
+        File::open(root)?.sync_all()?;
         Ok(value)
     }
     pub fn phase(&self) -> Phase {
@@ -86,15 +91,40 @@ impl Journal {
     pub fn namespace(&self) -> Option<&RestoreNamespace> {
         self.namespace.as_ref()
     }
+    pub fn verify_published(&self, root: &Path) -> Result<(), E> {
+        let path = self.result(root);
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+            return Err(E::Conflict);
+        }
+        let mut marker = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path.join("restore-owner"))?;
+        let metadata = marker.metadata()?;
+        if !metadata.is_file() || metadata.len() != 64 || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(E::Conflict);
+        }
+        let mut nonce = [0; 64];
+        marker.read_exact(&mut nonce)?;
+        if nonce.as_slice() != self.nonce.as_bytes() {
+            return Err(E::Conflict);
+        }
+        Ok(())
+    }
     pub fn result(&self, root: &Path) -> PathBuf {
         root.join(format!("{}.restored", self.job))
+    }
+    pub fn pending(&self, root: &Path) -> PathBuf {
+        root.join(format!("{}.pending-{}", self.job, self.nonce))
     }
     fn path(&self, root: &Path) -> PathBuf {
         root.join(format!("{}.restore-journal", self.job))
     }
     fn validate(&self) -> Result<(), E> {
         if self.version != 1
-            || !identity(&self.job)
+            || !job_identity(&self.job)
             || !identity(&self.nonce)
             || self.reserved > i64::MAX as u64
         {
@@ -138,7 +168,7 @@ impl Journal {
         result
     }
     pub fn load(root: &Path, job: &str) -> Result<Option<Self>, E> {
-        if !identity(job) {
+        if !job_identity(job) {
             return Err(E::Invalid);
         }
         let path = root.join(format!("{job}.restore-journal"));
@@ -186,17 +216,29 @@ impl Journal {
         if !allowed {
             return Err(E::Conflict);
         }
-        let old = self.phase;
         self.phase = phase;
         let result = self.persist(root);
         if result.is_err() {
-            self.phase = old;
+            // rename may already have succeeded before directory fsync failed.
+            // Reload exact ownership rather than asserting the old phase survived.
+            if let Some(observed) = Self::load(root, &self.job)? {
+                if observed.nonce != self.nonce
+                    || observed.namespace != self.namespace
+                    || observed.reserved != self.reserved
+                {
+                    return Err(E::Conflict);
+                }
+                *self = observed;
+            } else {
+                return Err(E::Unavailable);
+            }
         }
         result
     }
     fn persist(&self, root: &Path) -> Result<(), E> {
         // Private root plus unpredictable create_new name; rename never follows an
-        // existing destination symlink. A failed rewrite leaves the previous record.
+        // existing destination symlink. After rename, fsync failure is an ambiguous
+        // durability outcome; transition reloads the actual record and fails closed.
         let mut random = [0; 16];
         getrandom::fill(&mut random).map_err(|_| E::Unavailable)?;
         let temporary = root.join(format!(
@@ -209,6 +251,7 @@ impl Journal {
             output.write_all(&self.encoded()?)?;
             output.sync_all()?;
             fs::rename(&temporary, self.path(root))?;
+            fault("rename")?;
             File::open(root)?.sync_all()?;
             Ok::<_, E>(())
         })();
@@ -225,29 +268,30 @@ impl Journal {
         if let Some(namespace) = &self.namespace {
             namespace.cleanup(catalog).await?;
         }
-        let result = self.result(root);
-        match fs::symlink_metadata(&result) {
-            Ok(metadata) => {
-                if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                    return Err(E::Conflict);
+        for result in [self.pending(root), self.result(root)] {
+            match fs::symlink_metadata(&result) {
+                Ok(metadata) => {
+                    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                        return Err(E::Conflict);
+                    }
+                    let mut marker = OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(result.join("restore-owner"))?;
+                    if !marker.metadata()?.is_file() || marker.metadata()?.len() != 64 {
+                        return Err(E::Conflict);
+                    }
+                    let mut nonce = [0; 64];
+                    marker.read_exact(&mut nonce)?;
+                    if nonce.as_slice() != self.nonce.as_bytes() {
+                        return Err(E::Conflict);
+                    }
+                    fs::remove_dir_all(result)?;
+                    File::open(root)?.sync_all()?;
                 }
-                let mut marker = OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(result.join("restore-owner"))?;
-                if !marker.metadata()?.is_file() || marker.metadata()?.len() != 64 {
-                    return Err(E::Conflict);
-                }
-                let mut nonce = [0; 64];
-                marker.read_exact(&mut nonce)?;
-                if nonce.as_slice() != self.nonce.as_bytes() {
-                    return Err(E::Conflict);
-                }
-                fs::remove_dir_all(result)?;
-                File::open(root)?.sync_all()?;
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(E::Unavailable),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(E::Unavailable),
         }
         self.transition(root, Phase::CleanupComplete)
     }
@@ -260,6 +304,9 @@ impl Journal {
         File::open(root)?.sync_all()?;
         Ok(())
     }
+}
+fn job_identity(value: &str) -> bool {
+    lytronaut_contracts::OpaqueId::try_from(value.to_owned()).is_ok()
 }
 fn identity(value: &str) -> bool {
     value.len() == 64
@@ -275,6 +322,26 @@ fn new_file(path: &Path) -> Result<File, E> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?)
 }
+#[cfg(test)]
+thread_local! {
+    static JOURNAL_FAULT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+fn fault(point: &str) -> Result<(), E> {
+    #[cfg(test)]
+    if JOURNAL_FAULT.with(|fault| {
+        if fault.get() == Some(point) {
+            fault.set(None);
+            true
+        } else {
+            false
+        }
+    }) {
+        return Err(E::Interrupted);
+    }
+    #[cfg(not(test))]
+    let _ = point;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -289,6 +356,56 @@ mod tests {
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         root
     }
+    #[test]
+    fn prepared_intent_survives_initial_crash_cuts_and_preserves_preexisting_result() {
+        for point in ["prepared", "mkdir", "marker"] {
+            let root = root();
+            let job = format!("app-{}", "a".repeat(64));
+            JOURNAL_FAULT.with(|fault| fault.set(Some(point)));
+            assert!(matches!(
+                Journal::prepare(&root, &job, None, 4096),
+                Err(E::Interrupted)
+            ));
+            let journal = Journal::load(&root, &job).unwrap().unwrap();
+            assert_eq!(journal.phase(), Phase::Prepared);
+            assert_eq!(journal.reserved(), 4096);
+            assert!(!journal.result(&root).exists());
+            if point == "prepared" {
+                assert!(!journal.pending(&root).exists());
+            }
+            if point == "mkdir" {
+                assert!(journal.pending(&root).exists());
+                assert!(!journal.pending(&root).join("restore-owner").exists());
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+        let root = root();
+        let job = format!("app-{}", "b".repeat(64));
+        let result = root.join(format!("{job}.restored"));
+        fs::create_dir(&result).unwrap();
+        fs::write(result.join("unrelated"), b"sentinel").unwrap();
+        assert!(Journal::prepare(&root, &job, None, 4096).is_err());
+        assert!(Journal::load(&root, &job).unwrap().is_none());
+        assert_eq!(fs::read(result.join("unrelated")).unwrap(), b"sentinel");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn rename_before_directory_sync_failure_reloads_new_phase_without_false_rollback() {
+        let root = root();
+        let job = format!("app-{}", "c".repeat(64));
+        let mut journal = Journal::prepare(&root, &job, None, 4096).unwrap();
+        JOURNAL_FAULT.with(|fault| fault.set(Some("rename")));
+        assert!(matches!(
+            journal.transition(&root, Phase::RowsCommitted),
+            Err(E::Interrupted)
+        ));
+        assert_eq!(journal.phase(), Phase::RowsCommitted);
+        assert_eq!(
+            Journal::load(&root, &job).unwrap().unwrap().phase(),
+            Phase::RowsCommitted
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
     #[tokio::test]
     async fn cleanup_preserves_quota_record_until_explicit_release_and_unrelated_files() {
         let root = root();
@@ -299,7 +416,7 @@ mod tests {
         journal.transition(&root, Phase::RowsCommitted).unwrap();
         journal.transition(&root, Phase::FilesReady).unwrap();
         journal.transition(&root, Phase::FilesPublished).unwrap();
-        fs::write(journal.result(&root).join("original"), b"owned").unwrap();
+        fs::write(journal.pending(&root).join("original"), b"owned").unwrap();
         let catalog = Catalog::open_application_database(Path::new(":memory:"))
             .await
             .unwrap();
@@ -321,7 +438,7 @@ mod tests {
         let job = "2".repeat(64);
         let mut journal = Journal::prepare(&root, &job, None, 4096).unwrap();
         assert!(Journal::prepare(&root, &job, None, 4096).is_err());
-        let result = journal.result(&root);
+        let result = journal.pending(&root);
         fs::rename(&result, root.join("retained-owned-copy")).unwrap();
         fs::DirBuilder::new().mode(0o700).create(&result).unwrap();
         fs::write(result.join("unrelated"), b"sentinel").unwrap();

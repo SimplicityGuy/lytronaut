@@ -55,6 +55,46 @@ The adapter's working-set accounting must include the SQLx driver row, decoded r
 source-key encoding, regenerated projections and buffer capacities. Neither a wire
 limit nor the draft codec alone proves the final native memory bound.
 
+## Native working-set and storage accounting
+
+Portable SQLite capture and legacy extraction use direct typed SQLx connections
+with `row_buffer_size(1)`. The Any URL roundtrip discards this setting and is not
+used for these readers. Each fresh capture connection sets query-only ON,
+trusted-schema OFF, cache-size -2048, mmap-size 0 and temp-store MEMORY before
+BEGIN. File snapshots are read-only/no-create; named shared-memory synthetic
+fixtures retain their existing connection mode. The read transaction covers all
+logical tables and inventory.
+
+A stream does not mean a single driver row: SQLite can hold the application row,
+one queued row and a worker-produced row simultaneously. The application also
+owns logical cells during conversion; legacy import additionally owns copied
+parameter values and any regenerated source-key/projection buffers while the
+source driver row remains alive. Allocator capacity, SQLite sorting/temp storage,
+SQLx statement buffers and database-driver allocations are additional costs.
+Version-2's maximum row payload is 32 MiB + 256 bytes; legacy's per-row limit is
+its admitted 32 MiB database file, without new codec cell/count restrictions.
+A conservative subtotal must count all three SQLite rows plus conversion/bind
+copies, not merely the wire buffer. SQLx PostgreSQL 0.9 executor yields each DataRow
+before receiving the next (connection/executor.rs); its connection retains framed
+receive-buffer capacity, and Any conversion plus owned logical cells may coexist.
+This source audit is not a measured RSS or a proved whole-process bound.
+
+Export admission permits at most two pending jobs, so deployment memory sizing
+must account for two concurrent cursor/import working sets, the active application
+pool, intake/adaptation work and database/container overhead. No smaller implicit
+legacy cell/row cap is introduced to simplify that accounting. Near-limit fixtures
+and measured concurrent memory are still required validation gates.
+
+Version-2 transport admission includes 288 MiB catalog bytes, a 60-byte header and
+40 bytes for each admitted original, in addition to configured encoded payload.
+Archive reservation includes both the logical spool and its archive copy plus
+framing and original bytes. Restore reservation includes two declared archive
+sizes plus the maximum logical spool. SQL database/index storage is deployment
+storage too; these application reservations are not a physical bound on PostgreSQL
+WAL/index growth. Cleanup retains reservations until every owned filesystem and
+SQL namespace removal succeeds. Failed uploads use that same cleanup path rather
+than releasing quota after a best-effort unlink.
+
 ## Destination ownership and publication
 
 Restore creates a separate, independently startable result. SQLite has its own fresh
@@ -67,7 +107,7 @@ startup to the selected namespace. Deployment credentials remain deployment inpu
 the result descriptor contains only its backend and generated namespace.
 
 A private journal is created with mode 0600 and fsynced, including its parent directory,
-before any namespace creation. It records the job, unpredictable ownership nonce,
+before any result directory, ownership marker, or namespace creation. A pre-existing final result fails before journal creation and remains unchanged. The pending name includes the unpredictable journal nonce. A crash after mkdir but before its marker leaves the prepared journal retained; cleanup never deletes an unmarked directory by guessing ownership from its name. It records the job, unpredictable ownership nonce,
 generated namespace, result path relative to the owned export root, and reserved size.
 The generated schema and trusted ownership marker are created in ONE transaction;
 crashing before its commit leaves neither. A same-name existing schema fails creation
@@ -76,7 +116,7 @@ marker in the explicitly configured database; it never enumerates by prefix.
 
 Publication phases are prepared → schema-owned → rows-committed → files-ready →
 files-published → job-succeeded. Every phase transition uses an atomic journal rewrite
-and directory fsync. Original files and pending directories are fsynced before rename;
+and directory fsync. Rename success followed by parent fsync failure is an ambiguous durability result: the implementation reloads and validates the exact job, nonce, namespace and reserved amount before adopting the observed phase, and still returns an error. Missing or changed journal identity retains ownership and quota rather than pretending rollback succeeded. Original files and pending directories are fsynced before rename;
 the publication parent is fsynced afterward. Database commit and filesystem rename
 are distinct boundaries and cannot be described as a single atomic operation.
 

@@ -133,10 +133,20 @@ pub(crate) struct ApplicationDatabase {
     pub(crate) pool: AnyPool,
     pub(crate) backend: Backend,
     sqlite_options: Option<SqliteConnectOptions>,
+    sqlite_memory: bool,
+    postgres_url: Option<String>,
 }
 impl ApplicationDatabase {
     pub(crate) async fn open(config: DatabaseConfig) -> Result<Self, DatabaseError> {
         sqlx::any::install_default_drivers();
+        let sqlite_memory =
+            matches!(&config, DatabaseConfig::Sqlite(path) if path == Path::new(":memory:"));
+        let postgres_url = match &config {
+            DatabaseConfig::Postgres(url) | DatabaseConfig::PostgresSchema { url, .. } => {
+                Some(url.clone())
+            }
+            _ => None,
+        };
         let namespace = match &config {
             DatabaseConfig::PostgresSchema { schema, .. } if valid_schema(schema) => {
                 Some(schema.clone())
@@ -227,7 +237,17 @@ impl ApplicationDatabase {
             pool,
             backend,
             sqlite_options,
+            sqlite_memory,
+            postgres_url,
         })
+    }
+    pub(crate) fn namespace_config(&self, schema: &str) -> Result<DatabaseConfig, DatabaseError> {
+        DatabaseConfig::Postgres(
+            self.postgres_url
+                .clone()
+                .ok_or(DatabaseError::Configuration)?,
+        )
+        .with_schema(schema)
     }
 
     /// All writers that inspect quotas or publish catalog identities use this admission.
@@ -280,7 +300,24 @@ impl ApplicationDatabase {
         let options = self.sqlite_options.as_ref().ok_or(sqlx::Error::Protocol(
             "SQLite snapshot requested for a different application backend".to_owned(),
         ))?;
-        SqliteConnection::connect_with(options).await
+        // Typed connection preserves this worker-channel bound. Any's URL
+        // roundtrip drops it; portable snapshots must not use that path.
+        // These settings belong to the fresh typed connection; pool after_connect
+        // PRAGMAs are not inherited. Named shared-memory fixtures must keep
+        // mode=memory, but file snapshots never create a missing database.
+        let mut snapshot = options
+            .clone()
+            .create_if_missing(false)
+            .row_buffer_size(1)
+            .pragma("query_only", "ON")
+            .pragma("trusted_schema", "OFF")
+            .pragma("cache_size", "-2048")
+            .pragma("mmap_size", "0")
+            .pragma("temp_store", "MEMORY");
+        if !self.sqlite_memory {
+            snapshot = snapshot.read_only(true);
+        }
+        SqliteConnection::connect_with(&snapshot).await
     }
 
     pub(crate) async fn migrate_job_order(&self) -> Result<(), sqlx::Error> {

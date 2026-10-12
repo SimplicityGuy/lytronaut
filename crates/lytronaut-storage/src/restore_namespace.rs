@@ -16,7 +16,7 @@ impl std::fmt::Debug for RestoreNamespace {
 }
 impl RestoreNamespace {
     pub fn new(job: &str, nonce: &str) -> Result<Self, E> {
-        if !identity(job) || !identity(nonce) {
+        if !job_identity(job) || !identity(nonce) {
             return Err(E::Invalid);
         }
         Ok(Self {
@@ -36,6 +36,26 @@ impl RestoreNamespace {
     }
     pub fn job(&self) -> &str {
         &self.job
+    }
+    pub async fn verify(&self, catalog: &Catalog) -> Result<(), E> {
+        self.validate()?;
+        if catalog.backend() != Backend::Postgres {
+            return Err(E::Invalid);
+        }
+        let statement = format!(
+            "SELECT job,nonce FROM \"{}\".restore_ownership WHERE singleton=1",
+            self.schema
+        );
+        let marker = sqlx::query(AssertSqlSafe(&statement))
+            .fetch_optional(catalog.pool())
+            .await?
+            .ok_or(E::Conflict)?;
+        if marker.try_get::<String, _>(0)? != self.job
+            || marker.try_get::<String, _>(1)? != self.nonce
+        {
+            return Err(E::Conflict);
+        }
+        Ok(())
     }
 
     /// Caller must durably prepare its private journal BEFORE entering here.
@@ -107,6 +127,9 @@ impl RestoreNamespace {
         Ok(())
     }
 }
+fn job_identity(value: &str) -> bool {
+    lytronaut_contracts::OpaqueId::try_from(value.to_owned()).is_ok()
+}
 fn identity(value: &str) -> bool {
     value.len() == 64
         && value
@@ -125,7 +148,7 @@ mod tests {
         let mut untrusted = owned.clone();
         untrusted.schema = "public".into();
         assert!(untrusted.validate().is_err());
-        for value in ["", "../other", &"A".repeat(64), &"1".repeat(63)] {
+        for value in ["", "../other", &"a".repeat(129)] {
             assert!(RestoreNamespace::new(value, &"a".repeat(64)).is_err());
         }
         let json = serde_json::to_string(&owned).unwrap();

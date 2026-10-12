@@ -1,5 +1,6 @@
 //! Durable deployment-protected export/isolated restore jobs. Shares viewer codec and transfer admission.
 use super::*;
+use crate::bundle;
 use axum::{Json, extract::Request, routing::post};
 use http_body_util::BodyExt;
 use std::{
@@ -10,6 +11,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 const OUTPUT_CAP: usize = 8 * 1024 * 1024;
+static RECONCILE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn root(store: &Store) -> PathBuf {
     store.staging_root().with_extension("exports")
 }
@@ -31,6 +33,9 @@ pub(super) async fn migrate(c: &Catalog, s: &Store) -> Result<()> {
     tx.commit().await?;
     c.backfill_job_order(lytronaut_storage::SchemaComponent::Export)
         .await?;
+    // Reconcile durable SQL/filesystem ownership BEFORE generic interruption
+    // cleanup. Denied/disconnected cleanup retains the journal and reservation.
+    recover_restores(c, s).await?;
     sqlx::query("UPDATE export_jobs SET state='failed',error='interrupted' WHERE state IN ('queued','running','cancelling')").execute(c.pool()).await?;
     // Artifacts of interrupted jobs are never offered. Owned files only, no source mutation.
     let ids: Vec<String> =
@@ -39,10 +44,9 @@ pub(super) async fn migrate(c: &Catalog, s: &Store) -> Result<()> {
             .await?;
     for id in ids {
         if OpaqueId::try_from(id.clone()).is_ok() {
-            let _ = fs::remove_dir_all(root(s).join(format!("{id}.restored")));
-            for suffix in ["artifact", "snapshot", "upload"] {
-                let _ = fs::remove_file(root(s).join(format!("{id}.{suffix}")));
-            }
+            // A restore result without a journal is not guessed-owned by its
+            // filename. New restore creation always journals before any side effect.
+            cleanup_result(c, s, &id).await?;
         }
     }
     Ok(())
@@ -71,7 +75,7 @@ async fn begin(
                 a.descriptor(asset.as_str(), true).await?;
             }
         }
-        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(length),0) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources").fetch_one(a.0.catalog.pool()).await?; (n as u64).checked_add(64*1024*1024).ok_or(Failure::invalid())?}else{OUTPUT_CAP as u64};
+        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(length),0) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources").fetch_one(a.0.catalog.pool()).await?; u64::try_from(n).map_err(|_| Failure::invalid())?.checked_add(2 * lytronaut_storage::portable::MAX_BYTES as u64).and_then(|n| n.checked_add(bundle::archive_framing(a.0.store.limits().files).ok()?)).ok_or(Failure::invalid())?}else{OUTPUT_CAP as u64};
         let id = create(
             &a,
             if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
@@ -94,7 +98,7 @@ async fn begin(
 async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
     // Reserve atomically before spawning; at most two pending jobs, including uploads.
     let mut tx = a.0.catalog.begin_write().await?;
-    sqlx::query("DELETE FROM export_jobs WHERE id IN (SELECT id FROM export_jobs WHERE state IN ('cancelled','failed') AND retained=0 ORDER BY (SELECT ordinal FROM application_job_order WHERE kind='export' AND job=export_jobs.id) LIMIT (SELECT CASE WHEN count(*)>127 THEN count(*)-127 ELSE 0 END FROM export_jobs))").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM export_jobs WHERE id IN (SELECT id FROM export_jobs WHERE state IN ('cancelled','failed') AND retained=0 AND reserved=0 ORDER BY (SELECT ordinal FROM application_job_order WHERE kind='export' AND job=export_jobs.id) LIMIT (SELECT CASE WHEN count(*)>127 THEN count(*)-127 ELSE 0 END FROM export_jobs))").execute(&mut *tx).await?;
     let active: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM export_jobs WHERE state IN ('queued','running','cancelling')",
     )
@@ -109,8 +113,15 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
             ErrorCode::ResourceLimit,
         ));
     }
-    let reserved:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(retained+CASE WHEN state IN ('queued','running','cancelling') THEN reserved ELSE 0 END),0) AS BIGINT) FROM export_jobs").fetch_one(&mut *tx).await?;
-    let active_reserved:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs WHERE state IN ('queued','running','cancelling')").fetch_one(&mut *tx).await?;
+    let reserved: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(retained+reserved),0) AS BIGINT) FROM export_jobs",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let active_reserved: i64 =
+        sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs")
+            .fetch_one(&mut *tx)
+            .await?;
     if need.saturating_add(reserved as u64) > a.0.store.limits().reserved_bytes
         || a.0.store.available_staging_bytes().map_err(storage)?
             < need
@@ -197,19 +208,92 @@ async fn status(
     let r = async { json_bounded(public_report(&a, &path(p)?).await?) }.await;
     r.unwrap_or_else(Failure::response)
 }
-fn remove_owned(a: &Api, id: &str) -> Result<()> {
-    match fs::remove_file(artifact(a, id)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(storage(e)),
+async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()> {
+    let directory = root(store);
+    let mut journal = crate::restore_journal::Journal::load(&directory, id).map_err(storage)?;
+    if let Some(journal) = journal.as_mut() {
+        journal
+            .cleanup(catalog, &directory)
+            .await
+            .map_err(storage)?;
     }
-    match fs::remove_dir_all(root(&a.0.store).join(format!("{id}.restored"))) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(storage(e)),
+    for suffix in ["artifact", "snapshot", "upload"] {
+        match fs::remove_file(directory.join(format!("{id}.{suffix}"))) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(storage(error)),
+        }
+    }
+    fs::File::open(&directory)
+        .map_err(storage)?
+        .sync_all()
+        .map_err(storage)?;
+    // No journal means no new restore-created SQL namespace or directory. Do not
+    // remove any pre-existing result directory; it may be an unrelated sentinel.
+    let mut tx = catalog.begin_write().await?;
+    sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    if let Some(journal) = journal {
+        journal
+            .forget_after_quota_release(&directory)
+            .map_err(storage)?;
     }
     Ok(())
 }
+async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
+    let _guard = RECONCILE.lock().await;
+    let directory = root(store);
+    for entry in fs::read_dir(&directory).map_err(storage)? {
+        let entry = entry.map_err(storage)?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(id) = name.strip_suffix(".restore-journal") else {
+            continue;
+        };
+        if OpaqueId::try_from(id.to_owned()).is_err() {
+            return Err(Failure::invalid());
+        }
+        let Some(mut journal) =
+            crate::restore_journal::Journal::load(&directory, id).map_err(storage)?
+        else {
+            continue;
+        };
+        let state: Option<String> = sqlx::query_scalar("SELECT state FROM export_jobs WHERE id=$1")
+            .bind(id)
+            .fetch_optional(catalog.pool())
+            .await?;
+        if state.as_deref() == Some("succeeded")
+            && matches!(
+                journal.phase(),
+                crate::restore_journal::Phase::FilesPublished
+                    | crate::restore_journal::Phase::JobSucceeded
+            )
+        {
+            journal.verify_published(&directory).map_err(storage)?;
+            if let Some(namespace) = journal.namespace() {
+                namespace.verify(catalog).await.map_err(storage)?;
+            }
+            journal
+                .transition(&directory, crate::restore_journal::Phase::JobSucceeded)
+                .map_err(storage)?;
+        } else {
+            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE 'failed' END,error='interrupted' WHERE id=$1")
+                .bind(id).execute(catalog.pool()).await?;
+            cleanup_result(catalog, store, id).await?;
+        }
+    }
+    Ok(())
+}
+async fn remove_owned(a: &Api, id: &str) -> Result<()> {
+    let _guard = RECONCILE.lock().await;
+    cleanup_result(&a.0.catalog, &a.0.store, id).await
+}
+
 async fn cancel(
     Extension(a): Extension<Api>,
     p: std::result::Result<Path<String>, axum::extract::rejection::PathRejection>,
@@ -218,7 +302,7 @@ async fn cancel(
         let id=path(p)?;report(&a,&id).await?;
         sqlx::query("UPDATE export_jobs SET state=CASE WHEN state IN ('queued','running') THEN 'cancelling' WHEN state='succeeded' THEN 'cancelled' ELSE state END WHERE id=$1").bind(&id).execute(a.0.catalog.pool()).await?;
         if report(&a,&id).await?.state==JobState::Cancelled {
-            remove_owned(&a,&id)?;
+            remove_owned(&a,&id).await?;
             sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1").bind(&id).execute(a.0.catalog.pool()).await?;
         }
         json_bounded(public_report(&a,&id).await?)
@@ -302,7 +386,20 @@ async fn download(
     .await;
     r.unwrap_or_else(Failure::response)
 }
+struct WorkerGuard(Api);
+impl WorkerGuard {
+    fn new(api: &Api) -> Self {
+        api.0.exports_inflight.fetch_add(1, Ordering::AcqRel);
+        Self(api.clone())
+    }
+}
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        self.0.0.exports_inflight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf>) {
+    let _worker_guard = WorkerGuard::new(&a);
     let cancelled = Arc::new(AtomicBool::new(false));
     let initial = restore
         .as_ref()
@@ -363,13 +460,17 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
             let _permit = permit;
             rt.block_on(async move {
                 if let Some(input) = restore {
-                    let expected = crate::bundle::trusted_schema(&worker.0.catalog)
-                        .await
-                        .map_err(storage)?;
-                    let result = crate::bundle::restore(
+                    let reserved: i64 =
+                        sqlx::query_scalar("SELECT reserved FROM export_jobs WHERE id=$1")
+                            .bind(&job)
+                            .fetch_one(worker.0.catalog.pool())
+                            .await?;
+                    let result = crate::bundle::restore_owned(
                         &input,
-                        &root(&worker.0.store).join(format!("{job}.restored")),
-                        &expected,
+                        &worker.0.catalog,
+                        &root(&worker.0.store),
+                        &job,
+                        u64::try_from(reserved).map_err(storage)?,
                         worker.0.store.limits(),
                         &flag,
                         &progress,
@@ -456,29 +557,48 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
             ),
         }
     };
-    if state != "succeeded" {
-        let _ = fs::remove_file(artifact(&a, &id));
-        let restored = root(&a.0.store).join(format!("{id}.restored"));
-        let _ = fs::remove_dir_all(restored);
-    }
     let n = bytes.load(Ordering::Relaxed) as i64;
-    // Conditional final transition prevents a concurrent DELETE from resurrecting success.
-    let saved=sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE $1 END,error=CASE WHEN state='cancelling' THEN NULL ELSE $2 END,recipe=$3,completed=$4,total=$5,retained=$6,reserved=0 WHERE id=$7 AND state IN ('queued','running','cancelling')").bind(state).bind(error).bind(recipe).bind(n).bind(n).bind(if state=="succeeded"{retained.load(Ordering::Relaxed) as i64}else{0}).bind(&id).execute(a.0.catalog.pool()).await;
+    let stored = if state == "succeeded" {
+        retained.load(Ordering::Relaxed) as i64
+    } else {
+        0
+    };
+    // Keep reservations on failed/cancelled transitions until owned cleanup
+    // succeeds. Concurrent DELETE cannot resurrect success or free quota early.
+    let saved = sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE $1 END,error=CASE WHEN state='cancelling' THEN NULL ELSE $2 END,recipe=$3,completed=$4,total=$5,retained=CASE WHEN state='cancelling' THEN 0 ELSE $6 END,reserved=CASE WHEN state!='cancelling' AND $1='succeeded' THEN 0 ELSE reserved END WHERE id=$7 AND state IN ('queued','running','cancelling')")
+        .bind(state).bind(error).bind(recipe).bind(n).bind(n).bind(stored).bind(&id).execute(a.0.catalog.pool()).await;
     if saved.is_err() {
-        eprintln!("Lytronaut export status could not be persisted; restart recovery is required");
-        let _ = fs::remove_file(artifact(&a, &id));
+        eprintln!("Lytronaut export status could not be persisted; owned recovery is required");
+        // Best effort status transition; never erase ownership/quota when the
+        // database is unreachable or a final UPDATE failed after publication.
+        let _ = sqlx::query("UPDATE export_jobs SET state='failed',error='interrupted' WHERE id=$1 AND state IN ('queued','running','cancelling')")
+            .bind(&id).execute(a.0.catalog.pool()).await;
+        let _ = remove_owned(&a, &id).await;
+        return;
     }
-    if report(&a, &id)
-        .await
-        .is_ok_and(|r| r.state == JobState::Cancelled)
-        && remove_owned(&a, &id).is_ok()
-    {
-        let _ = sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1")
-            .bind(&id)
-            .execute(a.0.catalog.pool())
-            .await;
+    match report(&a, &id).await {
+        Ok(report) if report.state == JobState::Succeeded => {
+            let _guard = RECONCILE.lock().await;
+            if let Ok(Some(mut journal)) =
+                crate::restore_journal::Journal::load(&root(&a.0.store), &id)
+            {
+                // A failed journal fsync is retryable startup reconciliation;
+                // database success and owned published files are already durable.
+                let _ = journal.transition(
+                    &root(&a.0.store),
+                    crate::restore_journal::Phase::JobSucceeded,
+                );
+            }
+        }
+        Ok(_) => {
+            let _ = remove_owned(&a, &id).await;
+        }
+        Err(_) => {
+            eprintln!("Lytronaut export reconciliation is pending database recovery");
+        }
     }
 }
+
 async fn flatten(
     a: &Api,
     asset: OpaqueId,
@@ -590,10 +710,17 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
             .get(header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
-            .filter(|n| *n > 0 && *n <= a.0.store.limits().encoded_bytes + 32 * 1024 * 1024)
+            .filter(|n| *n > 0 && bundle::archive_limit(a.0.store.limits()).is_ok_and(|maximum| *n <= maximum))
             .ok_or(Failure::invalid())?;
-        let id = create(&a, "restore", declared.saturating_mul(2)).await?;
+        // Upload + extracted originals/catalog spool coexist. Reserve the v2
+        // spool separately; failed cleanup retains this reservation.
+        let reservation = declared.checked_mul(2)
+            .and_then(|n| n.checked_add(lytronaut_storage::portable::MAX_BYTES as u64))
+            .filter(|n| *n <= i64::MAX as u64)
+            .ok_or(Failure::invalid())?;
+        let id = create(&a, "restore", reservation).await?;
         let path = root(&a.0.store).join(format!("{id}.upload"));
+        let mut upload_created = false;
         let result = async {
             let mut f = tokio::fs::OpenOptions::new()
                 .write(true)
@@ -602,6 +729,7 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
                 .open(&path)
                 .await
                 .map_err(storage)?;
+            upload_created = true;
             let mut body = request.into_body();
             let mut n = 0u64;
             use tokio::io::AsyncWriteExt;
@@ -614,7 +742,7 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
                     }
                     _=tick.tick()=>{
                         if matches!(report(&a,&id).await?.state,JobState::Cancelling|JobState::Cancelled){return Err(Failure(StatusCode::CONFLICT,ErrorCode::InvalidInput))}
-                        sqlx::query("UPDATE export_jobs SET completed=$1,total=$2 WHERE id=$3 AND state='queued'").bind(n as i64).bind(declared.saturating_mul(2) as i64).bind(&id).execute(a.0.catalog.pool()).await?;
+                        sqlx::query("UPDATE export_jobs SET completed=$1,total=$2 WHERE id=$3 AND state='queued'").bind(n as i64).bind(reservation as i64).bind(&id).execute(a.0.catalog.pool()).await?;
                     }
                 }
             }
@@ -625,11 +753,17 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
         }
         .await;
         if let Err(e) = result {
-            let _ = fs::remove_file(&path);
-            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE 'failed' END,error=CASE WHEN state='cancelling' THEN NULL ELSE 'upload' END,reserved=0,retained=0 WHERE id=$1")
+            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE 'failed' END,error=CASE WHEN state='cancelling' THEN NULL ELSE 'upload' END WHERE id=$1")
                 .bind(&id)
                 .execute(a.0.catalog.pool())
                 .await?;
+            if upload_created {
+                // Cleanup failure intentionally leaves ownership/reservation for
+                // retry. Never clear quota after a best-effort unlink.
+                remove_owned(&a, &id).await?;
+            }
+            // A create_new collision is not proof we own the pre-existing file;
+            // retain the reservation and fail closed rather than unlink it.
             return Err(e);
         }
         let worker = a.clone();

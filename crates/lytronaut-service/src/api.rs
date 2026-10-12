@@ -36,6 +36,7 @@ struct Inner {
     transfers: Arc<Semaphore>,
     validation: Arc<Semaphore>,
     cache: Mutex<Cache>,
+    exports_inflight: std::sync::atomic::AtomicUsize,
 }
 #[derive(Default)]
 struct Cache {
@@ -315,7 +316,13 @@ impl Api {
             )
             .fetch_one(self.0.catalog.pool())
             .await?;
-            if pending == 0 {
+            if pending == 0
+                && self
+                    .0
+                    .exports_inflight
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 0
+            {
                 return Ok(());
             }
             if std::time::Instant::now() >= deadline {
@@ -358,6 +365,7 @@ impl Api {
             transfers: Arc::new(Semaphore::new(2)),
             validation: Arc::new(Semaphore::new(1)),
             cache: Mutex::new(Cache::default()),
+            exports_inflight: std::sync::atomic::AtomicUsize::new(0),
         })))
     }
     pub fn routes(self) -> Router<AppState> {

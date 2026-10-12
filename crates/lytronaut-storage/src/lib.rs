@@ -4,6 +4,7 @@ mod database;
 pub mod desktop;
 pub mod intake;
 pub mod portable;
+pub mod portable_database;
 mod postgres_schema;
 pub mod restore_namespace;
 mod source_text;
@@ -148,6 +149,16 @@ impl Catalog {
     pub async fn healthy(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT 1").execute(self.pool()).await?;
         Ok(())
+    }
+    /// Credentials remain in deployment memory, never in the restored descriptor.
+    pub async fn open_restore_namespace(
+        &self,
+        namespace: &restore_namespace::RestoreNamespace,
+    ) -> Result<Self, DatabaseError> {
+        namespace
+            .validate()
+            .map_err(|_| DatabaseError::Configuration)?;
+        Self::open(self.database.namespace_config(namespace.schema())?).await
     }
 }
 #[cfg(test)]
