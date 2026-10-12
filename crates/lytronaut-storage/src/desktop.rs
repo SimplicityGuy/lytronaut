@@ -535,7 +535,7 @@ pub async fn import_desktop(
     }
     let fingerprint = format!("{:x}", hash.finalize());
     if let Some(id) =
-        sqlx::query_scalar::<_, i64>("SELECT id FROM catalog_versions WHERE fingerprint=?")
+        sqlx::query_scalar::<_, i64>("SELECT id FROM catalog_versions WHERE fingerprint=$1")
             .bind(&fingerprint)
             .fetch_optional(catalog.pool())
             .await?
@@ -585,13 +585,13 @@ pub async fn import_desktop(
     }
     let mut tx = catalog.pool().begin().await?;
     // Claim fingerprint before checking identity: SQLite serializes competing writers.
-    sqlx::query("INSERT OR IGNORE INTO catalog_versions(fingerprint,source_job,library_uuid,state,reason) VALUES(?,?,?,'preserved_only',?)")
+    sqlx::query("INSERT INTO catalog_versions(fingerprint,source_job,library_uuid,state,reason) VALUES($1,$2,$3,'preserved_only',$4) ON CONFLICT(fingerprint) DO NOTHING")
         .bind(&fingerprint).bind(job).bind(&identity).bind(reason).execute(&mut *tx).await?;
-    let id: i64 = sqlx::query_scalar("SELECT id FROM catalog_versions WHERE fingerprint=?")
+    let id: i64 = sqlx::query_scalar("SELECT id FROM catalog_versions WHERE fingerprint=$1")
         .bind(&fingerprint)
         .fetch_one(&mut *tx)
         .await?;
-    let installed: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_sources WHERE version=?")
+    let installed: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_sources WHERE version=$1")
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
@@ -599,7 +599,7 @@ pub async fn import_desktop(
         tx.rollback().await?;
         return summary(catalog, id).await;
     }
-    let state: String = sqlx::query_scalar("SELECT state FROM intake_jobs WHERE id=?")
+    let state: String = sqlx::query_scalar("SELECT state FROM intake_jobs WHERE id=$1")
         .bind(job)
         .fetch_one(&mut *tx)
         .await?;
@@ -607,14 +607,14 @@ pub async fn import_desktop(
         return Err(CatalogError::IntakeIncomplete);
     }
     for e in &entries {
-        let inserted=sqlx::query("INSERT INTO catalog_sources(version,job,path,digest,length) SELECT ?,job,path,digest,length FROM intake_sources WHERE job=? AND path=? AND digest=? AND length=?")
+        let inserted=sqlx::query("INSERT INTO catalog_sources(version,job,path,digest,length) SELECT $1,job,path,digest,length FROM intake_sources WHERE job=$2 AND path=$3 AND digest=$4 AND length=$5")
         .bind(id).bind(job).bind(&e.logical_path).bind(&e.digest).bind(e.length as i64).execute(&mut *tx).await?;
         if inserted.rows_affected() != 1 {
             return Err(CatalogError::IntakeIncomplete);
         }
     }
     let conflict: i64 = if let Some(identity) = &identity {
-        sqlx::query_scalar("SELECT count(*) FROM catalog_versions WHERE library_uuid=? AND id<>?")
+        sqlx::query_scalar("SELECT count(*) FROM catalog_versions WHERE library_uuid=$1 AND id<>$2")
             .bind(identity)
             .bind(id)
             .fetch_one(&mut *tx)
@@ -625,7 +625,7 @@ pub async fn import_desktop(
     if let Some(records) = records {
         for (kind, rows) in &records {
             for (ordinal, r) in rows.iter().enumerate() {
-                sqlx::query("INSERT INTO catalog_records VALUES(?,?,?,?)")
+                sqlx::query("INSERT INTO catalog_records VALUES($1,$2,$3,$4)")
                     .bind(id)
                     .bind(kind)
                     .bind(ordinal as i64)
@@ -635,7 +635,7 @@ pub async fn import_desktop(
             }
         }
         for r in &records["picture"] {
-            sqlx::query("INSERT INTO catalog_pictures VALUES(?,?,?,?,?,?,?,?)")
+            sqlx::query("INSERT INTO catalog_pictures VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
                 .bind(id)
                 .bind(r.text("uuid")?)
                 .bind(r.text("imagebin_uuid")?)
@@ -648,7 +648,7 @@ pub async fn import_desktop(
                 .await?;
         }
         for r in &records["album"] {
-            sqlx::query("INSERT INTO catalog_albums VALUES(?,?,?,?)")
+            sqlx::query("INSERT INTO catalog_albums VALUES($1,$2,$3,$4)")
                 .bind(id)
                 .bind(r.text("uuid")?)
                 .bind(r.text("name")?)
@@ -657,7 +657,7 @@ pub async fn import_desktop(
                 .await?;
         }
         for r in &records["album_to_picture"] {
-            sqlx::query("INSERT INTO catalog_memberships VALUES(?,?,?,?)")
+            sqlx::query("INSERT INTO catalog_memberships VALUES($1,$2,$3,$4)")
                 .bind(id)
                 .bind(r.text("album_uuid")?)
                 .bind(r.text("picture_uuid")?)
@@ -666,7 +666,7 @@ pub async fn import_desktop(
                 .await?;
         }
         for (picture, code) in &errors {
-            sqlx::query("INSERT INTO catalog_item_errors VALUES(?,?,?)")
+            sqlx::query("INSERT INTO catalog_item_errors VALUES($1,$2,$3)")
                 .bind(id)
                 .bind(picture)
                 .bind(code)
@@ -681,9 +681,9 @@ pub async fn import_desktop(
     } else {
         CatalogState::Ready
     };
-    sqlx::query("UPDATE catalog_versions SET state=?,conflict=? WHERE id=?")
+    sqlx::query("UPDATE catalog_versions SET state=$1,conflict=$2 WHERE id=$3")
         .bind(state.label())
-        .bind(conflict > 0)
+        .bind(i64::from(conflict > 0))
         .bind(id)
         .execute(&mut *tx)
         .await?;
@@ -692,7 +692,7 @@ pub async fn import_desktop(
 }
 /// Aggregate diagnostics disclose no source identifiers, names, paths or hashes.
 pub async fn summary(catalog: &Catalog, id: i64) -> Result<ImportSummary, CatalogError> {
-    let version = sqlx::query("SELECT state,conflict,reason FROM catalog_versions WHERE id=?")
+    let version = sqlx::query("SELECT state,conflict,reason FROM catalog_versions WHERE id=$1")
         .bind(id)
         .fetch_one(catalog.pool())
         .await?;
@@ -703,19 +703,19 @@ pub async fn summary(catalog: &Catalog, id: i64) -> Result<ImportSummary, Catalo
     };
     let mut counts = BTreeMap::new();
     for r in
-        sqlx::query("SELECT kind,count(*) AS n FROM catalog_records WHERE version=? GROUP BY kind")
+        sqlx::query("SELECT kind,count(*) AS n FROM catalog_records WHERE version=$1 GROUP BY kind")
             .bind(id)
             .fetch_all(catalog.pool())
             .await?
     {
         counts.insert(r.get::<String, _>("kind"), r.get::<i64, _>("n") as usize);
     }
-    let files: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_sources WHERE version=?")
+    let files: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_sources WHERE version=$1")
         .bind(id)
         .fetch_one(catalog.pool())
         .await?;
     let errors: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM catalog_item_errors WHERE version=?")
+        sqlx::query_scalar("SELECT count(*) FROM catalog_item_errors WHERE version=$1")
             .bind(id)
             .fetch_one(catalog.pool())
             .await?;

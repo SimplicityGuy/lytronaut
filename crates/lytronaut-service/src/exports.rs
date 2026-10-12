@@ -65,7 +65,7 @@ async fn begin(
                 a.descriptor(asset.as_str(), true).await?;
             }
         }
-        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT COALESCE(sum(length),0) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length)").fetch_one(a.0.catalog.pool()).await?; (n as u64).checked_add(64*1024*1024).ok_or(Failure::invalid())?}else{OUTPUT_CAP as u64};
+        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(length),0) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources").fetch_one(a.0.catalog.pool()).await?; (n as u64).checked_add(64*1024*1024).ok_or(Failure::invalid())?}else{OUTPUT_CAP as u64};
         let id = create(
             &a,
             if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
@@ -103,8 +103,8 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
             ErrorCode::ResourceLimit,
         ));
     }
-    let reserved:i64=sqlx::query_scalar("SELECT COALESCE(sum(retained+CASE WHEN state IN ('queued','running','cancelling') THEN reserved ELSE 0 END),0) FROM export_jobs").fetch_one(&mut *tx).await?;
-    let active_reserved:i64=sqlx::query_scalar("SELECT COALESCE(sum(reserved),0) FROM export_jobs WHERE state IN ('queued','running','cancelling')").fetch_one(&mut *tx).await?;
+    let reserved:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(retained+CASE WHEN state IN ('queued','running','cancelling') THEN reserved ELSE 0 END),0) AS BIGINT) FROM export_jobs").fetch_one(&mut *tx).await?;
+    let active_reserved:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs WHERE state IN ('queued','running','cancelling')").fetch_one(&mut *tx).await?;
     if need.saturating_add(reserved as u64) > a.0.store.limits().reserved_bytes
         || a.0.store.available_staging_bytes().map_err(storage)?
             < need
@@ -117,7 +117,7 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
         ));
     }
     let id = random_id()?;
-    sqlx::query("INSERT INTO export_jobs(id,kind,state,reserved) VALUES(?,?,'queued',?)")
+    sqlx::query("INSERT INTO export_jobs(id,kind,state,reserved) VALUES($1,$2,'queued',$3)")
         .bind(&id)
         .bind(kind)
         .bind(need as i64)
@@ -130,7 +130,7 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
     if OpaqueId::try_from(id.to_owned()).is_err() {
         return Err(Failure::invalid());
     }
-    let r = sqlx::query("SELECT state,completed,total,error FROM export_jobs WHERE id=?")
+    let r = sqlx::query("SELECT state,completed,total,error FROM export_jobs WHERE id=$1")
         .bind(id)
         .fetch_optional(a.0.catalog.pool())
         .await?
@@ -168,7 +168,7 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
 }
 async fn public_report(a: &Api, id: &str) -> Result<ExportProgress> {
     let job = report(a, id).await?;
-    let kind: String = sqlx::query_scalar("SELECT kind FROM export_jobs WHERE id=?")
+    let kind: String = sqlx::query_scalar("SELECT kind FROM export_jobs WHERE id=$1")
         .bind(id)
         .fetch_one(a.0.catalog.pool())
         .await?;
@@ -206,10 +206,10 @@ async fn cancel(
 ) -> Response {
     let r=async {
         let id=path(p)?;report(&a,&id).await?;
-        sqlx::query("UPDATE export_jobs SET state=CASE WHEN state IN ('queued','running') THEN 'cancelling' WHEN state='succeeded' THEN 'cancelled' ELSE state END WHERE id=?").bind(&id).execute(a.0.catalog.pool()).await?;
+        sqlx::query("UPDATE export_jobs SET state=CASE WHEN state IN ('queued','running') THEN 'cancelling' WHEN state='succeeded' THEN 'cancelled' ELSE state END WHERE id=$1").bind(&id).execute(a.0.catalog.pool()).await?;
         if report(&a,&id).await?.state==JobState::Cancelled {
             remove_owned(&a,&id)?;
-            sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=?").bind(&id).execute(a.0.catalog.pool()).await?;
+            sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1").bind(&id).execute(a.0.catalog.pool()).await?;
         }
         json_bounded(public_report(&a,&id).await?)
     }.await;
@@ -224,7 +224,7 @@ async fn recipe(
         if report(&a, &id).await?.state != JobState::Succeeded {
             return Err(Failure::missing());
         }
-        let value: Option<String> = sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=?")
+        let value: Option<String> = sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
             .bind(id)
             .fetch_one(a.0.catalog.pool())
             .await?;
@@ -251,7 +251,7 @@ async fn download(
                 .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))?;
         let f = fs::File::open(artifact(&a, &id)).map_err(storage)?;
         let length = f.metadata().map_err(storage)?.len();
-        let value: Option<String> = sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=?")
+        let value: Option<String> = sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
             .bind(&id)
             .fetch_one(a.0.catalog.pool())
             .await?;
@@ -318,11 +318,11 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                 Err(_) => flag.store(true, Ordering::Release),
             }
             let n = progress.load(Ordering::Relaxed) as i64;
-            let _=sqlx::query("UPDATE export_jobs SET completed=?,total=max(total,?) WHERE id=? AND state IN ('queued','running','cancelling')").bind(n).bind(n).bind(&poll_id).execute(poll_a.0.catalog.pool()).await;
+            let _=sqlx::query("UPDATE export_jobs SET completed=$1,total=CASE WHEN total>$2 THEN total ELSE $2 END WHERE id=$3 AND state IN ('queued','running','cancelling')").bind(n).bind(n).bind(&poll_id).execute(poll_a.0.catalog.pool()).await;
         }
     });
     let result = async {
-        sqlx::query("UPDATE export_jobs SET state='running' WHERE id=? AND state='queued'")
+        sqlx::query("UPDATE export_jobs SET state='running' WHERE id=$1 AND state='queued'")
             .bind(&id)
             .execute(a.0.catalog.pool())
             .await?;
@@ -451,7 +451,7 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
     }
     let n = bytes.load(Ordering::Relaxed) as i64;
     // Conditional final transition prevents a concurrent DELETE from resurrecting success.
-    let saved=sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE ? END,error=CASE WHEN state='cancelling' THEN NULL ELSE ? END,recipe=?,completed=?,total=?,retained=?,reserved=0 WHERE id=? AND state IN ('queued','running','cancelling')").bind(state).bind(error).bind(recipe).bind(n).bind(n).bind(if state=="succeeded"{retained.load(Ordering::Relaxed) as i64}else{0}).bind(&id).execute(a.0.catalog.pool()).await;
+    let saved=sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE $1 END,error=CASE WHEN state='cancelling' THEN NULL ELSE $2 END,recipe=$3,completed=$4,total=$5,retained=$6,reserved=0 WHERE id=$7 AND state IN ('queued','running','cancelling')").bind(state).bind(error).bind(recipe).bind(n).bind(n).bind(if state=="succeeded"{retained.load(Ordering::Relaxed) as i64}else{0}).bind(&id).execute(a.0.catalog.pool()).await;
     if saved.is_err() {
         eprintln!("Lytronaut export status could not be persisted; restart recovery is required");
         let _ = fs::remove_file(artifact(&a, &id));
@@ -461,7 +461,7 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
         .is_ok_and(|r| r.state == JobState::Cancelled)
         && remove_owned(&a, &id).is_ok()
     {
-        let _ = sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=?")
+        let _ = sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1")
             .bind(&id)
             .execute(a.0.catalog.pool())
             .await;
@@ -602,7 +602,7 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
                     }
                     _=tick.tick()=>{
                         if matches!(report(&a,&id).await?.state,JobState::Cancelling|JobState::Cancelled){return Err(Failure(StatusCode::CONFLICT,ErrorCode::InvalidInput))}
-                        sqlx::query("UPDATE export_jobs SET completed=?,total=? WHERE id=? AND state='queued'").bind(n as i64).bind(declared.saturating_mul(2) as i64).bind(&id).execute(a.0.catalog.pool()).await?;
+                        sqlx::query("UPDATE export_jobs SET completed=$1,total=$2 WHERE id=$3 AND state='queued'").bind(n as i64).bind(declared.saturating_mul(2) as i64).bind(&id).execute(a.0.catalog.pool()).await?;
                     }
                 }
             }
@@ -614,7 +614,7 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
         .await;
         if let Err(e) = result {
             let _ = fs::remove_file(&path);
-            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE 'failed' END,error=CASE WHEN state='cancelling' THEN NULL ELSE 'upload' END,reserved=0,retained=0 WHERE id=?")
+            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE 'failed' END,error=CASE WHEN state='cancelling' THEN NULL ELSE 'upload' END,reserved=0,retained=0 WHERE id=$1")
                 .bind(&id)
                 .execute(a.0.catalog.pool())
                 .await?;
@@ -684,7 +684,7 @@ mod tests {
             )
             .await
         });
-        sqlx::query("UPDATE export_jobs SET state='cancelling' WHERE id=?")
+        sqlx::query("UPDATE export_jobs SET state='cancelling' WHERE id=$1")
             .bind(&id)
             .execute(c.pool())
             .await
@@ -693,7 +693,7 @@ mod tests {
         running.await.unwrap();
         assert_eq!(report(&a, &id).await.unwrap().state, JobState::Cancelled);
         assert!(!artifact(&a, &id).exists());
-        sqlx::query("UPDATE export_jobs SET state='running' WHERE id=?")
+        sqlx::query("UPDATE export_jobs SET state='running' WHERE id=$1")
             .bind(&second)
             .execute(c.pool())
             .await

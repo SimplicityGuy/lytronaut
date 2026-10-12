@@ -347,7 +347,7 @@ impl Store {
         sqlx::query("UPDATE intake_jobs SET reserved=reserved WHERE 0")
             .execute(&mut *tx)
             .await?;
-        let row=sqlx::query("SELECT COUNT(*) n, COALESCE(SUM(reserved),0) bytes FROM intake_jobs WHERE state='running'").fetch_one(&mut *tx).await?;
+        let row=sqlx::query("SELECT COUNT(*) n, CAST(COALESCE(SUM(reserved),0) AS BIGINT) bytes FROM intake_jobs WHERE state='running'").fetch_one(&mut *tx).await?;
         let n: i64 = row.get("n");
         let bytes: i64 = row.get("bytes");
         if n >= l.active_jobs as i64
@@ -368,7 +368,7 @@ impl Store {
             }
         }
         let id = unique()?;
-        sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,reserved) VALUES(?,?,'running',?,?,?,?,?)").bind(&id).bind(match request.kind {lytronaut_contracts::ImportKind::ZipLibrary=>"zip",_=>"directory"}).bind(request.declared_bytes as i64).bind(request.declared_bytes as i64).bind(request.declared_files as i64).bind(encoded as i64).bind(reserve as i64).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,reserved) VALUES($1,$2,'running',$3,$4,$5,$6,$7)").bind(&id).bind(match request.kind {lytronaut_contracts::ImportKind::ZipLibrary=>"zip",_=>"directory"}).bind(request.declared_bytes as i64).bind(request.declared_bytes as i64).bind(request.declared_files as i64).bind(encoded as i64).bind(reserve as i64).execute(&mut *tx).await?;
         tx.commit().await?;
         self.0
             .cancel
@@ -388,7 +388,7 @@ impl Store {
     }
     async fn running(&self, id: &str) -> Result<sqlx::sqlite::SqliteRow, StorageError> {
         id_valid(id)?;
-        let r = sqlx::query("SELECT * FROM intake_jobs WHERE id=?")
+        let r = sqlx::query("SELECT * FROM intake_jobs WHERE id=$1")
             .bind(id)
             .fetch_optional(self.0.catalog.pool())
             .await?
@@ -452,13 +452,13 @@ impl Store {
         let canonical = path.to_lowercase();
         let child = format!("{canonical}/");
         let upper = format!("{canonical}0");
-        let collision:i64=sqlx::query_scalar("SELECT COUNT(*) FROM intake_sources WHERE job=? AND (canonical=? OR (canonical>=? AND canonical<?))").bind(id).bind(&canonical).bind(&child).bind(&upper).fetch_one(self.0.catalog.pool()).await?;
+        let collision:i64=sqlx::query_scalar("SELECT COUNT(*) FROM intake_sources WHERE job=$1 AND (canonical=$2 OR (canonical>=$3 AND canonical<$4))").bind(id).bind(&canonical).bind(&child).bind(&upper).fetch_one(self.0.catalog.pool()).await?;
         if collision != 0 {
             return Err(StorageError::Conflict);
         }
         for (i, _) in canonical.match_indices('/') {
             let ancestor: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM intake_sources WHERE job=? AND canonical=?",
+                "SELECT COUNT(*) FROM intake_sources WHERE job=$1 AND canonical=$2",
             )
             .bind(id)
             .bind(&canonical[..i])
@@ -489,7 +489,7 @@ impl Store {
         self.fault(FaultPoint::BeforeTransaction)?;
         let mut tx = self.0.catalog.pool().begin().await?;
         sqlx::query(
-            "INSERT INTO intake_sources(job,path,canonical,digest,length) VALUES(?,?,?,?,?)",
+            "INSERT INTO intake_sources(job,path,canonical,digest,length) VALUES($1,$2,$3,$4,$5)",
         )
         .bind(id)
         .bind(path)
@@ -498,7 +498,7 @@ impl Store {
         .bind(entry.1 as i64)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("UPDATE intake_jobs SET completed=completed+?,files=files+1,path_bytes=path_bytes+? WHERE id=? AND state='running'").bind(entry.1 as i64).bind(path.len() as i64).bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE intake_jobs SET completed=completed+$1,files=files+1,path_bytes=path_bytes+$2 WHERE id=$3 AND state='running'").bind(entry.1 as i64).bind(path.len() as i64).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
         self.fault(FaultPoint::AfterTransaction)?;
         Ok(())
@@ -611,14 +611,14 @@ impl Store {
             return Err(StorageError::Cancelled);
         }
         self.fault(FaultPoint::BeforeTransaction)?;
-        sqlx::query("UPDATE intake_jobs SET state='succeeded',total=completed,reserved=0,error=NULL WHERE id=? AND state='running'").bind(id).execute(self.0.catalog.pool()).await?;
+        sqlx::query("UPDATE intake_jobs SET state='succeeded',total=completed,reserved=0,error=NULL WHERE id=$1 AND state='running'").bind(id).execute(self.0.catalog.pool()).await?;
         self.0.cancel.lock().unwrap().remove(id);
         self.fault(FaultPoint::AfterTransaction)?;
         Ok(())
     }
     pub async fn job(&self, id: &str) -> Result<JobReport, StorageError> {
         id_valid(id)?;
-        let r = sqlx::query("SELECT * FROM intake_jobs WHERE id=?")
+        let r = sqlx::query("SELECT * FROM intake_jobs WHERE id=$1")
             .bind(id)
             .fetch_optional(self.0.catalog.pool())
             .await?
@@ -658,7 +658,7 @@ impl Store {
     }
     async fn entries(&self, id: &str) -> Result<Vec<SourceEntry>, StorageError> {
         let rows =
-            sqlx::query("SELECT path,digest,length FROM intake_sources WHERE job=? ORDER BY path")
+            sqlx::query("SELECT path,digest,length FROM intake_sources WHERE job=$1 ORDER BY path")
                 .bind(id)
                 .fetch_all(self.0.catalog.pool())
                 .await?;
@@ -742,7 +742,7 @@ impl Store {
         }
         let _g = self.0.gate.lock().await;
         sqlx::query(
-            "UPDATE intake_jobs SET state=?,reserved=0,error=? WHERE id=? AND state='running'",
+            "UPDATE intake_jobs SET state=$1,reserved=0,error=$2 WHERE id=$3 AND state='running'",
         )
         .bind(state)
         .bind(error)
@@ -761,7 +761,7 @@ impl Store {
         ) {
             return Err(StorageError::Conflict);
         }
-        let r = sqlx::query("SELECT kind,budget,max_files FROM intake_jobs WHERE id=?")
+        let r = sqlx::query("SELECT kind,budget,max_files FROM intake_jobs WHERE id=$1")
             .bind(id)
             .fetch_one(self.0.catalog.pool())
             .await?;
@@ -815,7 +815,7 @@ impl Store {
         }
         let mut last = String::new();
         while let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM intake_jobs WHERE state='succeeded' AND id>? ORDER BY id LIMIT 1",
+            "SELECT id FROM intake_jobs WHERE state='succeeded' AND id>$1 ORDER BY id LIMIT 1",
         )
         .bind(&last)
         .fetch_optional(self.0.catalog.pool())
@@ -828,7 +828,7 @@ impl Store {
                     .await
                     .map_err(|_| StorageError::Unavailable)?;
             if !valid {
-                sqlx::query("UPDATE intake_jobs SET state='failed',reserved=0,error='verification' WHERE id=?").bind(&id).execute(self.0.catalog.pool()).await?;
+                sqlx::query("UPDATE intake_jobs SET state='failed',reserved=0,error='verification' WHERE id=$1").bind(&id).execute(self.0.catalog.pool()).await?;
             }
             last = id;
         }
@@ -858,7 +858,7 @@ impl Store {
             self.append(id, &name, reader, Some((entry.size, entry.crc)))
                 .await?;
         }
-        sqlx::query("UPDATE intake_jobs SET zip_complete=1 WHERE id=? AND state='running'")
+        sqlx::query("UPDATE intake_jobs SET zip_complete=1 WHERE id=$1 AND state='running'")
             .bind(id)
             .execute(self.0.catalog.pool())
             .await?;
