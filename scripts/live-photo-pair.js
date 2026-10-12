@@ -42,7 +42,7 @@
       const marker=jpeg[pos+1],size=view(range(jpeg,pos+2,2)).getUint16(0);check(size>=2);
       const data=range(jpeg,pos+4,size-2);
       if(marker>=226&&marker<=239&&marker!==238){
-        const signature=data.length>=14&&text(data.subarray(0,12))==='ICC_PROFILE\0';
+        const signature=data.length>=14&&[...data.subarray(0,12)].every((b,i)=>b==='ICC_PROFILE\0'.charCodeAt(i));
         const profile=signature?data.subarray(14):new Uint8Array(),v=view(profile);
         const known=(offset,allowed)=>{if(offset+4>profile.length)return 'absent';const value=String.fromCharCode(...profile.subarray(offset,offset+4));return allowed.includes(value)?value:'other';};
         const digest=signature?[...new Uint8Array(await bounded(crypto.subtle.digest('SHA-256',profile)))].map(b=>b.toString(16).padStart(2,'0')).join(''):null;
@@ -51,10 +51,38 @@
       pos+=size+2;
     }
   };
+  const iccProfile = data => {enter('icc');
+    check(data.length>=146&&data.length<=65533&&[...range(data,0,12)].every((b,i)=>b==='ICC_PROFILE\0'.charCodeAt(i))&&data[12]===1&&data[13]===1);
+    const profile=range(data,14,data.length-14),v=view(profile);
+    check(v.getUint32(0)===profile.length&&[2,4].includes(profile[8])&&String.fromCharCode(...range(profile,12,4))==='mntr'&&String.fromCharCode(...range(profile,16,4))==='RGB '&&String.fromCharCode(...range(profile,20,4))==='XYZ '&&String.fromCharCode(...range(profile,36,4))==='acsp');
+    check(profile.subarray(100,128).every(b=>b===0));
+    const count=v.getUint32(128);check(count>=7&&count<=16);const tableEnd=132+count*12;range(profile,132,count*12);
+    const tags=new Set(),extents=[];
+    for(let i=0;i<count;i++){
+      const offset=132+i*12,name=String.fromCharCode(...range(profile,offset,4)),start=v.getUint32(offset+4),size=v.getUint32(offset+8);
+      check(['desc','cprt','wtpt','rXYZ','gXYZ','bXYZ','rTRC','gTRC','bTRC','chad','cicp'].includes(name)&&!tags.has(name)&&start>=tableEnd&&start%4===0&&size>=8);tags.add(name);
+      const body=range(profile,start,size);check(body.subarray(4,8).every(b=>b===0));
+      const kind=String.fromCharCode(...body.subarray(0,4));check(['XYZ ','para','curv','mluc','desc','text','sf32','cicp'].includes(kind));
+      for(const e of extents)check(start>=e.end||start+size<=e.start||(start===e.start&&start+size===e.end));extents.push({start,end:start+size});
+    }
+    check(['wtpt','rXYZ','gXYZ','bXYZ','rTRC','gTRC','bTRC'].every(tag=>tags.has(tag)));return profile;
+  };
+  const platformIcc = async () => {const c=document.createElement('canvas');c.width=c.height=16;
+    try{
+      const ctx=c.getContext('2d',{colorSpace:'srgb'});check(ctx);ctx.fillStyle='#804020';ctx.fillRect(0,0,16,16);
+      const blob=await bounded(new Promise(resolve=>c.toBlob(resolve,'image/jpeg')));check(blob&&blob.size<=65536);
+      const jpeg=new Uint8Array(await bounded(blob.arrayBuffer()));check(jpeg[0]===255&&jpeg[1]===216);let pos=2,profile=null,segments=0;
+      while(pos<jpeg.length){check(segments++<128&&jpeg[pos]===255);const marker=jpeg[pos+1];if(marker===218)break;
+        const size=view(range(jpeg,pos+2,2)).getUint16(0);check(size>=2);const data=range(jpeg,pos+4,size-2);
+        if(marker===226){check(profile===null);profile=iccProfile(data);}pos+=size+2;
+      }
+      check(profile);return profile;
+    }finally{c.width=c.height=0;}
+  };
   const jpegIdentity = jpeg => {enter('jpeg');
-    check(jpeg.length<=2*1024*1024+256&&jpeg[0]===255&&jpeg[1]===216);let pos=2,identity=null;
+    check(jpeg.length<=2*1024*1024+256&&jpeg[0]===255&&jpeg[1]===216);let pos=2,identity=null,profile=null,segments=0;
     while(pos<jpeg.length) {
-      check(jpeg[pos]===255);const marker=jpeg[pos+1];if(marker===218)break;
+      check(segments++<128&&jpeg[pos]===255);const marker=jpeg[pos+1];if(marker===218)break;
       const size=view(range(jpeg,pos+2,2)).getUint16(0),data=range(jpeg,pos+4,size-2);check(size>=2);
       if(marker===225) {
         check(identity===null&&text(range(data,0,6))==='Exif\0\0');const t=range(data,6,data.length-6),v=view(t);
@@ -66,11 +94,18 @@
         check(text(range(note,0,14))==='Apple iOS\0\0\x01MM'&&n.getUint16(14)===1&&n.getUint16(16)===17&&n.getUint16(18)===2&&n.getUint32(20)===37&&n.getUint32(28)===0);
         const id=range(note,n.getUint32(24),37);check(id[36]===0);identity=text(id.subarray(0,36));
       }
-      if(marker>=224&&marker<=239)check(marker===225||(marker===224&&text(range(data,0,5))==='JFIF\0')||(marker===238&&text(range(data,0,5))==='Adobe'));
+      if(marker===226){enter('icc');check(profile===null);profile=iccProfile(data);enter('jpeg');}
+      if(marker>=224&&marker<=239)check(marker===225||marker===226||(marker===224&&text(range(data,0,5))==='JFIF\0')||(marker===238&&text(range(data,0,5))==='Adobe'));
       check(marker!==254); // no comments, legacy IPTC or other private metadata.
       pos+=2+size;
     }
-    check(identity&&/^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(identity));return identity;
+    check(identity&&/^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(identity));return {identity,profile};
+  };
+  // Independent TEST-only seam makes malformed-profile negatives reach ICC
+  // validation rather than merely fail an outer ZIP checksum.
+  window.verifyLivePhotoJpegMetadata = async jpeg => {const result=jpegIdentity(jpeg);
+    if(result.profile){const expected=await platformIcc();enter('icc-match');check(result.profile.length===expected.length&&result.profile.every((b,i)=>b===expected[i]));}
+    return {identity:result.identity,platformIccVerified:result.profile!==null};
   };
   const movieInfo = bytes => {enter('movie');
     const v=view(bytes);
@@ -114,7 +149,7 @@
     return {absoluteSum:sum,squaredSum:squared,samples:count,maxDifference:max};
   };
   window.verifyLivePhotoPair = async (zip,{identifier,referenceImage,expectedBlue=false,publicDiagnostics=false}={}) => {
-    const [movie,jpeg,json]=unzip(zip),p=JSON.parse(text(json)),info=movieInfo(movie);if(publicDiagnostics)await publicJpegMetadata(jpeg);const jpegId=jpegIdentity(jpeg);enter('pair');check(info.identity===identifier&&jpegId===identifier&&p.width===info.width&&p.height===info.height&&p.orientation===1&&p.duration_seconds===3&&p.audio==='none'&&p.motion==='generated_focus_animation'&&p.camera_recorded_temporal_motion===false&&p.calibrated_synthesis===false&&p.originals==='unchanged');
+    const [movie,jpeg,json]=unzip(zip),p=JSON.parse(text(json)),info=movieInfo(movie);if(publicDiagnostics)await publicJpegMetadata(jpeg);const jpegMetadata=await window.verifyLivePhotoJpegMetadata(jpeg),jpegId=jpegMetadata.identity;enter('pair');check(info.identity===identifier&&jpegId===identifier&&p.width===info.width&&p.height===info.height&&p.orientation===1&&p.duration_seconds===3&&p.audio==='none'&&p.motion==='generated_focus_animation'&&p.camera_recorded_temporal_motion===false&&p.calibrated_synthesis===false&&p.originals==='unchanged');
     check(Object.keys(p).sort().join(',')===['version','motion','duration_seconds','key_seconds','selected_stored_plane','sweep_stored_planes','source_variant','width','height','orientation','audio','originals','camera_recorded_temporal_motion','calibrated_synthesis','imported_adjustments','color'].sort().join(',')&&p.version===1&&p.source_variant==='verified_archived_avc_planes'&&p.imported_adjustments==='preserved_only_not_replayed'&&p.color==='source profile unknown; platform-decoded RGB; sRGB transfer, BT.709 primaries, BT.601 limited-range YCbCr; JPEG/chroma quantization are lossy');
     check(p.sweep_stored_planes.length===info.samples.length&&new Set(p.sweep_stored_planes).size===info.samples.length&&Math.abs(info.keySeconds-p.key_seconds)<1e-6);
     const key=p.sweep_stored_planes.indexOf(p.selected_stored_plane);check(key>=0&&Math.abs(info.keySeconds-key*3/info.samples.length)<1e-6);
@@ -133,7 +168,7 @@
       const deadline=performance.now()+30000;
       for(let i=0;i<info.samples.length;i++) {check(!failed&&performance.now()<deadline);decoder.decode(new EncodedVideoChunk({type:'key',timestamp:Math.round(i*3000000/info.samples.length),data:info.samples[i]}));while(decoder.decodeQueueSize>0&&!failed){check(performance.now()<deadline);await new Promise(resolve=>setTimeout(resolve,0));}}
       await bounded(decoder.flush());check(!failed&&outputs===info.samples.length&&keySeen);
-      return {width:info.width,height:info.height,frames:outputs,keySeconds:info.keySeconds,selected:p.selected_stored_plane,sweep:p.sweep_stored_planes,stillLoss,motionLoss};
+      return {width:info.width,height:info.height,frames:outputs,keySeconds:info.keySeconds,selected:p.selected_stored_plane,sweep:p.sweep_stored_planes,platformIccVerified:jpegMetadata.platformIccVerified,stillLoss,motionLoss};
     } finally {try{if(decoder)decoder.close();}finally{if(stillImage)stillImage.src='';if(referenceDecoded)referenceDecoded.src='';URL.revokeObjectURL(url);for(const c of [still,motion,baseline])if(c){c.width=c.height=0;}}}
   };
 })();

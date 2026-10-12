@@ -128,6 +128,16 @@ they impose no invented lossless threshold. Elapsed corpus/export totals and
 min/max attempt times are aggregate measurements. SPS geometry/reference/B-frame
 aggregates remain separate from whole-browser peak memory.
 
+The independent reader accepts a single bounded ICC_PROFILE APP2 only after RGB
+display-profile header/tag-extent checks and complete byte equality with an ICC
+profile independently encoded from a fresh 16 × 16 sRGB canvas on that platform.
+It keeps source pixels out of the reference canvas and clears that canvas on every
+path. ICC-free JPEGs need no DOM reference. Arbitrary APP2, split/reordered profiles,
+bad tag extents, truncated profiles and foreign payloads are rejected through a
+JPEG-only test seam so outer ZIP checksums cannot mask those negative tests. This
+verifies platform-generated color metadata; the source capture profile remains
+unknown and no calibrated synthesis is claimed.
+
 The harness checks every sealed source blob's digest, size, mode and mtime before
 testing and again in `finally`, including on failure. It serves GET requests only
 on loopback in an isolated 0700 browser profile, blocks external network requests
