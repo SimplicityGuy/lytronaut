@@ -359,3 +359,59 @@ backing maxima zero. Each case retained eight closed decoders, 40 closed frames
 and three downloads. The new pre-rejection/platform/array/category observations
 remain source-only until a fresh actual run; these prior traces do not prove the
 full counted budget.
+
+### Public real-encoder JPEG rejection experiment (source-only candidate)
+
+The owner recipe builds its feature program once, runs the unchanged three-shape
+owner suite, then a separate public experiment. The standalone
+`just live-photo-jpeg-stress-test` recipe reuses that build and requires its
+successful small owner report to match current source/program hashes. Two fixed 32/64Mbps AVC trials
+author a deterministic 2048×1024 noisy keyframe with four repeated frames
+requested as predictive, using the same five-plane/nonmonotonic-lambda framing.
+Actual key/delta chunk counts are recorded; proof requires one key/four delta
+chunks, five authored frames, cumulative chunk bytes including AUD at most 8MiB
+and final container admission at most 8MiB. Existing color fixtures are unchanged.
+
+Each trial has an isolated public catalog, service and browser. It explicitly
+selects the completed import's library and Synthetic 001 (video plus static
+preview, no JPEG focus stack), verifies the selected source manifest against the
+authored bytes, and checks fresh retry video geometry is 32×32. Synthetic 000's
+valid JPEG focus export remains untouched. The real viewer
+JPEG rejection must preserve its verified static preview and disable Live Photo
+export. A separate direct Rust export must also reject, with actual native JS
+JPEG character lengths matching Rust pre-check byte lengths above 2MiB in BOTH
+paths. Generic codec errors, injected strings, unadmitted fixtures and output
+remaining below the limit cannot count as rejection proof. In-flight Rust
+cancellation requires `cancelled` plus an aborted signal; a fresh admitted color
+catalog then verifies viewer recovery and complete UI/direct export. Decoder and
+frame closure counts must match. This fixture JS/Rust-input path is outside the
+final mounted owner capacity collection and does not establish a total-memory
+bound. Noisy pixels/containers are temporary, never evidence artifacts.
+
+The bounded `jpeg-stress.json` contains numeric measurements, fixed outcome enums
+and exact feature/source hashes only. Both fixed outcomes are retained; lack of
+any proven trial fails the experiment. Setup, validation or cleanup failures also
+fail regardless of another proven trial. Neither bitrate guarantees a JPEG
+exceeding the cap: source-admission, predictive-output and under-threshold
+outcomes remain explicitly unproven. Native wrappers restore in finally and
+owned service/browser processes have bounded graceful shutdown/forced cleanup.
+Every UI wait has a finite timeout, and direct Rust calls use a 60-second abort
+deadline with the existing cancellable codec polling. The driver awaits helper
+restoration before resource cleanup; no outer proof Promise race leaves the
+helper running while its browser is closed. Restoration failures retain the
+partial numeric result and separately fail cleanup.
+
+The evidence wrapper packages current source/programs and available bounded
+reports even after test failure, marks them partial with the original test exit
+status, checks a temporary archive against 128MiB, then atomically renames it.
+Packaging failure also fails successful tests; incomplete/stale archives are
+removed. The existing private CI artifact uploads on failure only when a finished
+archive exists. No Photos/private runtime or empirical rejection result is
+claimed by this source-only candidate.
+
+Before this candidate, `d03fc195` passed all five checks: CI `38232888965` and
+containers `38232888971`. Its three geometry reports had 16 Rust stages and zero
+drops, eight closed decoders/40 closed frames/three downloads each. The large
+case included eleven concurrent 128×128 canvas observations alongside the
+2048×1024 selected export; matching observations remain partial logical capacity
+evidence, not full counted-memory proof.
