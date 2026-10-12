@@ -95,14 +95,14 @@ async function verifySealed(after=false) {
         window.VideoDecoder=undefined;await reject(()=>invoke(bytes));window.VideoDecoder=Tracked;
         class Unsupported extends Tracked {static async isConfigSupported(){return {supported:false};}}window.VideoDecoder=Unsupported;await reject(()=>invoke(bytes));
         class ThrowSupport extends Tracked {static isConfigSupported(){throw Error('injected synchronous support error');}}window.VideoDecoder=ThrowSupport;await reject(()=>invoke(bytes));
-        const probeAbort=new AbortController();class PendingSupport extends Tracked {static isConfigSupported(){return new Promise(()=>{});}}window.VideoDecoder=PendingSupport;setTimeout(()=>probeAbort.abort(),20);await reject(()=>invoke(bytes,0,probeAbort.signal()));
+        const probeAbort=new AbortController();class PendingSupport extends Tracked {static isConfigSupported(){return new Promise(()=>{});}}window.VideoDecoder=PendingSupport;setTimeout(()=>probeAbort.abort(),20);await reject(()=>invoke(bytes,0,probeAbort.signal));
         class Retry extends Tracked {configure(c){this.preference=c.hardwareAcceleration;super.configure(c);}decode(c){if(this.preference==='no-preference')throw new DOMException('injected actual decode failure','EncodingError');super.decode(c);}}window.VideoDecoder=Retry;if(!(await invoke(bytes)).software_retry)throw Error('software retry missing');
         class Late extends Tracked {constructor(init){super({...init,output:f=>{init.output(f);init.error(new DOMException('injected late error','EncodingError'));}});}}window.VideoDecoder=Late;await reject(()=>invoke(bytes));window.VideoDecoder=Tracked;
         class Geometry extends Tracked {constructor(init){super({...init,output:f=>{Object.defineProperty(f,'displayWidth',{value:31});init.output(f);}});}}window.VideoDecoder=Geometry;await reject(()=>invoke(bytes));window.VideoDecoder=Tracked;
-        const flushAbort=new AbortController();class PendingFlush extends Tracked {flush(){return new Promise(()=>{});}}window.VideoDecoder=PendingFlush;setTimeout(()=>flushAbort.abort(),20);await reject(()=>invoke(bytes,0,flushAbort.signal()));window.VideoDecoder=Tracked;
+        const flushAbort=new AbortController();class PendingFlush extends Tracked {flush(){return new Promise(()=>{});}}window.VideoDecoder=PendingFlush;setTimeout(()=>flushAbort.abort(),20);await reject(()=>invoke(bytes,0,flushAbort.signal));window.VideoDecoder=Tracked;
         const getContext=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=()=>null;await reject(()=>invoke(bytes));HTMLCanvasElement.prototype.getContext=getContext;
-        const abort=new AbortController();abort.abort();await reject(()=>invoke(bytes,0,abort.signal()));
-        const active=new AbortController();class Cancel extends Tracked {decode(c){super.decode(c);active.abort();}}window.VideoDecoder=Cancel;await reject(()=>invoke(bytes,0,active.signal()));window.VideoDecoder=Tracked;
+        const abort=new AbortController();abort.abort();await reject(()=>invoke(bytes,0,abort.signal));
+        const active=new AbortController();class Cancel extends Tracked {decode(c){super.decode(c);active.abort();}}window.VideoDecoder=Cancel;await reject(()=>invoke(bytes,0,active.signal));window.VideoDecoder=Tracked;
         const corrupt=bytes.slice();corrupt[corrupt.length-10]^=1;await reject(()=>invoke(corrupt));
         const final=await invoke(bytes,4);if(final.index!==4||final.frames!==5)throw Error('reset recovery failed');
       }

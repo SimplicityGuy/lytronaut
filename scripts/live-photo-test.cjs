@@ -101,7 +101,7 @@ const server = http.createServer((req, res) => {
         parts.push(header, data); total += 96 + data.length; const padding = (16 - total % 16) % 16; parts.push(new Uint8Array(padding)); total += padding;
       }
       const large = new Uint8Array(total); position = 0; for (const part of parts) { large.set(part, position); position += part.length; }
-      const metadata = JSON.parse(await module.decode_archived_refocus(large, 0, new AbortController().signal())); metadata.image = '';
+      const metadata = JSON.parse(await module.decode_archived_refocus(large, 0, new AbortController().signal)); metadata.image = '';
       const largeZip = await invoke(large, 0);
       if (largeZip.length > 18 * 1024 * 1024 || largeZip.length < 8 * 1024 * 1024) throw Error('maximum-geometry resource budget');
       const largeResources = { width: metadata.width, height: metadata.height, codedWidth: metadata.coded_width, codedHeight: metadata.coded_height, referenceFrames: metadata.reference_frames, bidirectionalFrames: metadata.bidirectional_frames, sourceBytes: large.length, bundleBytes: largeZip.length };

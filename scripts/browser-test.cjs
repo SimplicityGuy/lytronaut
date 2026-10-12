@@ -197,7 +197,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    assert(await page.$eval('#export-png',e=>e.disabled));assert(await page.$eval('#export-jpeg',e=>e.disabled));assert(!(await page.$eval('#backup-library',e=>e.disabled)));
    assert((await page.$eval('#video-export-unavailable',e=>e.textContent)).includes('Select a verified static/JPEG preview'));
    let videoExportPosts=0;const countVideoExport=r=>{if(r.method()==='POST'&&r.url().endsWith('/exports'))videoExportPosts++;};page.on('request',countVideoExport);
-   await page.$eval('#export-png',e=>{e.disabled=false;e.dispatchEvent(new MouseEvent('click',{bubbles:true}));});await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Browser video export is unavailable'));await delay(100);page.off('request',countVideoExport);assert.equal(videoExportPosts,0,'injected flattened export handler fails closed on video');
+   await page.$eval('#export-png',e=>{e.disabled=false;e.dispatchEvent(new MouseEvent('click',{bubbles:true}));});await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('PNG/JPEG export from browser AVC planes is unavailable'));await delay(100);page.off('request',countVideoExport);assert.equal(videoExportPosts,0,'injected flattened export handler fails closed on video');
 
    await page.$eval('#focus',e=>{e.value='-2';e.dispatchEvent(new Event('input',{bubbles:true}));});
    await page.waitForFunction(()=>document.querySelector('output[for=focus]').textContent.includes('plane 3')&&document.querySelector('.stage img').complete);
