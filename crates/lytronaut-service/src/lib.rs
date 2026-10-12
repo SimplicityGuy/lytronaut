@@ -6,6 +6,7 @@ pub mod bundle;
 pub mod database;
 pub mod diagnostics;
 pub mod local;
+pub mod restore_journal;
 pub mod uploads;
 
 use axum::{

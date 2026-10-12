@@ -3,8 +3,9 @@
 mod database;
 pub mod desktop;
 pub mod intake;
-mod postgres_schema;
 pub mod portable;
+mod postgres_schema;
+pub mod restore_namespace;
 mod source_text;
 mod sqlite_schema;
 mod zip;
