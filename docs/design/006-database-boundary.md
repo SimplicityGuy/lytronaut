@@ -114,7 +114,8 @@ startup reconstructs from legacy SQLite rowids. Portable PostgreSQL bundles rema
 assigned to lytronaut-1ga; this checkpoint does not claim that capability complete.
 
 PostgreSQL generated catalog identity allocation follows the retained table maximum
-under writer admission: max+1 with a floor of 1, or at most 100 collision-checked
+under writer admission: max+1 for every retained signed64 maximum below MAX (including negative and zero),
+1 for an empty table, or at most 100 collision-checked
 positive candidates at signed64 MAX. This also survives a sequence exhausted by
 rollback or an ignored conflict without a retained MAX row, avoiding an overflowing
 nextval that aborts the transaction. SQLite keeps its native rowid allocation.
@@ -129,3 +130,12 @@ and maximum catalog identity collision handling. They have not been executed:
 the packaging task retains the shared build and Docker validation slot. The final
 login-removal integration, dependency lockfile update, both-engine execution and
 submission gate must precede any completion claim.
+
+
+The existing catalog schema has no positive-ID check, and strict bundle row
+validation bounds schema, foreign keys, job states and original inventory rather
+than narrowing catalog IDs. Negative and zero IDs therefore remain within the
+accepted restored range. Added actual-engine tests exercise empty, signed64 MIN,
+negative-only, -1, zero and positive retained tables, comparing PostgreSQL
+allocation and rollback directly with the linked SQLite engine. These source
+cases also await the shared validation slot; no runtime parity claim is made.
