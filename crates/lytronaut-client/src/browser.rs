@@ -347,6 +347,8 @@ struct Ui {
     gpu_status: RwSignal<String>,
     gpu: Rc<RefCell<Option<crate::gpu::Renderer>>>,
     focus_stack: RwSignal<Option<FocusStack>>,
+    video_lambdas: RwSignal<Vec<f64>>,
+    video_label: RwSignal<String>,
     displayed_derivative: RwSignal<Option<FocusDerivative>>,
     focus_value: RwSignal<f64>,
     orientation: RwSignal<u8>,
@@ -393,6 +395,8 @@ impl Ui {
             gpu_status: RwSignal::new("CPU JPEG presentation".into()),
             gpu: Rc::default(),
             focus_stack: RwSignal::new(None),
+            video_lambdas: RwSignal::new(Vec::new()),
+            video_label: RwSignal::new(String::new()),
             displayed_derivative: RwSignal::new(None),
             focus_value: RwSignal::new(0.0),
             orientation: RwSignal::new(1),
@@ -443,6 +447,8 @@ impl Ui {
         self.stage.set(String::new());
         self.detail.set(None);
         self.focus_stack.set(None);
+        self.video_lambdas.set(Vec::new());
+        self.video_label.set(String::new());
         self.displayed_derivative.set(None);
         self.orientation.set(1);
     }
@@ -907,6 +913,19 @@ impl Ui {
         Ok(())
     }
     async fn change_focus(&self, requested: f64) -> Result<()> {
+        let lambdas = self.video_lambdas.get_untracked();
+        if !lambdas.is_empty() {
+            if !requested.is_finite() {
+                return Err("Invalid focus selection".into());
+            }
+            let index = lytronaut_format::annex_b::nearest_lambda(&lambdas, requested)
+                .map_err(|_| "Invalid focus selection")?;
+            self.focus_value.set(requested.clamp(
+                lambdas.iter().copied().reduce(f64::min).unwrap(),
+                lambdas.iter().copied().reduce(f64::max).unwrap(),
+            ));
+            return self.change_video(index).await;
+        }
         let Some(stack) = self.focus_stack.get_untracked() else {
             return Ok(());
         };
@@ -1247,6 +1266,91 @@ impl Ui {
         }
         Ok(())
     }
+    async fn change_video(&self, index: usize) -> Result<()> {
+        let Some(file) = self.detail.get_untracked().and_then(|d| {
+            d.originals
+                .into_iter()
+                .find(|f| f.role == OriginalRole::RefocusStack)
+        }) else {
+            return Ok(());
+        };
+        if file.encoded_bytes > 8 * 1024 * 1024 {
+            return Err(
+                "Video original exceeds viewer budget. Static preview remains available".into(),
+            );
+        }
+        *self.stage_generation.borrow_mut() += 1;
+        let generation = *self.stage_generation.borrow();
+        if let Some(a) = self.stage_abort.borrow_mut().take() {
+            a.abort();
+        }
+        let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
+        *self.stage_abort.borrow_mut() = Some(abort.clone());
+        let result = async {
+            // One decoder plus four conservative encoded copies and two RGBA/canvas
+            // allocations share the entire transient lease; grids/JPEG transfers wait.
+            let _lease = self.net.lease(64 * 1024 * 1024, &abort).await?;
+            let manifest_response = self
+                .net
+                .fetch(
+                    &format!("/assets/{}/manifest", file.id.as_str()),
+                    "GET",
+                    "",
+                    None,
+                    &[],
+                    &abort,
+                )
+                .await?;
+            let manifest: AssetManifest =
+                serde_json::from_slice(&read_cancel(manifest_response, JSON_LIMIT, &abort).await?)
+                    .map_err(|_| "Invalid video original manifest")?;
+            if manifest.id != file.id || manifest.encoded_bytes != file.encoded_bytes {
+                return Err("Video original identity mismatch".into());
+            }
+            let response = self
+                .net
+                .fetch(
+                    &format!("/assets/{}/download", file.id.as_str()),
+                    "GET",
+                    "",
+                    None,
+                    &[],
+                    &abort,
+                )
+                .await?;
+            let bytes = read_cancel(response, file.encoded_bytes as usize, &abort).await?;
+            if !verified(&bytes, &manifest) {
+                return Err("Video original integrity failed".into());
+            }
+            crate::video::decode_container(&bytes, index, &abort.signal())
+                .await
+                .map_err(|_| {
+                    "Browser video decode unavailable. Verified JPEG/static preview retained"
+                        .to_owned()
+                })
+        }
+        .await;
+        if generation != *self.stage_generation.borrow() {
+            return Ok(());
+        }
+        match result {
+            Ok(decoded) => {
+                self.orientation.set(1);
+                self.video_lambdas.set(decoded.lambdas);
+                self.video_label.set(format!("Displayed: {} × {} visible · plane {} · relative lambda {} · browser AVC · EXIF identity · color unverified", decoded.width, decoded.height, decoded.index + 1, decoded.lambda));
+                self.focus_value.set(decoded.lambda);
+                self.displayed_derivative.set(None);
+                let old = self.stage.get_untracked();
+                self.stage.set(decoded.image);
+                if old.starts_with("blob:") {
+                    let _ = web_sys::Url::revoke_object_url(&old);
+                }
+                self.status.set("Archived discrete browser focus decoded. Software preference is a platform request; hardware acceleration unverified".into());
+            }
+            Err(error) => self.fail(error),
+        }
+        Ok(())
+    }
     async fn upload(&self, kind: ImportKind, files: Vec<File>) -> Result<()> {
         if self.busy.get_untracked() {
             return Err("An import is already in progress".into());
@@ -1503,6 +1607,8 @@ fn Workspace() -> impl IntoView {
     let gpu_status = s.gpu_status;
     let gpu_quality = s.gpu_quality;
     let focus_stack = s.focus_stack;
+    let video_lambdas = s.video_lambdas;
+    let video_label = s.video_label;
     let displayed_derivative = s.displayed_derivative;
     let focus_value = s.focus_value;
     let orientation = s.orientation;
@@ -1543,15 +1649,15 @@ fn Workspace() -> impl IntoView {
             <main id="content" class="workspace"><div class="toolbar"><h1>"Library explorer"</h1><form class="search" on:submit=move|e|{e.prevent_default();let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><label for="search">"Search captures"</label><input id="search" type="search" prop:value=move||search.get() on:input=move|e|search.set(event_target_value(&e))/><button type="submit">"Search"</button><label for="sort">"Sort"</label><select id="sort" prop:value=move||sort.get() on:change=move|e|{sort.set(event_target_value(&e));let u=ui();let task=u.clone();launch(u,async move{task.page(0).await});}><option value="order">"Library / album order"</option><option value="name">"Name"</option><option value="rating">"Imported rating"</option></select></form></div>
                 <section class="export-controls" aria-label="Export and lossless backup"><button id="backup-library" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(None).await});}>"Back up originals and catalog"</button><button id="recover-export" disabled=move||export_busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.recover_export().await});}>"Recover export / restore status"</button><label for="restore-bundle">"Restore private bundle to an isolated store"</label><input id="restore-bundle" type="file" accept=".lytronaut" disabled=move||export_busy.get() on:change=move|e|{let input=event_target::<web_sys::HtmlInputElement>(&e);let file=input.files().and_then(|f|f.get(0));input.set_value("");if let Some(file)=file{let u=ui();let task=u.clone();launch(u,async move{task.restore_bundle(file).await});}}/><button id="cancel-restore-upload" disabled=move||!export_busy.get()||export_job.get().is_some() on:click=move |_|{let u=ui();if let Some(abort)=u.export_abort.borrow_mut().take(){abort.abort();}}>"Cancel restore upload"</button><p>"Private backup includes all immutable originals and catalog associations. Credentials and pending jobs are excluded. Restore creates a separate store."</p>{move||export_job.get().map(|r|{let id=r.job.id.as_str().to_owned();let recipe_id=id.clone();let cancel_id=id.clone();view!{<p id="export-progress">{format!("{:?} · {} bytes processed",r.job.state,r.job.completed_bytes)}</p><Show when=move||r.job.state==JobState::Succeeded&&r.kind!=ExportKind::Restore><a id="export-download" href=format!("/exports/{id}/download") download="">"Download export / private bundle"</a></Show><Show when=move||r.job.state==JobState::Succeeded&&r.kind==ExportKind::Flatten><a id="export-recipe" href=format!("/exports/{recipe_id}/recipe") download="lytronaut-recipe.json">"Download Lytronaut provenance"</a></Show><button id="cancel-export" disabled=move||matches!(r.job.state,JobState::Cancelled|JobState::Failed) on:click=move |_|{let u=ui();let task=u.clone();let id=cancel_id.clone();launch(u,async move{let r=task.net.json(&format!("/exports/{id}"),"DELETE",&task.csrf.get_untracked(),None).await?;task.watch_export(r).await});}>"Cancel or remove result"</button>}})}</section>
                 <section class="viewer" aria-label="Capture viewer"><div class="stage" tabindex="0" aria-label="Capture stage. Left and right arrows change capture" on:keydown=move|e|{if e.key()=="ArrowLeft"{e.prevent_default();ui().navigate(-1);}else if e.key()=="ArrowRight"{e.prevent_default();ui().navigate(1);}}>
-                    <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img style:display=move||if gpu_visible.get(){"none"}else{"block"} src=move||stage.get() alt=move||detail.get().map(|d|format!("{}: {}",if displayed_derivative.get().is_some(){"Stored JPEG focus derivative"}else{"Static JPEG preview"},d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
+                    <Show when=move||!stage.get().is_empty() fallback=move||view!{<div class="stage-empty"><span>"◉"</span><p>{move||if detail.get().is_some(){"Preview loading or unavailable. See capture details and originals."}else{"Select a capture, or import a library to begin."}}</p></div>}><img style:display=move||if gpu_visible.get(){"none"}else{"block"} src=move||stage.get() alt=move||detail.get().map(|d|format!("{}: {}",if !video_lambdas.get().is_empty(){"Archived browser focus derivative"}else if displayed_derivative.get().is_some(){"Stored JPEG focus derivative"}else{"Static JPEG preview"},d.capture.name)).unwrap_or_else(||"Capture preview".into())/></Show>
                     <canvas id="gpu-stage" role="img" aria-label="Verified stored derivative GPU presentation" style:display=move||if gpu_visible.get(){"block"}else{"none"} style="max-width:100%;max-height:100%;object-fit:contain"/>
-                </div><div class="focus-controls"><label for="gpu-quality">"Preview resolution cap"</label><select id="gpu-quality" prop:value=move||gpu_quality.get().to_string() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){gpu_quality.set(value);let u=ui();if u.gpu_enabled.get_untracked(){let task=u.clone();launch(u,async move{task.change_focus(task.focus_value.get_untracked()).await});}}}><option value="512">"512 · default"</option><option value="256">"256 · reduced"</option></select><output id="gpu-status" aria-live="polite">{move||gpu_status.get()}</output><label for="focus">"Discrete focus · nearest stored plane"</label><input id="focus" type="range" min=move||focus_stack.get().map(|s|s.lambdas[0]).unwrap_or(0.0) max=move||focus_stack.get().map(|s|*s.lambdas.last().unwrap()).unwrap_or(1.0) step="any" prop:value=move||focus_value.get() disabled=move||focus_stack.get().is_none() aria-valuetext=move||focus_stack.get().map(|s|format!("Stored plane {}, lambda {}",s.nearest(focus_value.get()).unwrap_or(0)+1, s.lambdas[s.nearest(focus_value.get()).unwrap_or(0)])).unwrap_or_else(||"Preview only; browser H.264 focus is unverified".into()) on:input=move|e|{if let Ok(value)=event_target_value(&e).parse(){let u=ui();let task=u.clone();launch(u,async move{task.change_focus(value).await});}}/><output for="focus">{move||displayed_derivative.get().map(|d|format!("Displayed: {} × {} source · plane {} · relative lambda {} · EXIF {} · lossy JPEG",d.source_dimensions.width,d.source_dimensions.height,d.plane_index+1,d.lambda,d.orientation)).unwrap_or_else(||"Preview only · H.264 browser verification pending".into())}</output><label for="orientation">"Explicit derivative EXIF orientation"</label><select id="orientation" prop:value=move||orientation.get().to_string() disabled=move||focus_stack.get().is_none() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){orientation.set(value);let u=ui();let task=u.clone();launch(u,async move{task.change_focus(focus_value.get_untracked()).await});}}>{(1..=8).map(|n|view!{<option value=n.to_string()>{n}</option>}).collect_view()}</select><p>"Processed recipe may be baked. Default identity; imported orientation, aperture, perspective, tone, denoise and animation are preserved only."</p></div><div class="viewer-strip"><button on:click=move |_|ui().navigate(-1) disabled=move||captures.get().is_empty()>"Previous capture"</button><span>{move||detail.get().map(|d|format!("{}{}",d.capture.name,if d.capture.name_truncated{" [truncated]"}else{""})).unwrap_or_else(||"No capture selected".into())}</span><button on:click=move |_|ui().navigate(1) disabled=move||captures.get().is_empty()>"Next capture"</button><button on:click=move |_|{if let Some(d)=detail.get_untracked(){let u=ui();let task=u.clone();launch(u,async move{task.select(d.capture.id).await});}}>"Retry preview"</button></div></section>
+                </div><div class="focus-controls"><label for="gpu-quality">"Preview resolution cap"</label><select id="gpu-quality" prop:value=move||gpu_quality.get().to_string() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){gpu_quality.set(value);let u=ui();if u.gpu_enabled.get_untracked(){let task=u.clone();launch(u,async move{task.change_focus(task.focus_value.get_untracked()).await});}}}><option value="512">"512 · default"</option><option value="256">"256 · reduced"</option></select><output id="gpu-status" aria-live="polite">{move||gpu_status.get()}</output><button disabled=move||detail.get().is_none_or(|d|!d.originals.iter().any(|f|f.role==OriginalRole::RefocusStack)) on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.change_video(0).await});}>"Try browser H.264 refocus"</button><label for="focus">"Discrete focus · nearest stored plane"</label><input id="focus" type="range" min=move||video_lambdas.get().into_iter().reduce(f64::min).or_else(||focus_stack.get().map(|s|s.lambdas[0])).unwrap_or(0.0) max=move||video_lambdas.get().into_iter().reduce(f64::max).or_else(||focus_stack.get().map(|s|*s.lambdas.last().unwrap())).unwrap_or(1.0) step="any" prop:value=move||focus_value.get() disabled=move||focus_stack.get().is_none()&&video_lambdas.get().is_empty() aria-valuetext=move||if !video_lambdas.get().is_empty(){let values=video_lambdas.get();let i=lytronaut_format::annex_b::nearest_lambda(&values,focus_value.get()).unwrap_or(0);format!("Archived video plane {}, lambda {}",i+1,values[i])}else{focus_stack.get().map(|s|format!("Stored plane {}, lambda {}",s.nearest(focus_value.get()).unwrap_or(0)+1, s.lambdas[s.nearest(focus_value.get()).unwrap_or(0)])).unwrap_or_else(||"Preview only; browser H.264 focus is unverified".into())} on:input=move|e|{if let Ok(value)=event_target_value(&e).parse(){let u=ui();let task=u.clone();launch(u,async move{task.change_focus(value).await});}}/><output for="focus">{move||if !video_label.get().is_empty(){video_label.get()}else{displayed_derivative.get().map(|d|format!("Displayed: {} × {} source · plane {} · relative lambda {} · EXIF {} · lossy JPEG",d.source_dimensions.width,d.source_dimensions.height,d.plane_index+1,d.lambda,d.orientation)).unwrap_or_else(||"Preview only · H.264 browser verification pending".into())}}</output><label for="orientation">"Explicit derivative EXIF orientation"</label><select id="orientation" prop:value=move||orientation.get().to_string() disabled=move||focus_stack.get().is_none()||!video_lambdas.get().is_empty() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){orientation.set(value);let u=ui();let task=u.clone();launch(u,async move{task.change_focus(focus_value.get_untracked()).await});}}>{(1..=8).map(|n|view!{<option value=n.to_string()>{n}</option>}).collect_view()}</select><p>"Processed recipe may be baked. Default identity; imported orientation, aperture, perspective, tone, denoise and animation are preserved only."</p></div><div class="viewer-strip"><button on:click=move |_|ui().navigate(-1) disabled=move||captures.get().is_empty()>"Previous capture"</button><span>{move||detail.get().map(|d|format!("{}{}",d.capture.name,if d.capture.name_truncated{" [truncated]"}else{""})).unwrap_or_else(||"No capture selected".into())}</span><button on:click=move |_|ui().navigate(1) disabled=move||captures.get().is_empty()>"Next capture"</button><button on:click=move |_|{if let Some(d)=detail.get_untracked(){let u=ui();let task=u.clone();launch(u,async move{task.select(d.capture.id).await});}}>"Retry preview"</button></div></section>
                 <div class="lower"><section class="browser-panel" aria-label="Capture grid and filmstrip"><h2>"Captures"</h2><div class="capture-grid">
                     {move||captures.get().into_iter().map(|capture|{let id=capture.id.as_str().to_owned();let thumb_id=StoredValue::new(id.clone());let selected_id=capture.id.clone();let click_id=capture.id.clone();view!{<button class="capture" aria-pressed=move||detail.get().is_some_and(|d|d.capture.id==selected_id) on:click=move |_|{let u=ui();let task=u.clone();let id=click_id.clone();launch(u,async move{task.select(id).await});}><Show when=move||thumbs.get().get(&id).is_some_and(|u|u.starts_with("data:image/jpeg")) fallback=||view!{<div class="thumb-empty">"◉"</div>}><img src=move||thumbs.get().get(&thumb_id.get_value()).cloned().unwrap_or_default() alt=""/></Show><span>{format!("{}{}",capture.name,if capture.name_truncated{" [truncated]"}else{""})}</span></button>}}).collect_view()}
                 </div><nav class="filmstrip" aria-label="Capture filmstrip">{move||captures.get().into_iter().enumerate().map(|(i,capture)|{let id=capture.id;view!{<button aria-label=format!("Select capture {}: {}",offset.get_untracked() as usize+i+1,capture.name) on:click=move |_|{let u=ui();let task=u.clone();let id=id.clone();launch(u,async move{task.select(id).await});}>{i+1}</button>}}).collect_view()}</nav>
                 <div class="pagination"><button disabled=move||offset.get()==0 on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(offset.get_untracked().saturating_sub(PAGE_SIZE)).await});}>"Previous page"</button><span>{move||format!("Page {}",offset.get()/PAGE_SIZE+1)}</span><button disabled=move||next.get().is_none() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.page(next.get_untracked().unwrap_or(0)).await});}>"Next page"</button></div>
                 <Show when=move||!files.get().is_empty()><h2>"Preserved library files"</h2><ul>{move||file_links(files.get())}</ul></Show>
-                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>{gpu_status.get()}</dd></dl><h3>"Export verified pixels"</h3><button id="export-png" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Png)).await});}>"Export PNG"</button><button id="export-jpeg" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Jpeg)).await});}>"Export JPEG"</button><p>"Flattened stored pixels lose refocus ability. PNG preserves decoded JPEG pixels; JPEG adds compression loss. Unknown color profile. Download the separate Lytronaut provenance record."</p><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
+                </section><aside class="inspector" aria-label="Capture inspector"><h2>"Capture details"</h2>{move||detail.get().map(|d|view!{<p>{format!("{}{}",d.caption,if d.caption_truncated{" [truncated]"}else{""})}</p><dl><dt>"Imported rating"</dt><dd>{d.capture.rating}</dd><dt>"Originals"</dt><dd>{format!("{:?}",d.capabilities.originals)}</dd><dt>"Static preview"</dt><dd>{format!("{:?}",d.capabilities.static_preview)}</dd><dt>"Color profile"</dt><dd>"Unknown / unverified"</dd><dt>"Discrete focus"</dt><dd>{if !video_lambdas.get().is_empty(){"Available · discrete archived browser AVC planes".to_owned()}else if focus_stack.get().is_some(){"Available · discrete stored JPEG planes".to_owned()}else{"Disabled · preview only".to_owned()}}</dd><dt>"Calibrated synthesis"</dt><dd>"Unverified · unsupported"</dd><dt>"Legacy edits"</dt><dd>"Preserved only · pixel parity unverified"</dd><dt>"GPU / video"</dt><dd>{move||if !video_lambdas.get().is_empty(){"Browser AVC · hardware unverified".to_owned()}else{gpu_status.get()}}</dd></dl><h3>"Export verified pixels"</h3><button id="export-png" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Png)).await});}>"Export PNG"</button><button id="export-jpeg" disabled=move||export_busy.get()||stage.get().is_empty() on:click=move |_|{let u=ui();let task=u.clone();launch(u,async move{task.export(Some(ExportFormat::Jpeg)).await});}>"Export JPEG"</button><p>"Flattened stored pixels lose refocus ability. PNG preserves decoded JPEG pixels; JPEG adds compression loss. Unknown color profile. Download the separate Lytronaut provenance record."</p><h3>"Preserved originals"</h3><ul>{file_links(d.originals)}</ul><ul>{d.item_errors.into_iter().map(|e|view!{<li>{format!("{:?}: {:?}",e.role,e.error.code)}</li>}).collect_view()}</ul>})}<p>"Static browsing works without GPU or video codecs. No new raw synthesis or Illum support is claimed."</p></aside></div>
             </main>
         </div>
     }

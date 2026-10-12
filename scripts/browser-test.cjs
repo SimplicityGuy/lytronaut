@@ -42,7 +42,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
         return d;
       };return a;
     };
-   }Object.defineProperty(window,'VideoDecoder',{value:undefined});
+   }window.__nativeVideoDecoder=window.VideoDecoder;Object.defineProperty(window,'VideoDecoder',{value:undefined,writable:true});
    window.__urls={created:0,revoked:0};const create=URL.createObjectURL,revoke=URL.revokeObjectURL;
    URL.createObjectURL=function(...args){window.__urls.created++;return create.apply(this,args);};
    URL.revokeObjectURL=function(...args){window.__urls.revoked++;return revoke.apply(this,args);};
@@ -169,6 +169,31 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   }
   const contrast=await page.evaluate(()=>{const luminance=c=>{const rgb=c.match(/[\d.]+/g).slice(0,3).map(x=>{let v=Number(x)/255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};const ratio=(a,b)=>{a=luminance(a);b=luminance(b);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);};const root=getComputedStyle(document.documentElement),button=getComputedStyle(document.querySelector('.search button'));return {text:ratio(root.color,root.backgroundColor),control:ratio(button.borderTopColor,button.backgroundColor)};});
   assert(contrast.text>=4.5);assert(contrast.control>=3);
+  if(!privateMode){
+   checkpoint='video-ui';await page.evaluate(()=>window.VideoDecoder=window.__nativeVideoDecoder);
+   await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(b=>b.textContent==='Synthetic 000').click());
+   await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Discrete focus:'));
+   await click('Try browser H.264 refocus');await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Archived discrete browser focus decoded'));
+   assert.deepEqual(await page.$eval('.stage img',e=>[e.naturalWidth,e.naturalHeight]),[32,32]);
+   assert.deepEqual(await page.$eval('#focus',e=>[Number(e.min),Number(e.max)]),[-2,3]);
+   await page.$eval('#focus',e=>{e.value='-2';e.dispatchEvent(new Event('input',{bubbles:true}));});
+   await page.waitForFunction(()=>document.querySelector('output[for=focus]').textContent.includes('plane 3')&&document.querySelector('.stage img').complete);
+   assert(await page.evaluate(async()=>{const img=document.querySelector('.stage img');await img.decode();const c=document.createElement('canvas');c.width=c.height=32;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);const p=ctx.getImageData(16,16,1,1).data;c.width=c.height=0;return p[2]>200&&p[0]<40&&p[1]<40;}),'archived nonmonotonic lambda retains selected blue frame');
+   assert(await page.$eval('#orientation',e=>e.disabled));
+   checkpoint='video-corruption';const videoFile=await page.evaluate(async()=>{const l=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');const c=(await (await fetch(`/libraries/${l.id}/captures?limit=100`)).json()).items.find(c=>c.name==='Synthetic 000');return (await (await fetch(`/captures/${c.id}`)).json()).originals.find(f=>f.role==='refocus_stack');});
+   const retainedVideo=await page.$eval('.stage img',e=>e.src);await page.setRequestInterception(true);
+   const badVideo=r=>{if(r.url().endsWith(`/assets/${videoFile.id}/download`))r.respond({status:200,headers:{'Content-Type':'application/octet-stream'},body:Buffer.alloc(videoFile.encoded_bytes)}).catch(()=>{});else r.continue().catch(()=>{});};page.on('request',badVideo);
+   await click('Try browser H.264 refocus');await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Video original integrity failed'));assert.equal(await page.$eval('.stage img',e=>e.src),retainedVideo);
+   await page.setRequestInterception(false);page.off('request',badVideo);
+   checkpoint='video-stale-capture';let heldVideo;await page.setRequestInterception(true);const staleVideo=r=>{if(r.url().endsWith(`/assets/${videoFile.id}/download`)&&!heldVideo)heldVideo=r;else r.continue().catch(()=>{});};page.on('request',staleVideo);
+   await click('Try browser H.264 refocus');for(let i=0;i<100&&!heldVideo;i++)await delay(10);assert(heldVideo);
+   await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(b=>b.textContent==='Synthetic 002').click());await heldVideo.continue().catch(()=>{});
+   await page.waitForFunction(()=>document.querySelector('#focus').disabled&&document.querySelector('.stage img')?.naturalWidth===640);await delay(100);assert.equal(await page.$eval('.stage img',e=>e.naturalWidth),640);await page.setRequestInterception(false);page.off('request',staleVideo);
+   checkpoint='video-absence-fallback';await page.evaluate(()=>{window.VideoDecoder=undefined;[...document.querySelectorAll('.capture')].find(b=>b.textContent==='Synthetic 001').click();});await page.waitForFunction(()=>document.querySelector('.viewer-strip span').textContent==='Synthetic 001'&&document.querySelector('.stage img')?.naturalWidth===640);
+   const staticVideo=await page.$eval('.stage img',e=>e.src);await click('Try browser H.264 refocus');await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Browser video decode unavailable'));assert.equal(await page.$eval('.stage img',e=>e.src),staticVideo);assert(await page.$eval('#focus',e=>e.disabled));
+   await page.evaluate(()=>window.VideoDecoder=window.__nativeVideoDecoder);await click('Try browser H.264 refocus');await page.waitForFunction(()=>document.querySelector('.stage img')?.naturalWidth===32);
+   await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(b=>b.textContent==='Synthetic 002').click());await page.waitForFunction(()=>document.querySelector('.stage img')?.naturalWidth===640);
+  }
   checkpoint='capture-pagination';await click('All captures');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 1'&&document.querySelectorAll('.capture img').length===24,{timeout:120000});let seen=0;
   for(;;){
    const count=await page.$$eval('.capture img',imgs=>imgs.filter(i=>i.complete&&i.naturalWidth>0).length);seen+=count;
@@ -303,7 +328,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   checkpoint='final-logout';await click('Sign out');await page.waitForSelector('#username');
   const unauthorized=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(unauthorized,401);
   assert.equal(errors.length,0);assert(!responses.includes(429));const urls=await page.evaluate(()=>window.__urls);assert.equal(urls.created,urls.revoked);
-  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
+  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,videoHttpRustUi:!privateMode,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
   console.log(JSON.stringify(result));
   fs.writeFileSync(process.env.LYTRONAUT_BROWSER_REPORT||path.join(root,privateMode?'browser-aggregate.json':'browser-results.json'),JSON.stringify(result,null,2),{mode:0o600});
  }finally{if(browser)await browser.close();fs.rmSync(path.join(root,'browser-profile-'+process.pid),{recursive:true,force:true});server.kill('SIGINT');}

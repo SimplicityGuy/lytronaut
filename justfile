@@ -53,3 +53,8 @@ security-scan:
 browser-test:
     npm ci --ignore-scripts --prefix scripts/browser
     bash scripts/browser-test.sh
+
+# Actual platform codec acceptance using independently generated AVC pixels.
+video-test:
+    npm ci --ignore-scripts --prefix scripts/browser
+    node scripts/video-test.cjs
