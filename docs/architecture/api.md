@@ -248,4 +248,11 @@ writable, overwrites an existing target, or activates restored data. The store
 becomes visible only after all validation passes; cancellation/failure removes
 only its exclusively owned temporary target. Interrupted jobs recover as fixed,
 retryable failed reports on restart and their incomplete owned outputs are removed.
+If a job's owned cleanup cannot be proved or completed (foreign collision, denied
+permission, a dependent database object, a marker lost mid-removal), that one job
+is reported `failed` with a retryable `storage_unavailable` error; its files,
+journal and quota stay reserved, it is never offered as ready, and `DELETE` or the
+next startup retries cleanup. The service still starts. Startup is refused only
+when the whole store is unavailable: unreadable export root or restore journal, or
+an unreachable database.
 Logs and errors never contain source paths, row values or individual source hashes.

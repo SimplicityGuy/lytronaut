@@ -138,6 +138,17 @@ instead of being dropped with it.
 If the database is unreachable, permissions deny access or DROP, a dependency
 restricts DROP, or filesystem deletion fails, the journal and reservation remain. Repeated recovery is idempotent; no guessed
 ownership, lost reservation, or unjournaled successful-looking result is allowed.
+
+Blocked cleanup is per job and does not stop the service. A job whose owned cleanup
+cannot be proved or completed is persisted as `failed` with error `cleanup-blocked`
+(reported as a retryable `storage_unavailable` error), logged loudly with its job id,
+and keeps its files, journal and quota; admission keeps counting that quota. A
+published result that can no longer be verified is blocked the same way and is
+never offered as ready. `DELETE` and every startup retry the cleanup; once it
+succeeds the reservation is released and the job reads `interrupted`. Startup is
+refused only for whole-store failures: an unreadable export root or restore journal,
+or an unreachable database (checked after any per-job failure). A journal file name
+that is not an application job id is foreign and is left untouched.
 Without a journal, a `<job>.restored` or `<job>.pending-*` path is not provably
 owned: cleanup leaves it untouched and keeps the job's reservation (no quota is
 released while those bytes remain), exactly like the other fixed transfer names.
@@ -177,8 +188,10 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   status UPDATE, late DELETE racing publication, journal crash cuts (prepared,
   mkdir, marker, rename, namespace created before SchemaOwned, files ready, files
   published with and without a committed success), unjournaled restore paths,
-  live writes during a restore import, and an exactly-at-limit source cell. Every
-  case checks unrelated SQL/filesystem sentinels and the live library.
+  live writes during a restore import, an exactly-at-limit source cell, per-job
+  blocked cleanup that still starts the service, and whole-store failures that
+  still refuse startup. Every case checks unrelated SQL/filesystem sentinels and
+  the live library.
 
 Not covered by an engine test: a database connection lost during cleanup, and
 measured memory under concurrent admission. Coverage is gated separately.

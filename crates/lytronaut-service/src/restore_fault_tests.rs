@@ -355,6 +355,24 @@ impl Env {
         );
         self.sentinels.assert_intact(&self.fx).await;
     }
+    /// A cleanup-blocked job is visible as a failed, retryable storage error,
+    /// keeps its journal-or-paths and quota, and is never ready.
+    async fn assert_blocked(&self, id: &str) {
+        let (state, error, reserved, retained) = self.job(id).await;
+        assert_eq!(
+            (state.as_str(), error.as_deref()),
+            ("failed", Some("cleanup-blocked"))
+        );
+        assert!(reserved + retained > 0, "blocked job must keep its quota");
+        let report = report(&self.api, id).await.unwrap();
+        assert_eq!(report.state, JobState::Failed);
+        assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+        assert!(
+            !self.owned_entries(id).is_empty()
+                || restore_schemas(self.catalog()).await != self.sentinels.restore_schemas
+        );
+        self.sentinels.assert_intact(&self.fx).await;
+    }
     /// A ready restore is published, journaled and reopens with exact values.
     async fn assert_ready(&self, id: &str) -> Journal {
         assert_eq!(self.wait_terminal(id).await, JobState::Succeeded);
@@ -657,25 +675,27 @@ async fn process_kill_mid_restore_then_restart_recovers(pg: bool) {
     )
     .await
     .unwrap();
-    // First restart with ownership proof denied: fail closed, retain everything.
+    // First restart with ownership proof denied: the service still starts, but
+    // only this job is blocked, visibly, with everything it owns retained.
     let pending_marker = journal.pending(&directory).join("restore-owner");
     fs::set_permissions(&pending_marker, fs::Permissions::from_mode(0o000)).unwrap();
-    assert!(
-        Api::open(fx.catalog.clone(), store.clone()).await.is_err(),
-        "unprovable cleanup must fail closed"
-    );
-    assert!(Journal::load(&directory, &id).unwrap().is_some());
-    assert!(journal.pending(&directory).exists());
-    assert!(job(id.clone()).await.1 > 0, "quota must be retained");
-    fs::set_permissions(&pending_marker, fs::Permissions::from_mode(0o600)).unwrap();
-    // Second restart proves ownership and removes exactly the owned state.
-    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    let api = Api::open(fx.catalog.clone(), store.clone())
+        .await
+        .expect("one unprovable job must not refuse startup");
     let env = Env {
         fx,
         store,
         api,
         sentinels,
     };
+    env.assert_blocked(&id).await;
+    assert!(journal.pending(&directory).exists());
+    // A blocked job retries at every startup and stays blocked while unprovable.
+    assert!(env.restart().await);
+    env.assert_blocked(&id).await;
+    fs::set_permissions(&pending_marker, fs::Permissions::from_mode(0o600)).unwrap();
+    // The next restart proves ownership and removes exactly the owned state.
+    assert!(env.restart().await);
     let (state, error, _, _) = env.job(&id).await;
     assert_eq!(
         (state.as_str(), error.as_deref()),
@@ -709,6 +729,8 @@ async fn successful_restore_publishes_and_delete_releases(pg: bool) {
     env.assert_released(&id).await;
     assert!(env.restart().await);
     assert_eq!(env.job(&id).await.0, "cancelled");
+    // Recovery never rewrites a recorded cancellation as an interruption.
+    assert_eq!(env.job(&id).await.1, None);
     env.finish().await;
 }
 
@@ -750,31 +772,39 @@ async fn denied_cleanup_retains_ownership_and_quota_until_retry(pg: bool) {
     let journal = env.assert_ready(&id).await;
     let retained = env.job(&id).await.3;
     deny(&mut env, &journal, true).await;
-    // Late DELETE: cleanup is denied, so ownership, files and quota remain,
-    // and the job is cancelled — never resurrected as ready.
+    // Late DELETE: cleanup is denied, so ownership, files and quota remain and
+    // the job is visibly blocked (failed) — never resurrected as ready.
     assert_ne!(env.delete(&id).await, StatusCode::OK);
-    let (state, _, _, kept) = env.job(&id).await;
-    assert_eq!(state, "cancelled");
-    assert_eq!(kept, retained, "quota must be retained on unproven cleanup");
+    env.assert_blocked(&id).await;
+    assert_eq!(env.job(&id).await.3, retained, "retained quota kept");
     let observed = Journal::load(&env.root(), &id).unwrap().unwrap();
     assert_eq!(observed.phase(), Phase::CleanupPending);
     assert!(journal.result(&env.root()).exists());
+    // Admission keeps honouring the blocked job's retained bytes.
+    sqlx::query("UPDATE export_jobs SET retained=$1 WHERE id=$2")
+        .bind(env.store.limits().reserved_bytes as i64)
+        .bind(&id)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
     assert_eq!(
-        report(&env.api, &id).await.unwrap().state,
-        JobState::Cancelled
+        create(&env.api, "archive", 1).await.unwrap_err().0,
+        StatusCode::TOO_MANY_REQUESTS
     );
+    // The service still starts; the job stays blocked while denied.
     assert!(
-        !env.restart().await,
-        "restart must fail closed while denied"
+        env.restart().await,
+        "one blocked job must not refuse startup"
     );
-    assert_eq!(env.job(&id).await.0, "cancelled");
-    assert_eq!(env.job(&id).await.3, retained);
+    env.assert_blocked(&id).await;
     deny(&mut env, &journal, false).await;
-    assert!(env.restart().await);
-    assert_eq!(env.job(&id).await.0, "cancelled");
-    // Recovery never rewrites a recorded cancellation as an interruption.
-    assert_eq!(env.job(&id).await.1, None);
+    // DELETE retries the owned cleanup and releases everything.
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
     env.assert_released(&id).await;
+    assert_eq!(env.job(&id).await.1.as_deref(), Some("interrupted"));
+    assert!(env.restart().await);
+    assert_ne!(env.job(&id).await.0, "succeeded");
+    create(&env.api, "archive", 1).await.unwrap();
     env.finish().await;
 }
 
@@ -802,9 +832,12 @@ async fn restricted_drop_never_cascades_into_unrelated_objects(mut env: Env) {
     .unwrap();
     assert_eq!(view, 1, "cleanup must not cascade into unrelated objects");
     assert!(restore_schemas(env.catalog()).await.contains(&namespace));
-    assert_eq!(env.job(&id).await.0, "cancelled");
-    assert!(env.job(&id).await.3 > 0, "quota must be retained");
-    assert!(!env.restart().await);
+    env.assert_blocked(&id).await;
+    assert!(
+        env.restart().await,
+        "one blocked job must not refuse startup"
+    );
+    env.assert_blocked(&id).await;
     let (admin, _) = env.fx.pg.as_mut().unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "DROP VIEW \"{sentinel}\".depends_on_restore"
@@ -996,10 +1029,10 @@ async fn journal_fault_matrix_recovers_or_retains(pg: bool) {
         assert!(result.is_err(), "fault {point} must interrupt the restore");
         let journal = Journal::load(&env.root(), &id).unwrap().unwrap();
         if point == "mkdir" {
-            assert!(
-                !env.restart().await,
-                "unmarked pending directory is not proof"
-            );
+            // An unmarked pending directory is not proof: the job is blocked,
+            // the service still starts.
+            assert!(env.restart().await);
+            env.assert_blocked(&id).await;
             assert!(journal.pending(&env.root()).exists());
             assert!(Journal::load(&env.root(), &id).unwrap().is_some());
             assert_eq!(env.job(&id).await.2, 4096, "quota retained");
@@ -1237,18 +1270,72 @@ async fn unjournaled_restore_paths_retain_quota(pg: bool) {
         let path = env.root().join(format!("{id}.{name}"));
         fs::create_dir(&path).unwrap();
         fs::write(path.join("unrelated"), b"not ours").unwrap();
-        assert!(!env.restart().await, "unprovable {name} must fail closed");
+        assert!(
+            env.restart().await,
+            "one unprovable job must not refuse startup"
+        );
+        env.assert_blocked(&id).await;
         assert_eq!(
             env.job(&id).await.2,
             4096,
             "quota retained while {name} remains"
         );
         assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"not ours");
-        assert_eq!(env.job(&id).await.1.as_deref(), Some("failed"));
+        // DELETE retries and still fails closed while the path remains.
+        assert_ne!(env.delete(&id).await, StatusCode::OK);
+        env.assert_blocked(&id).await;
         fs::remove_dir_all(&path).unwrap();
         assert!(env.restart().await);
         env.assert_released(&id).await;
     }
+    env.finish().await;
+}
+
+/// Whole-store failures still refuse startup: an unreadable restore journal,
+/// an unreadable export root, or an unavailable database.
+async fn whole_store_failures_still_refuse_startup(pg: bool) {
+    let env = Env::new(pg).await;
+    let input = env.fx.root.join("journal.bundle");
+    fs::write(&input, archive(0).await).unwrap();
+    let id = create(&env.api, "restore", 4096).await.unwrap();
+    crate::restore_journal::inject_fault("prepared");
+    assert!(
+        bundle::restore_owned(
+            &input,
+            env.catalog(),
+            bundle::RestoreOwner {
+                root: &env.root(),
+                job: &id,
+                reserved: 4096,
+            },
+            env.store.limits(),
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .await
+        .is_err()
+    );
+    let journal = env.root().join(format!("{id}.restore-journal"));
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        !env.restart().await,
+        "unreadable journal must refuse startup"
+    );
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(env.root(), fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        !env.restart().await,
+        "unreadable export root must refuse startup"
+    );
+    fs::set_permissions(env.root(), fs::Permissions::from_mode(0o700)).unwrap();
+    let unavailable = Catalog::open(env.fx.config.clone()).await.unwrap();
+    unavailable.pool().close().await;
+    assert!(
+        Api::open(unavailable, env.store.clone()).await.is_err(),
+        "an unavailable database must refuse startup"
+    );
+    assert!(env.restart().await);
+    env.assert_released(&id).await;
     env.finish().await;
 }
 
@@ -1278,6 +1365,7 @@ matrix! {
     near_limit_source_cell_round_trips_and_over_limit_fails_cleanly => sqlite_near_limit_source, postgres_near_limit_source;
     live_writes_proceed_during_restore_import => sqlite_live_writes_during_import, postgres_live_writes_during_import;
     unjournaled_restore_paths_retain_quota => sqlite_unjournaled_paths, postgres_unjournaled_paths;
+    whole_store_failures_still_refuse_startup => sqlite_whole_store_failures, postgres_whole_store_failures;
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]

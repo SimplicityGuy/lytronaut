@@ -35,6 +35,8 @@ pub(super) async fn migrate(c: &Catalog, s: &Store) -> Result<()> {
         .await?;
     // Reconcile durable SQL/filesystem ownership BEFORE generic interruption
     // cleanup. Denied/disconnected cleanup retains the journal and reservation.
+    // Only whole-store failures (unreadable export root or journal, database
+    // unavailable) refuse startup; one unprovable job is blocked, not fatal.
     recover_restores(c, s).await?;
     sqlx::query("UPDATE export_jobs SET state='failed',error='interrupted' WHERE state IN ('queued','running','cancelling')").execute(c.pool()).await?;
     // Artifacts of interrupted jobs are never offered. Owned files only, no source mutation.
@@ -46,7 +48,9 @@ pub(super) async fn migrate(c: &Catalog, s: &Store) -> Result<()> {
         if OpaqueId::try_from(id.clone()).is_ok() {
             // A restore result without a journal is not guessed-owned by its
             // filename. New restore creation always journals before any side effect.
-            cleanup_result(c, s, &id).await?;
+            if reconcile_or_block(c, s, &id).await.is_err() {
+                store_available(c, s).await?;
+            }
         }
     }
     Ok(())
@@ -183,10 +187,10 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
         error: if state == JobState::Failed {
             Some(ApiError {
                 version: WireVersion::V1,
-                code: if r.try_get::<Option<String>, _>(3)?.as_deref() == Some("unsupported") {
-                    ErrorCode::UnsupportedFormat
-                } else {
-                    ErrorCode::CorruptAsset
+                code: match r.try_get::<Option<String>, _>(3)?.as_deref() {
+                    Some("unsupported") => ErrorCode::UnsupportedFormat,
+                    Some("cleanup-blocked") => ErrorCode::StorageUnavailable,
+                    _ => ErrorCode::CorruptAsset,
                 },
                 retryable: true,
             })
@@ -264,7 +268,9 @@ async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()
     // No journal means no restore-created SQL namespace or directory remains
     // (checked above); only then is the reservation released.
     let mut tx = catalog.begin_write().await?;
-    sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1")
+    // A previously blocked job is now clean; its original reason was replaced
+    // by the blocked marker, so it is reported as interrupted from here on.
+    sqlx::query("UPDATE export_jobs SET retained=0,reserved=0,error=CASE WHEN error='cleanup-blocked' THEN 'interrupted' ELSE error END WHERE id=$1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
@@ -292,8 +298,11 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
             continue;
         };
         if OpaqueId::try_from(id.to_owned()).is_err() {
-            return Err(Failure::invalid());
+            // Not a name this application writes: foreign, left untouched.
+            eprintln!("Lytronaut ignored a foreign restore-journal name in the export root");
+            continue;
         }
+        // An unreadable or malformed journal is a whole-store failure.
         let Some(mut journal) =
             crate::restore_journal::Journal::load(&directory, id).map_err(storage)?
         else {
@@ -310,26 +319,68 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
                     | crate::restore_journal::Phase::JobSucceeded
             )
         {
-            journal.verify_published(&directory).map_err(storage)?;
-            if let Some(namespace) = journal.namespace() {
-                namespace.verify(catalog).await.map_err(storage)?;
+            let verified = match journal.verify_published(&directory) {
+                Ok(()) => match journal.namespace() {
+                    Some(namespace) => namespace.verify(catalog).await,
+                    None => Ok(()),
+                },
+                Err(error) => Err(error),
+            };
+            if verified.is_err() {
+                store_available(catalog, store).await?;
+                // Never offer an unverifiable result as ready; retain it all.
+                block(catalog, id).await;
+                continue;
             }
-            journal
-                .transition(&directory, crate::restore_journal::Phase::JobSucceeded)
-                .map_err(storage)?;
+            // A failed journal fsync here is retried at the next startup; the
+            // database success and verified published files are durable.
+            let _ = journal.transition(&directory, crate::restore_journal::Phase::JobSucceeded);
         } else {
             // Keep an already recorded cancellation/failure reason; only a job
             // that never durably finished is marked interrupted.
             sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE 'failed' END,error=CASE WHEN state IN ('cancelled','failed') THEN error ELSE 'interrupted' END WHERE id=$1")
                 .bind(id).execute(catalog.pool()).await?;
-            cleanup_result(catalog, store, id).await?;
+            if cleanup_result(catalog, store, id).await.is_err() {
+                store_available(catalog, store).await?;
+                block(catalog, id).await;
+            }
         }
     }
     Ok(())
 }
+/// Distinguish a per-job failure from a whole-store outage after a cleanup
+/// error: the export root must be readable and the database reachable.
+async fn store_available(catalog: &Catalog, store: &Store) -> Result<()> {
+    fs::read_dir(root(store)).map_err(storage)?;
+    catalog.healthy().await?;
+    Ok(())
+}
+/// Persist a visible blocked state for a job whose owned cleanup cannot be
+/// proved or completed. Files, journal and quota are all retained; DELETE and
+/// every startup retry it. A blocked job is failed, so it is never ready.
+async fn block(catalog: &Catalog, id: &str) {
+    eprintln!(
+        "Lytronaut job {id}: owned cleanup is blocked; its files, journal and quota are retained. Resolve the reported conflict, then DELETE the job or restart"
+    );
+    if sqlx::query("UPDATE export_jobs SET state='failed',error='cleanup-blocked' WHERE id=$1")
+        .bind(id)
+        .execute(catalog.pool())
+        .await
+        .is_err()
+    {
+        eprintln!("Lytronaut job {id}: the blocked state could not be persisted");
+    }
+}
+async fn reconcile_or_block(catalog: &Catalog, store: &Store, id: &str) -> Result<()> {
+    let result = cleanup_result(catalog, store, id).await;
+    if result.is_err() {
+        block(catalog, id).await;
+    }
+    result
+}
 async fn remove_owned(a: &Api, id: &str) -> Result<()> {
     let _guard = RECONCILE.lock().await;
-    cleanup_result(&a.0.catalog, &a.0.store, id).await
+    reconcile_or_block(&a.0.catalog, &a.0.store, id).await
 }
 
 async fn cancel(
@@ -339,7 +390,8 @@ async fn cancel(
     let r=async {
         let id=path(p)?;report(&a,&id).await?;
         sqlx::query("UPDATE export_jobs SET state=CASE WHEN state IN ('queued','running') THEN 'cancelling' WHEN state='succeeded' THEN 'cancelled' ELSE state END WHERE id=$1").bind(&id).execute(a.0.catalog.pool()).await?;
-        if report(&a,&id).await?.state==JobState::Cancelled {
+        // Cancelled and failed (including cleanup-blocked) jobs retry owned cleanup.
+        if matches!(report(&a,&id).await?.state,JobState::Cancelled|JobState::Failed) {
             remove_owned(&a,&id).await?;
             sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1").bind(&id).execute(a.0.catalog.pool()).await?;
         }
@@ -870,7 +922,9 @@ mod tests {
         .await
         .unwrap();
         assert!(crate::transient_owner::Owner::prepare(&root(&store), &id).is_err());
-        assert!(migrate(&catalog, &store).await.is_err());
+        // Startup proceeds; only this job is blocked, with its quota retained.
+        migrate(&catalog, &store).await.unwrap();
+        assert_eq!(report(&api, &id).await.unwrap().state, JobState::Failed);
         // DELETE's central cleanup path must fail closed on the same proof.
         assert!(remove_owned(&api, &id).await.is_err());
         assert_eq!(fs::read(&sentinel).unwrap(), b"unrelated upload");
@@ -914,7 +968,15 @@ mod tests {
         // Independent crash cut during recursive removal: marker has already
         // vanished, but other contents and the durable ownership intent remain.
         fs::remove_file(directory.join("owner")).unwrap();
-        assert!(migrate(&catalog, &store).await.is_err());
+        // Retained indefinitely (intentional), but startup is not refused: the
+        // job is blocked and visible instead.
+        migrate(&catalog, &store).await.unwrap();
+        let error: Option<String> = sqlx::query_scalar("SELECT error FROM export_jobs WHERE id=$1")
+            .bind(&id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(error.as_deref(), Some("cleanup-blocked"));
         assert!(remove_owned(&api, &id).await.is_err());
         assert_eq!(
             fs::read(directory.join("upload")).unwrap(),

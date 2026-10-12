@@ -252,13 +252,14 @@ recipe is explicit opt-in and runs serially with exact result-count assertions:
   SQLite→PostgreSQL, PostgreSQL→SQLite and PostgreSQL→PostgreSQL round trips, the
   four exact version-1 legacy forms, and near-32 MiB legacy files (one large cell;
   many small rows) restored onto PostgreSQL. SQLite-only counterparts run by default.
-- Fourteen restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
+- Fifteen restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
   archives, quota admission and mid-restore quota, cancellation and shutdown, a
   real SIGKILL of a restoring child process with restart recovery, publish and
   DELETE, owner-revoked (denied) cleanup, restricted DROP refused by an unrelated
   dependent object, failing and ambiguous final status UPDATE, late DELETE racing
   publication, journal crash-cut matrix, unjournaled restore paths, live writes
-  during a restore import, and an exactly-at-limit source cell. Unrelated SQL and
+  during a restore import, an exactly-at-limit source cell, and whole-store
+  failures that refuse startup (per-job blocked cleanup starts the service). Unrelated SQL and
   filesystem sentinels, including restore-named decoys, must survive each case.
 
 The HTTP fixture selects PostgreSQL only with the explicit

@@ -98,6 +98,16 @@ shutdown durable recovery marks unfinished work failed on restart rather than
 offering partial artifacts. Stop your service with `docker compose stop`; do not
 remove volumes when restarting.
 
+If the log reports `Lytronaut job <id>: owned cleanup is blocked`, the service is
+running but that export/restore job holds its files and staging quota because the
+application cannot prove it owns what remains (for example an unrelated file named
+like the job under `staging.exports`, a permission change, or a database object
+that depends on the job's private restore schema). Remove or fix the conflict
+yourself, then `DELETE /exports/<id>` or restart; the job's quota is released only
+after its owned files and schema are gone. A startup failure instead means the
+whole store is unavailable (export work directory or a restore journal unreadable,
+or the database unreachable).
+
 Use the workspace's **Back up originals and catalog** action and download its
 private bundle. Restore uploads into a separate store inside the work volume;
 verify that copy before choosing a stopped-service volume replacement. A bundle
