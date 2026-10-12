@@ -97,6 +97,11 @@ module.exports=async({browser,origin})=>{
     // Select an album/capture, then page both sidebars without changing the viewer.
     await selectComplete(()=>click('.album-item'),0,'/albums/public-sidebar-album-1/captures');
     assert(await page.$('.album-item[aria-pressed="true"]'));
+    for(const selector of ['.library-item','.album-item','.capture']){
+      const tokens=await page.$$eval(selector,buttons=>buttons.map(button=>button.getAttribute('aria-pressed')));
+      assert.equal(tokens.length,24);assert(tokens.every(token=>token==='true'||token==='false'),'valid ARIA pressed tokens');
+      assert.equal(tokens.filter(token=>token==='true').length,1);assert.equal(tokens.filter(token=>token==='false').length,23);
+    }
     const first=await selected();
     await selectComplete(()=>page.evaluate(()=>document.querySelectorAll('.capture')[1].click()),1);
     assert.notEqual((await selected()).capture,first.capture);
