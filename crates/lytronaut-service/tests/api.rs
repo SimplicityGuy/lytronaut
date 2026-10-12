@@ -1297,3 +1297,212 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     }
     panic!("interrupted restore upload must record a durable failed job");
 }
+
+fn live_focus_fixture() -> Vec<u8> {
+    use sha1::{Digest, Sha1};
+    let hash = |b: &[u8]| format!("sha1-{:x}", Sha1::digest(b));
+    let planes: Vec<Vec<u8>> = [[255u8, 0, 0], [0, 0, 255]]
+        .into_iter()
+        .map(|rgb| {
+            let mut bytes = Vec::new();
+            let pixels: Vec<_> = (0..32 * 16).flat_map(|_| rgb).collect();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
+                .encode(&pixels, 32, 16, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            bytes
+        })
+        .collect();
+    let directory=serde_json::to_vec(&json!({"version":{"major":1,"minor":0},"picture":{"recipe":{"cameraSerial":"invented-sensitive-note","sourcePath":"invented-private-path","orientation":8},"accelerationArray":[{"type":"com.lytro.acceleration.refocusStack","vendorContent":{"imageArray":[{"representation":"jpeg","width":32,"height":16,"lambda":-1,"imageRef":hash(&planes[0])},{"representation":"jpeg","width":32,"height":16,"lambda":1,"imageRef":hash(&planes[1])}]}}]}})).unwrap();
+    let mut bytes = b"\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0".to_vec();
+    for (directory, payload) in [
+        (true, directory.as_slice()),
+        (false, planes[0].as_slice()),
+        (false, planes[1].as_slice()),
+    ] {
+        bytes.extend(if directory {
+            b"\x89LFM\r\n\x1a\n"
+        } else {
+            b"\x89LFC\r\n\x1a\n"
+        });
+        bytes.extend([0; 4]);
+        bytes.extend((payload.len() as u32).to_be_bytes());
+        bytes.extend(hash(payload).as_bytes());
+        bytes.extend([0; 35]);
+        bytes.extend(payload);
+        while !bytes.len().is_multiple_of(16) {
+            bytes.push(0);
+        }
+    }
+    bytes
+}
+fn live_zip_entries(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut p = 0;
+    while &bytes[p..p + 4] == b"PK\x03\x04" {
+        let read32 = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+        let read16 = |i| u16::from_le_bytes(bytes[i..i + 2].try_into().unwrap()) as usize;
+        assert_eq!(read16(p + 8), 0);
+        let size = read32(p + 18) as usize;
+        assert_eq!(size, read32(p + 22) as usize);
+        let name = read16(p + 26);
+        let extra = read16(p + 28);
+        let start = p + 30 + name + extra;
+        let payload = &bytes[start..start + size];
+        assert_eq!(crc32fast::hash(payload), read32(p + 14));
+        let name = String::from_utf8(bytes[p + 30..p + 30 + name].to_vec()).unwrap();
+        assert!(out.insert(name, payload.to_vec()).is_none());
+        p = start + size;
+    }
+    assert_eq!(&bytes[p..p + 4], b"PK\x01\x02");
+    assert_eq!(out.len(), 3);
+    out
+}
+#[tokio::test]
+async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retains_originals() {
+    let mut s = Server::new().await;
+    let (cookie, mutation) = s.session().await;
+    let body =
+        json!({"version":1,"kind":"directory","declared_bytes":4*1024*1024,"declared_files":32})
+            .to_string();
+    let response = s
+        .request("POST", "/imports", &mutation, body.as_bytes())
+        .await;
+    assert_eq!(response.0, 201);
+    let import = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let source = live_focus_fixture();
+    let db = s.source(23).await;
+    for (name, bytes) in [
+        ("lytrolibrary.db", db),
+        ("bin/synthetic-p1/stacklq.lfp", source.clone()),
+    ] {
+        let hex: String = name.bytes().map(|b| format!("{b:02x}")).collect();
+        let headers =
+            format!("{mutation}X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: {hex}\r\n");
+        assert_eq!(
+            s.request("PUT", &format!("/imports/{import}/file"), &headers, &bytes)
+                .await
+                .0,
+            204
+        );
+    }
+    assert_eq!(
+        s.request("POST", &format!("/imports/{import}/finish"), &mutation, b"")
+            .await
+            .0,
+        204
+    );
+    let library = s.get("/libraries", &cookie).await["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let captures = s
+        .get(
+            &format!("/libraries/{library}/captures?sort=rating"),
+            &cookie,
+        )
+        .await;
+    let capture = captures["items"][0]["id"].as_str().unwrap();
+    let detail = s.get(&format!("/captures/{capture}"), &cookie).await;
+    let asset = detail["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["role"] == "jpeg_focus_stack")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    for orientation in 1..=8 {
+        let request=json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":1,"orientation":orientation}).to_string();
+        let response = s
+            .request("POST", "/exports", &mutation, request.as_bytes())
+            .await;
+        assert_eq!(response.0, 200);
+        let id = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let done = wait_export(&s, &id, &cookie).await;
+        assert_eq!(done["state"], "succeeded");
+        assert_eq!(done["kind"], "live_photo");
+        let download = s
+            .request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+            .await;
+        assert_eq!(download.0, 200);
+        assert!(download.1.contains("application/zip"));
+        let entries = live_zip_entries(&download.2);
+        let jpg = &entries["focus.JPG"];
+        let movie = &entries["focus.MOV"];
+        let image = image::load_from_memory_with_format(jpg, image::ImageFormat::Jpeg)
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(
+            (image.width(), image.height()),
+            if orientation >= 5 { (16, 32) } else { (32, 16) }
+        );
+        assert!(image.pixels().all(|p| p[2] > 240 && p[0] < 10 && p[1] < 10));
+        assert!(
+            movie
+                .windows(b"com.apple.quicktime.still-image-time".len())
+                .any(|v| v == b"com.apple.quicktime.still-image-time")
+        );
+        let provenance: Value = serde_json::from_slice(&entries["provenance.json"]).unwrap();
+        assert_eq!(provenance["key_seconds"], 1.5);
+        assert_eq!(provenance["selected_stored_plane"], 1);
+        assert_eq!(provenance["orientation"], orientation);
+        assert_eq!(provenance["motion"], "generated_focus_animation");
+        assert_eq!(provenance["camera_recorded_temporal_motion"], false);
+        for forbidden in [
+            b"invented-sensitive-note".as_slice(),
+            b"invented-private-path",
+            asset.as_bytes(),
+        ] {
+            assert!(!download.2.windows(forbidden.len()).any(|v| v == forbidden));
+        }
+        assert_eq!(
+            s.request("DELETE", &format!("/exports/{id}"), &mutation, b"")
+                .await
+                .0,
+            200
+        );
+        assert_eq!(
+            s.request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+                .await
+                .0,
+            404
+        );
+    }
+    let request =
+        json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":63,"orientation":1})
+            .to_string();
+    let response = s
+        .request("POST", "/exports", &mutation, request.as_bytes())
+        .await;
+    assert_eq!(response.0, 200);
+    let id = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait_export(&s, &id, &cookie).await["state"], "failed");
+    assert_eq!(
+        s.request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        s.request("GET", &format!("/assets/{asset}/download"), &cookie, b"")
+            .await
+            .2,
+        source
+    );
+    s.restart().await;
+    assert_eq!(
+        s.request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+            .await
+            .0,
+        404
+    );
+}

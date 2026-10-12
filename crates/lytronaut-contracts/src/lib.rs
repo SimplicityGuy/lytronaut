@@ -708,6 +708,12 @@ pub enum ExportFormat {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExportRequest {
+    LivePhoto {
+        version: WireVersion,
+        asset: OpaqueId,
+        plane_index: usize,
+        orientation: u8,
+    },
     Flatten {
         version: WireVersion,
         asset: OpaqueId,
@@ -722,6 +728,15 @@ pub enum ExportRequest {
 }
 impl ExportRequest {
     pub fn validate(&self) -> Result<(), ContractError> {
+        if let Self::LivePhoto {
+            plane_index,
+            orientation,
+            ..
+        } = self
+            && (*plane_index >= 64 || !(1..=8).contains(orientation))
+        {
+            return Err(ContractError("select a stored key plane and EXIF 1–8"));
+        }
         if let Self::Flatten {
             orientation,
             operations,
@@ -809,6 +824,7 @@ mod export_tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportKind {
+    LivePhoto,
     Flatten,
     Archive,
     Restore,
@@ -842,5 +858,41 @@ mod export_progress_tests {
         let mut invalid = value;
         invalid["completed_bytes"] = serde_json::json!(13);
         assert!(serde_json::from_value::<ExportProgress>(invalid).is_err());
+    }
+}
+
+#[cfg(test)]
+mod live_photo_contract_tests {
+    use super::*;
+    #[test]
+    fn selected_key_and_explicit_transform_are_required_and_unknown_edits_rejected() {
+        let valid = serde_json::json!({"kind":"live_photo","version":1,"asset":"synthetic-focus","plane_index":1,"orientation":6});
+        serde_json::from_value::<ExportRequest>(valid.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        for (key, value) in [
+            ("plane_index", serde_json::json!(64)),
+            ("orientation", serde_json::json!(0)),
+            ("orientation", serde_json::json!(9)),
+        ] {
+            let mut mutated = valid.clone();
+            mutated[key] = value;
+            assert!(
+                serde_json::from_value::<ExportRequest>(mutated)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        for (key, value) in [
+            ("version", serde_json::json!(2)),
+            ("operations", serde_json::json!(["tone"])),
+            ("source_path", serde_json::json!("private")),
+        ] {
+            let mut mutated = valid.clone();
+            mutated[key] = value;
+            assert!(serde_json::from_value::<ExportRequest>(mutated).is_err());
+        }
     }
 }

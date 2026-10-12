@@ -14,6 +14,12 @@ use web_sys::{
 };
 
 type Result<T> = std::result::Result<T, &'static str>;
+#[derive(Clone)]
+struct Export {
+    builder: Rc<RefCell<Option<lytronaut_format::live_photo::Builder>>>,
+    progress: Rc<dyn Fn(usize, usize)>,
+    total: usize,
+}
 thread_local! { static ACTIVE: Cell<bool> = const { Cell::new(false) }; }
 struct Admission;
 impl Drop for Admission {
@@ -120,8 +126,10 @@ async fn attempt(
     selected: usize,
     signal: &AbortSignal,
     software: bool,
+    export: Option<Export>,
 ) -> Result<String> {
     cancelled(signal)?;
+    let timeout = if export.is_some() { 30_000.0 } else { 10_000.0 };
     let sequence = &parsed.sequence;
     let config = VideoDecoderConfig::new(&sequence.codec);
     config.set_coded_width(sequence.coded_width);
@@ -159,6 +167,7 @@ async fn attempt(
     }));
     let out = state.clone();
     let seq = sequence.clone();
+    let export_signal = signal.clone();
     let output = Closure::wrap(Box::new(move |frame: VideoFrame| {
         let frame = Frame(frame); // RAII closes success, malformed output, drawing/context failures.
         let f = &frame.0;
@@ -197,7 +206,11 @@ async fn attempt(
                 return Err("inconsistent visible geometry");
             }
             s.seen[index] = true;
-            if index == selected {
+            if index == selected
+                || export
+                    .as_ref()
+                    .is_some_and(|e| e.builder.borrow().as_ref().is_some_and(|b| b.wants(index)))
+            {
                 let document = web_sys::window()
                     .and_then(|w| w.document())
                     .ok_or("canvas unavailable")?;
@@ -221,14 +234,60 @@ async fn attempt(
                 context
                     .draw_image_with_video_frame(f, 0.0, 0.0)
                     .map_err(|_| "frame draw failed")?;
-                let data = canvas
-                    .0
-                    .to_data_url_with_type("image/jpeg")
-                    .map_err(|_| "frame encode failed")?;
-                if data.len() > 2 * 1024 * 1024 || !data.starts_with("data:image/jpeg;base64,") {
-                    return Err("frame output budget");
+                let data = if index == selected {
+                    let data = canvas
+                        .0
+                        .to_data_url_with_type("image/jpeg")
+                        .map_err(|_| "frame encode failed")?;
+                    if data.len() > 2 * 1024 * 1024 || !data.starts_with("data:image/jpeg;base64,")
+                    {
+                        return Err("frame output budget");
+                    }
+                    data
+                } else {
+                    String::new()
+                };
+                if let Some(export) = &export {
+                    let mut owned = export.builder.borrow_mut();
+                    let builder = owned.as_mut().ok_or("export builder unavailable")?;
+                    if index == selected {
+                        let raw = web_sys::window()
+                            .ok_or("browser unavailable")?
+                            .atob(
+                                data.strip_prefix("data:image/jpeg;base64,")
+                                    .ok_or("invalid key JPEG")?,
+                            )
+                            .map_err(|_| "invalid key JPEG")?
+                            .chars()
+                            .map(|c| c as u8)
+                            .collect::<Vec<_>>();
+                        builder.set_still(&raw).map_err(|_| "key JPEG mismatch")?;
+                    }
+                    if builder.wants(index) {
+                        let pixels = context
+                            .get_image_data(
+                                0.0,
+                                0.0,
+                                f64::from(f.display_width()),
+                                f64::from(f.display_height()),
+                            )
+                            .map_err(|_| "frame pixels unavailable")?;
+                        let image = lytronaut_format::DecodedJpeg {
+                            geometry: lytronaut_format::Geometry {
+                                width: f.display_width(),
+                                height: f.display_height(),
+                            },
+                            rgba: pixels.data().0,
+                        };
+                        builder
+                            .push(index, &image, || export_signal.aborted())
+                            .map_err(|_| "focus movie encoding failed")?;
+                        (export.progress)(builder.completed_planes(), export.total);
+                    }
                 }
-                s.image = Some(data);
+                if index == selected {
+                    s.image = Some(data);
+                }
             }
             Ok(())
         })();
@@ -261,7 +320,7 @@ async fn attempt(
             if state.borrow().error {
                 return Err("decode failed");
             }
-            if js_sys::Date::now() - started > 10_000.0 {
+            if js_sys::Date::now() - started > timeout {
                 return Err("decode timeout");
             }
             pause().await;
@@ -372,12 +431,12 @@ pub async fn decode_container(
         _ => "invalid Annex-B stream",
     })?;
     let (image, software_retry) =
-        match attempt(first.payload, &parsed, selected, signal, false).await {
+        match attempt(first.payload, &parsed, selected, signal, false, None).await {
             Ok(image) => (image, false),
             Err(_) => {
                 cancelled(signal)?;
                 (
-                    attempt(first.payload, &parsed, selected, signal, true).await?,
+                    attempt(first.payload, &parsed, selected, signal, true, None).await?,
                     true,
                 )
             }
@@ -424,4 +483,102 @@ pub async fn decode_archived_refocus(
         .await
         .map_err(JsValue::from_str)?;
     serde_json::to_string(&result).map_err(|_| JsValue::from_str("video report failed"))
+}
+/// Actual configure/decode/encode path, never a support-query-only capability claim.
+/// One decoder, two queued chunks, no decoded-plane cache; complete pair only.
+pub async fn export_container(
+    bytes: &[u8],
+    selected: usize,
+    id: &str,
+    signal: &AbortSignal,
+    progress: impl Fn(usize, usize) + 'static,
+) -> Result<Vec<u8>> {
+    if ACTIVE.replace(true) {
+        return Err("decoder busy");
+    }
+    let _admission = Admission;
+    cancelled(signal)?;
+    let limits = Limits {
+        container_bytes: 8 * 1024 * 1024,
+        dimension: 2048,
+        pixels: 2 * 1024 * 1024,
+        ..Default::default()
+    };
+    let c = Container::parse(bytes, limits).map_err(|_| "invalid video container")?;
+    let processed = processed_asset(&c, limits).map_err(|_| "invalid video metadata")?;
+    let first = processed.planes.first().ok_or("video stack missing")?;
+    if processed.planes.iter().any(|p| {
+        p.representation != Representation::H264
+            || p.geometry != first.geometry
+            || p.block_index != first.block_index
+            || p.section_identity != first.section_identity
+    }) {
+        return Err("unsupported video stack");
+    }
+    let lambdas: Vec<_> = processed
+        .planes
+        .iter()
+        .map(|p| p.lambda.unwrap_or(f64::NAN))
+        .collect();
+    let parsed = AnnexB::parse(
+        first.payload,
+        &lambdas,
+        first.geometry.width,
+        first.geometry.height,
+    )
+    .map_err(|_| "invalid Annex-B stream")?;
+    let plan = lytronaut_format::live_photo::Plan::new(first.geometry, &lambdas, selected)
+        .map_err(|_| "Live Photo geometry or sweep exceeds limits; retain ordinary still export")?;
+    let export = Export {
+        builder: Rc::new(RefCell::new(None)),
+        progress: Rc::new(progress),
+        total: plan.planes().len(),
+    };
+    let mut verified = false;
+    for software in [false, true] {
+        *export.builder.borrow_mut() = Some(
+            lytronaut_format::live_photo::Builder::new(plan.clone(), id)
+                .map_err(|_| "invalid export identifier")?,
+        );
+        if attempt(
+            first.payload,
+            &parsed,
+            selected,
+            signal,
+            software,
+            Some(export.clone()),
+        )
+        .await
+        .is_ok()
+        {
+            verified = true;
+            break;
+        }
+        cancelled(signal)?;
+    }
+    if !verified {
+        return Err("actual browser codec or movie encode failed; retain ordinary still export");
+    }
+    cancelled(signal)?;
+    let pair = export
+        .builder
+        .borrow_mut()
+        .take()
+        .ok_or("export missing")?
+        .finish()
+        .map_err(|_| "incomplete resource pair")?;
+    let provenance=serde_json::to_vec(&serde_json::json!({"version":1,"motion":"generated_focus_animation","duration_seconds":3,"key_seconds":plan.key_seconds(),"selected_stored_plane":selected,"sweep_stored_planes":plan.planes(),"source_variant":"verified_archived_avc_planes","width":plan.geometry().width,"height":plan.geometry().height,"orientation":1,"audio":"none","originals":"unchanged","camera_recorded_temporal_motion":false,"calibrated_synthesis":false,"imported_adjustments":"preserved_only_not_replayed","color":"source profile unknown; platform-decoded RGB; sRGB transfer, BT.709 primaries, BT.601 limited-range YCbCr; JPEG/chroma quantization are lossy"})).map_err(|_|"provenance encoding failed")?;
+    lytronaut_format::live_photo::bundle(pair, &provenance)
+        .map_err(|_| "complete bundle exceeds budget")
+}
+#[wasm_bindgen]
+pub async fn export_archived_live_photo(
+    bytes: Vec<u8>,
+    selected: usize,
+    id: String,
+    signal: AbortSignal,
+) -> std::result::Result<Vec<u8>, JsValue> {
+    export_container(&bytes, selected, &id, &signal, |_, _| {})
+        .await
+        .map_err(JsValue::from_str)
 }
