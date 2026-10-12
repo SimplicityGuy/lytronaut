@@ -11,6 +11,14 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 [dependencies]
 lytronaut-contracts.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "=0.10.9"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 leptos.workspace = true
 wasm-bindgen.workspace = true
+
+wasm-bindgen-futures = "=0.4.79"
+js-sys = "=0.3.106"
+web-sys = { version = "=0.3.106", features = ["Window", "Document", "HtmlInputElement", "File", "FileList", "Blob", "BlobPropertyBag", "Url", "Request", "RequestInit", "RequestCredentials", "Response", "Headers", "AbortController", "AbortSignal", "ReadableStream", "ReadableStreamDefaultReader", "XmlHttpRequest", "XmlHttpRequestUpload", "ProgressEvent", "Event", "KeyboardEvent", "Storage", "Location", "HtmlImageElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Element"] }
+futures = "=0.3.34"

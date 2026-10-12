@@ -48,11 +48,16 @@ mise exec -- just check
 
 `just test` runs contract, live SQLite and HTTP tests. `just check` also builds
 the Leptos WASM client and matching wasm-bindgen glue and checks dependency
-boundaries and redistribution notices. `just serve` starts the native foundation
-on 127.0.0.1:3000 with a redacted health endpoint at `/healthz`; import and asset
-routes await authentication and the downstream implementation beads. Set
-`LYTRONAUT_CATALOG` to the application database path (never a source library).
-There is no deployment image yet. See [workspace contracts](docs/architecture/contracts.md).
+boundaries and redistribution notices. `just serve` builds the Rust/WASM browser
+and starts the native service on http://127.0.0.1:3000. Use the browser's local
+administrator setup/sign-in flow, then select a library directory or ZIP to
+preserve and browse its supported JPEG previews, albums and originals.
+`LYTRONAUT_DATA` selects the private application state directory; never point it
+at a source library. `just browser-test` runs synthetic actual-service/browser
+integration after `just wasm-build build`. There is no deployment image yet.
+See [browser operation and evidence](docs/architecture/browser.md),
+[authentication](docs/architecture/authentication.md), and
+[workspace contracts](docs/architecture/contracts.md).
 
 ## Architecture direction
 

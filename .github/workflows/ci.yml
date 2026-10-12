@@ -39,3 +39,16 @@ jobs:
       - run: mise exec -- just setup
       - run: mise exec -- cargo clippy --locked -p lytronaut-client --target wasm32-unknown-unknown -- -D warnings
       - run: mise exec -- just wasm-build dependencies
+  browser:
+    name: browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      LYTRONAUT_CHROME: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup wasm-build build
+      - run: mise exec -- just browser-test

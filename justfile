@@ -39,7 +39,7 @@ licenses:
 licenses-update:
     cargo run --locked -p xtask -- licenses --write
 
-serve:
+serve: wasm-build
     cargo run --locked -p lytronaut-service
 
 format:
@@ -48,3 +48,8 @@ format:
 security-scan:
     gitleaks git --redact
     gitleaks dir --redact --config .gitleaks.toml .
+
+# Synthetic-only actual service+Rust/WASM browser integration.
+browser-test:
+    npm ci --ignore-scripts --prefix scripts/browser
+    bash scripts/browser-test.sh

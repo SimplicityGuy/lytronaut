@@ -1,0 +1,44 @@
+{
+  "mode": "synthetic",
+  "startupMs": 776,
+  "faultSuite": true,
+  "keyboardNavigation": true,
+  "contrast": {
+    "text": 15.465817170572732,
+    "control": 4.046600406095304
+  },
+  "preZoomURLsReleasedExceptCurrentStage": true,
+  "captures": 30,
+  "albums": 3,
+  "orderedMemberships": [
+    10,
+    10,
+    10
+  ],
+  "assets429": 0,
+  "blobURLsReleased": true,
+  "absentGPUAndCodecInjected": true,
+  "pageErrors": 0,
+  "reducedMotion": true,
+  "forcedColors": true,
+  "AXTree": true,
+  "responsive": true,
+  "zoom": {
+    "inner": 720,
+    "outer": 756,
+    "dpr": 2
+  },
+  "browser": "Chrome/154.0.8037.98",
+  "screenReader": "AX inspection only; VoiceOver not manually certified",
+  "applicationSourceSha256": "ee520952f15d497cc6e95f912812e25f59dfa4493d4f6c8c048ab0d77dbcca4c",
+  "date": "2026-10-11",
+  "sortsCompared": [
+    "name",
+    "rating",
+    "order"
+  ],
+  "zipVariants": [
+    "classic",
+    "small forced ZIP64"
+  ]
+}
