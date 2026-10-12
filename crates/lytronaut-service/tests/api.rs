@@ -1182,8 +1182,27 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         );
         assert!(!failed.exists());
     }
-    // Recomputed checksums do not authorize executable or inconsistent app databases.
+    // Build a legacy SQLite archive independently of the portable backup encoder.
+    // Its trusted schema is a fresh destination created above; VACUUM captures
+    // committed WAL content rather than copying a possibly stale main file.
     use sha2::{Digest, Sha256};
+    let legacy_seed = s.root.join("independent-legacy.db");
+    sqlx::query("VACUUM INTO $1")
+        .bind(legacy_seed.to_str().unwrap())
+        .execute(c.pool())
+        .await
+        .unwrap();
+    let legacy_database = fs::read(&legacy_seed).unwrap();
+    let portable_size = u64::from_le_bytes(before[20..28].try_into().unwrap()) as usize;
+    let mut legacy_before = before[..60].to_vec();
+    legacy_before[..16].copy_from_slice(b"LYTRONAUT-BNDL01");
+    legacy_before[20..28].copy_from_slice(&(legacy_database.len() as u64).to_le_bytes());
+    legacy_before[28..60].copy_from_slice(&Sha256::digest(&legacy_database));
+    legacy_before.extend_from_slice(&legacy_database);
+    legacy_before.extend_from_slice(&before[60 + portable_size..]);
+    let before = legacy_before;
+    // Recomputed checksums do not authorize executable or inconsistent legacy
+    // app databases. The earlier corruption/truncation checks exercise v2.
     let dbsize = u64::from_le_bytes(before[20..28].try_into().unwrap()) as usize;
     for sql in [
         "CREATE TRIGGER hostile AFTER INSERT ON catalog_albums BEGIN DELETE FROM catalog_pictures; END",
@@ -1305,6 +1324,66 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
             .unwrap();
     assert_eq!(obsolete, 0);
     restored_db.close().await.unwrap();
+    // Exercise all four EXACT accepted v1 forms with an independently authored
+    // SQLite payload, not the new logical encoder or an archive-import helper.
+    for (has_order, has_auth) in [(true, false), (true, true), (false, false), (false, true)] {
+        let fixture = s.root.join(format!("v1-{has_order}-{has_auth}.db"));
+        fs::write(&fixture, &legacy_database).unwrap();
+        let mut db =
+            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&fixture))
+                .await
+                .unwrap();
+        if !has_order {
+            sqlx::query("DROP TABLE application_job_order")
+                .execute(&mut db)
+                .await
+                .unwrap();
+        }
+        if has_auth {
+            sqlx::raw_sql("CREATE TABLE auth_account (singleton INTEGER PRIMARY KEY CHECK(singleton=1), username_hash TEXT, password_hash TEXT, bootstrap_hash TEXT); CREATE TABLE auth_sessions (token_hash TEXT PRIMARY KEY, expires INTEGER NOT NULL, created INTEGER NOT NULL); CREATE TABLE auth_attempts (kind TEXT PRIMARY KEY, start INTEGER NOT NULL, count INTEGER NOT NULL);").execute(&mut db).await.unwrap();
+        }
+        db.close().await.unwrap();
+        let payload = fs::read(&fixture).unwrap();
+        let mut wire = before[..60].to_vec();
+        wire[20..28].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+        wire[28..60].copy_from_slice(&Sha256::digest(&payload));
+        wire.extend_from_slice(&payload);
+        wire.extend_from_slice(&before[60 + dbsize..]);
+        let input = s.root.join(format!("v1-{has_order}-{has_auth}.bundle"));
+        fs::write(&input, wire).unwrap();
+        let target = s.root.join(format!("v1-{has_order}-{has_auth}-restored"));
+        bundle::restore(
+            &input,
+            &target,
+            &expected,
+            store.limits(),
+            &cancel,
+            &progress,
+        )
+        .await
+        .unwrap();
+        let mut db = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new().filename(target.join("store/catalog.db")),
+        )
+        .await
+        .unwrap();
+        let auth_tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE name IN ('auth_account','auth_sessions','auth_attempts')").fetch_one(&mut db).await.unwrap();
+        assert_eq!(auth_tables, 0);
+        let copied: Vec<String> = sqlx::query_scalar(
+            "SELECT hex(original) FROM catalog_records ORDER BY version,kind,ordinal",
+        )
+        .fetch_all(&mut db)
+        .await
+        .unwrap();
+        let expected_records: Vec<String> = sqlx::query_scalar(
+            "SELECT hex(original) FROM catalog_records ORDER BY version,kind,ordinal",
+        )
+        .fetch_all(c.pool())
+        .await
+        .unwrap();
+        assert_eq!(copied, expected_records);
+        db.close().await.unwrap();
+    }
     // Actual HTTP archive and inbound streaming restore; obsolete authentication state never carried into restored DB.
     let r = s
         .request(
