@@ -216,9 +216,15 @@ These snapshots do not capture every reallocation, JS physical backing or JSON
 heap. `complete` means only that the event buffer did not overflow; `dropped > 0`
 invalidates even that partial coverage. Fixed observer buffer bytes are reported; returned report Vec and serialization
 String allocations remain separate and unmeasured; no event contains an identifier, path or pixel contents.
-No test script invokes these new start/take exports yet, and no observations
-have been executed for this source revision. Overflow/reset tests are source-only
-until the feature test build is run.
+The synthetic owner harness invokes start/take around its existing final
+successful mounted UI export, after the viewer has settled. It validates the
+bounded fixed schema, requires every UI stage and no overflow, excludes the
+external JS-input seam, and writes the partial numeric trace into the existing
+owner result artifact with the same feature program/source identity. It performs
+no independent pair verification during collection. The trace labels its 32×32 synthetic geometry, observed source length and
+existing 8 MiB source admission cap. It is not a maximum-geometry or metadata-heap
+proof. No observations have been executed for
+this source revision; overflow/reset tests and this harness change await CI.
 
 Current export metadata admission inherits format defaults (2 MiB JSON,
 100,000 nodes, 1,024 sections), whereas viewing specifies 256 KiB JSON,

@@ -5,7 +5,7 @@ module.exports = async ({page, click, delay}) => {
   await page.evaluate(async () => {
     // Same URL as assets/index.html: reuse the already initialized module.
     window.__ownerModule = await import('/client/lytronaut_client.js');
-    if (typeof window.__ownerModule.harness_dispose !== 'function' || typeof window.__ownerModule.harness_remount !== 'function') throw Error('test-harness artifact required');
+    if (['harness_dispose','harness_remount','harness_capacity_start','harness_capacity_take'].some(name=>typeof window.__ownerModule[name]!=='function')) throw Error('test-harness artifact required');
     window.__owner = {created:0, closed:0, outputs:0, framesClosed:0, downloads:0, aborts:0};
     window.__ownerNative = {decoder:VideoDecoder, fetch:window.fetch.bind(window), timer:window.setTimeout.bind(window), anchor:HTMLAnchorElement.prototype.click};
     const close = VideoFrame.prototype.close, abort = AbortController.prototype.abort;
@@ -105,10 +105,44 @@ module.exports = async ({page, click, delay}) => {
   await delay(100);await released();
   assert.equal(await page.evaluate(()=>window.__owner.downloads),2,'timer cleanup creates no later download');
   await remount();
-  await click('Export Live Photo pair (.zip)');
-  await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Complete Live Photo ZIP downloaded'));
+  // Observe the existing final successful UI export only. readyVideo has settled;
+  // no public JS input clone or independent pair-verifier work enters this trace.
+  await page.waitForFunction(()=>{const image=document.querySelector('.stage img');return image?.complete&&image.naturalWidth===32&&image.naturalHeight===32;});
+  const geometry=await page.$eval('.stage img',image=>({width:image.naturalWidth,height:image.naturalHeight}));
+  assert.deepEqual(geometry,{width:32,height:32},'tiny synthetic UI fixture scope');
+  await page.evaluate(()=>window.__ownerModule.harness_capacity_start());
+  let capacityText;
+  try {
+    await click('Export Live Photo pair (.zip)');
+    await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Complete Live Photo ZIP downloaded'));
+  } finally {
+    capacityText=await page.evaluate(()=>{
+      const text=window.__ownerModule.harness_capacity_take();
+      if(typeof text!=='string'||text.length>192*1024)throw Error('bounded capacity report required');
+      return text;
+    });
+  }
+  const capacities=JSON.parse(capacityText);
+  const keys=(value,expected)=>assert.deepEqual(Object.keys(value).sort(),[...expected].sort(),'fixed capacity record schema');
+  keys(capacities,['observations','dropped','complete','observer_storage_bytes']);
+  assert.equal(capacities.complete,true,'partial trace must not overflow');
+  assert.equal(capacities.dropped,0);
+  assert(Number.isSafeInteger(capacities.observer_storage_bytes)&&capacities.observer_storage_bytes>0&&capacities.observer_storage_bytes<=256*1024);
+  assert(Array.isArray(capacities.observations)&&capacities.observations.length>0&&capacities.observations.length<=1024);
+  const stages=new Set(['fetch_before_extend','fetch_after_extend','ui_source_begin','ui_source_end','selected_jpeg','pixel_strip','pcm_input','pcm_escape','segments','paired_jpeg','assembly','package','download_array']);
+  for(const observation of capacities.observations) {
+    keys(observation,['stage','bytes']);
+    assert(stages.has(observation.stage),'only fixed UI capacity stages are allowed');
+    assert(Array.isArray(observation.bytes)&&observation.bytes.length===4);
+    for(const bytes of observation.bytes)assert(Number.isSafeInteger(bytes)&&bytes>=0&&bytes<=128*1024*1024,'bounded numeric capacity only');
+  }
+  for(const stage of stages)assert(capacities.observations.some(o=>o.stage===stage),`required partial UI stage: ${stage}`);
+  const sources=capacities.observations.filter(o=>o.stage==='ui_source_begin');
+  assert.equal(sources.length,1,'one actual UI export observed');
+  assert(sources[0].bytes[1]>0&&sources[0].bytes[1]<=8*1024*1024,'existing source admission scope');
+  assert.equal(capacities.observations.filter(o=>o.stage==='download_array').length,1,'one complete UI download observed');
   await page.evaluate(()=>window.__ownerModule.harness_dispose());await released();
   const counts=await page.evaluate(()=>window.__owner);
   assert.equal(counts.downloads,3,'complete export works after every actual owner disposal');
-  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,...counts};
+  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,partialCapacityTrace:{path:"mounted-ui",geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,...capacities},...counts};
 };
