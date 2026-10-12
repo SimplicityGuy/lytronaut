@@ -10,7 +10,7 @@ pub mod restore_namespace;
 mod source_text;
 mod sqlite_schema;
 mod zip;
-use database::{ApplicationDatabase, JobKind};
+use database::{ApplicationDatabase, JobKind, WriteAdmission};
 pub use database::{Backend, DatabaseConfig, DatabaseError};
 pub use intake::{FaultPoint, Limits, SourceEntry, StorageError, Store};
 use sqlx::{Any, AnyPool, SqliteConnection, Transaction};
@@ -36,7 +36,15 @@ impl Catalog {
             .map_err(|e| sqlx::Error::Protocol(e.to_string()))
     }
     pub async fn open(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        let database = ApplicationDatabase::open(config).await?;
+        Self::open_with(config, WriteAdmission::Deployment).await
+    }
+    async fn open_with(
+        config: DatabaseConfig,
+        admission: WriteAdmission,
+    ) -> Result<Self, DatabaseError> {
+        let database = ApplicationDatabase::open(config)
+            .await?
+            .with_admission(admission);
         if database.backend == Backend::Sqlite {
             // Only the application database had historical built-in auth state.
             // Imported Desktop SQLite and immutable originals never enter here.
@@ -158,7 +166,13 @@ impl Catalog {
         namespace
             .validate()
             .map_err(|_| DatabaseError::Configuration)?;
-        Self::open(self.database.namespace_config(namespace.schema())?).await
+        // The namespace is exclusively owned by one restore job (journaled nonce
+        // marker), so its import never contends on the live deployment's key.
+        Self::open_with(
+            self.database.namespace_config(namespace.schema())?,
+            WriteAdmission::ExclusiveRestore,
+        )
+        .await
     }
 }
 #[cfg(test)]

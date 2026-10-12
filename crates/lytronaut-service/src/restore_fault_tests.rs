@@ -1075,6 +1075,43 @@ async fn near_limit_source_cell_round_trips_and_over_limit_fails_cleanly(pg: boo
     env.finish().await;
 }
 
+/// A large row import into the restore's private namespace must not hold the
+/// live deployment's writer admission: live export admission and plain writes
+/// complete promptly (well under the 5 s PostgreSQL lock_timeout) mid-import.
+async fn live_writes_proceed_during_restore_import(pg: bool) {
+    let env = Env::new(pg).await;
+    let (_, id) = env.upload(archive(BULK_ROWS).await).await;
+    let id = id.unwrap();
+    let journal = env.wait_restoring(&id).await;
+    // Originals are staged; the single row-import transaction is now running.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let started = std::time::Instant::now();
+    let admitted = create(&env.api, "archive", 1).await.unwrap();
+    let mut tx = env.catalog().begin_write().await.unwrap();
+    sqlx::query("UPDATE export_jobs SET completed=completed WHERE id=$1")
+        .bind(&admitted)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "live writers waited {elapsed:?} behind the restore import"
+    );
+    let observed = Journal::load(&env.root(), &id).unwrap().unwrap();
+    assert!(
+        matches!(observed.phase(), Phase::Prepared | Phase::SchemaOwned),
+        "restore import finished before the live write; enlarge the fixture"
+    );
+    assert!(!journal.result(&env.root()).exists());
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    assert_eq!(env.wait_terminal(&id).await, JobState::Cancelled);
+    env.assert_released(&id).await;
+    assert_eq!(env.delete(&admitted).await, StatusCode::OK);
+    env.finish().await;
+}
+
 macro_rules! matrix {
     ($($scenario:ident => $sqlite:ident, $postgres:ident;)*) => {$(
         #[tokio::test]
@@ -1099,6 +1136,7 @@ matrix! {
     late_delete_racing_publication_never_resurrects_ready => sqlite_late_delete, postgres_late_delete;
     journal_fault_matrix_recovers_or_retains => sqlite_journal_fault_matrix, postgres_journal_fault_matrix;
     near_limit_source_cell_round_trips_and_over_limit_fails_cleanly => sqlite_near_limit_source, postgres_near_limit_source;
+    live_writes_proceed_during_restore_import => sqlite_live_writes_during_import, postgres_live_writes_during_import;
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]

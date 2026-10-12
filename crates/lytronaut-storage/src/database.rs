@@ -135,6 +135,17 @@ pub(crate) struct ApplicationDatabase {
     sqlite_options: Option<SqliteConnectOptions>,
     sqlite_memory: bool,
     postgres_url: Option<String>,
+    admission: WriteAdmission,
+}
+/// Which writers a PostgreSQL write transaction must serialize against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum WriteAdmission {
+    /// The live deployment: every writer shares one database-wide advisory key.
+    Deployment,
+    /// A freshly created, exclusively owned restore namespace. Only its single
+    /// restore job writes there, so it must not hold the deployment's key for
+    /// the length of a row import and stall live intake/export admission.
+    ExclusiveRestore,
 }
 impl ApplicationDatabase {
     pub(crate) async fn open(config: DatabaseConfig) -> Result<Self, DatabaseError> {
@@ -239,7 +250,12 @@ impl ApplicationDatabase {
             sqlite_options,
             sqlite_memory,
             postgres_url,
+            admission: WriteAdmission::Deployment,
         })
+    }
+    pub(crate) fn with_admission(mut self, admission: WriteAdmission) -> Self {
+        self.admission = admission;
+        self
     }
     pub(crate) fn namespace_config(&self, schema: &str) -> Result<DatabaseConfig, DatabaseError> {
         DatabaseConfig::Postgres(
@@ -257,10 +273,12 @@ impl ApplicationDatabase {
             Backend::Sqlite => self.pool.begin_with("BEGIN IMMEDIATE").await,
             Backend::Postgres => {
                 let mut tx = self.pool.begin().await?;
-                // Fixed namespace for this application database, not user-controlled data.
-                sqlx::query("SELECT pg_advisory_xact_lock(1280922706, 1)")
-                    .execute(&mut *tx)
-                    .await?;
+                if self.admission == WriteAdmission::Deployment {
+                    // Fixed namespace for this application database, not user-controlled data.
+                    sqlx::query("SELECT pg_advisory_xact_lock(1280922706, 1)")
+                        .execute(&mut *tx)
+                        .await?;
+                }
                 Ok(tx)
             }
         }
