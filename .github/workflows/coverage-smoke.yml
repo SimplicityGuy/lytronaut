@@ -1,0 +1,85 @@
+# THROWAWAY spike (lytronaut-cjq step 1): can real LLVM source-based coverage be
+# collected from Rust/WASM running in headless Chrome? Not for main.
+name: coverage-smoke
+
+on:
+  push:
+    branches: [spike/coverage-smoke]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: A-llvm23
+            toolchain: nightly-2026-10-01
+            expect_llvm: "23.1.1"
+            minicov: "0.3.9"
+          - variant: B-llvm22-control
+            toolchain: nightly-2026-02-18
+            expect_llvm: "22."
+            minicov: "0.3.8"
+    env:
+      TOOLCHAIN: ${{ matrix.toolchain }}
+      EXPECT_LLVM: ${{ matrix.expect_llvm }}
+      MINICOV: ${{ matrix.minicov }}
+      WB_VERSION: 0.2.129
+      WB_SHA256: 82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Install toolchain
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --component llvm-tools-preview --target wasm32-unknown-unknown
+          rustc "+$TOOLCHAIN" -vV
+      - name: Install clang/lld
+        run: |
+          if ! clang --print-targets 2>/dev/null | grep -q wasm32; then
+            sudo apt-get update && sudo apt-get install -y clang lld llvm
+          fi
+          clang --version
+          ls /usr/bin/llvm-ar* || true
+      - name: Install wasm-bindgen-cli (prebuilt, sha256-pinned)
+        run: |
+          d="$RUNNER_TEMP/wb"; mkdir -p "$d"; cd "$d"
+          f="wasm-bindgen-${WB_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSLO "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WB_VERSION}/${f}.tar.gz"
+          echo "${WB_SHA256}  ${f}.tar.gz" | sha256sum -c -
+          tar xzf "${f}.tar.gz"
+          echo "WB_BIN=$d/${f}/wasm-bindgen" >> "$GITHUB_ENV"
+      - name: Install puppeteer-core
+        run: |
+          d="$RUNNER_TEMP/node"; mkdir -p "$d"; cd "$d"
+          echo '{"name":"covsmoke-driver","private":true,"type":"module"}' > package.json
+          PUPPETEER_SKIP_DOWNLOAD=1 npm install --no-audit --no-fund puppeteer-core@25.13.0
+          cp "$GITHUB_WORKSPACE/spike/coverage-smoke/drive.mjs" "$d/"
+          echo "NODE_DIR=$d" >> "$GITHUB_ENV"
+      - name: Build, run in headless Chrome, analyze coverage
+        env:
+          OUT: ${{ runner.temp }}/out
+          SPIKE_DIR: ${{ github.workspace }}/spike/coverage-smoke
+        run: bash spike/coverage-smoke/run.sh
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-smoke-${{ matrix.variant }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: warn
