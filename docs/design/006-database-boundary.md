@@ -200,3 +200,13 @@ and notice package identities agree statically (342 locked identities, 336 exter
 packages). Cargo resolution and licence regeneration have not run on this merged
 source. The earlier 31 SQLite and seven PostgreSQL passes remain explicitly bound
 to the pre-integration preliminary checkpoint; they are not evidence for this tree.
+
+
+A subsequent limited remote CI run rejected that offline reconstructed lock under
+`cargo fetch --locked`. Authorized actual `cargo metadata --offline` resolution
+kept every package identity/version/checksum and corrected feature edges after
+auth removal (digest no longer enables its optional subtle edge), redundant
+rand_core qualifiers and semantic package ordering. Actual locked offline metadata
+now accepts the file, and the hash-verified frozen notice checker verifies all
+336 external packages without compilation or downloads. This metadata evidence
+also does not replace runtime tests or the final gate on the integrated source.
