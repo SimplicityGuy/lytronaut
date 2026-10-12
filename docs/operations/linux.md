@@ -121,3 +121,23 @@ This test-only Rust ingress relay connects the host runner to the service's
 internal network. The application has no external route; the relay forwards only
 to that fixed service and is absent from the application image.
 See the bead's validation record for measured architecture and artifact evidence.
+
+The Justfile shares the container build and proof commands with CI. On a native
+Linux host, choose an architecture, local image names, exact source revision and
+an evidence output directory explicitly:
+
+```sh
+mise exec -- cargo build --locked -p lytronaut-service --example synthetic_jpeg
+revision=$(git rev-parse HEAD)
+mise exec -- just container-build amd64 lytronaut:local lytronaut:smoke-relay "$revision"
+mise exec -- just container-artifacts amd64 lytronaut:local /tmp/lytronaut-evidence
+mise exec -- just container-smoke amd64 lytronaut:local lytronaut:smoke-relay "$revision" /tmp/lytronaut-evidence
+mise exec -- just container-evidence amd64 "$revision" /tmp/lytronaut-evidence
+mise exec -- just container-bundle /tmp/lytronaut-evidence /tmp/lytronaut-evidence.tar.gz
+```
+
+Use `arm64` on a native arm64 Linux host. Runtime smoke may also run under declared
+emulation; the evidence verifier deliberately requires a matching native Linux
+runner. CI stores only programs, the saved image, build logs and synthetic
+aggregate results, with a 128 MiB archive cap and three-day artifact retention.
+It retains bounded failed-run evidence separately from a verified passing report.

@@ -25,15 +25,34 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
+      LYTRONAUT_TEST_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      LYTRONAUT_EVIDENCE_DIRECTORY: ${{ runner.temp }}/lytronaut-container-evidence
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mkdir -p "$LYTRONAUT_EVIDENCE_DIRECTORY"
       - run: mise exec -- just setup
       - run: mise exec -- cargo build --locked -p lytronaut-service --example synthetic_jpeg
       - run: docker compose config --quiet
-      - run: docker build --platform linux/${{ matrix.arch }} --tag lytronaut:ci --build-arg SOURCE_REVISION=${{ github.sha }} .
-      - run: docker build --platform linux/${{ matrix.arch }} --tag lytronaut:smoke-relay --file scripts/Dockerfile.smoke-relay scripts
+      - name: Build exact source image and test ingress relay
+        run: mise exec -- just container-build "${{ matrix.arch }}" lytronaut:ci lytronaut:smoke-relay "$LYTRONAUT_TEST_REVISION" 2>&1 | tee "$LYTRONAUT_EVIDENCE_DIRECTORY/build.log"
+      - name: Freeze exact programs and image
+        run: mise exec -- just container-artifacts "${{ matrix.arch }}" lytronaut:ci "$LYTRONAUT_EVIDENCE_DIRECTORY"
       - name: Runtime and package inventory
-        run: mise exec -- python3 scripts/container-smoke.py lytronaut:ci linux/${{ matrix.arch }}
-        env:
-          LYTRONAUT_TEST_REVISION: ${{ github.sha }}
+        run: mise exec -- just container-smoke "${{ matrix.arch }}" lytronaut:ci lytronaut:smoke-relay "$LYTRONAUT_TEST_REVISION" "$LYTRONAUT_EVIDENCE_DIRECTORY"
+      - name: Verify native architecture, source and exercised programs
+        run: mise exec -- just container-evidence "${{ matrix.arch }}" "$LYTRONAUT_TEST_REVISION" "$LYTRONAUT_EVIDENCE_DIRECTORY"
+      - name: Preserve available evidence, including failed runs
+        id: bundle
+        if: always()
+        run: mise exec -- just container-bundle "$LYTRONAUT_EVIDENCE_DIRECTORY" "${{ runner.temp }}/lytronaut-container-${{ matrix.arch }}.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.bundle.outcome == 'success'
+        with:
+          name: lytronaut-container-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lytronaut-container-${{ matrix.arch }}.tar.gz
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
