@@ -20,10 +20,13 @@ async function stopProcess(child,signal,ms){
   if(!child.kill(signal))throw Error('owned process termination unavailable');
   await bounded(new Promise(resolve=>{if(child.exitCode!==null||child.signalCode!==null)resolve();else child.once('exit',resolve);}),ms);
 }
-async function catalog(root,bytes){
+async function catalog(root,bytes,libraryUUID){
+  assert(['public-jpeg-stress-library','public-jpeg-retry-library'].includes(libraryUUID));
   fs.mkdirSync(root,{mode:0o700});fs.writeFileSync(path.join(root,'synthetic.video.lfp'),bytes,{mode:0o600,flag:'wx'});
   await runFile(path.join(target,'debug/examples/synthetic_jpeg'),[path.join(root,'synthetic.jpg')],{timeout:30000,maxBuffer:1024});
   await runFile('python3',[path.join(__dirname,'synthetic-library.py'),root],{timeout:30000,maxBuffer:1024});
+  // Own generated fixture only: different original bytes belong to independent libraries.
+  await runFile('python3',['-c','import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=c.execute("UPDATE event SET library_uuid=? WHERE library_uuid=?",(sys.argv[2],"synthetic-library")).rowcount; assert n==1; c.commit(); c.close()',path.join(root,'Synthetic.lytrolibrary','lytrolibrary.db'),libraryUUID],{timeout:30000,maxBuffer:1024});
   return path.join(root,'Synthetic.lytrolibrary');
 }
 async function trial(index,bitrate){
@@ -60,8 +63,8 @@ async function trial(index,bitrate){
     assert.equal(authored.authoredFrames,5);assert.equal(authored.keyChunks+authored.deltaChunks,5);
     Object.assign(report,{sourceBytes:authored.bytes.length,encodedBytes:authored.encodedBytes,authoredFrames:authored.authoredFrames,keyChunks:authored.keyChunks,deltaChunks:authored.deltaChunks});
     const stressBuffer=Buffer.from(authored.bytes),stressDigest=crypto.createHash('sha256').update(stressBuffer).digest('hex');
-    const stressCatalog=await catalog(path.join(scratch,'stress'),stressBuffer);authored.bytes=null;
-    const retryCatalog=await catalog(path.join(scratch,'retry'),retryBytes);
+    const stressCatalog=await catalog(path.join(scratch,'stress'),stressBuffer,'public-jpeg-stress-library');authored.bytes=null;
+    const retryCatalog=await catalog(path.join(scratch,'retry'),retryBytes,'public-jpeg-retry-library');
     const click=async text=>page.waitForFunction(text=>{const button=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===text&&!b.disabled);if(!button)return false;button.click();return true;},{polling:50},text);
     const importCatalog=async directory=>{
       Object.assign(report,{importKind:directory===stressCatalog?'stress':'retry',importPhase:'upload',completedLibraryFound:false,catalogState:'unobserved',targetCapturePresent:false,sourcePresent:false,digestMatch:false,sizeMatch:false});
