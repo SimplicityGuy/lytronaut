@@ -1369,7 +1369,7 @@ fn live_zip_entries(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>>
 #[tokio::test]
 async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retains_originals() {
     let mut s = Server::new().await;
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     let body =
         json!({"version":1,"kind":"directory","declared_bytes":4*1024*1024,"declared_files":32})
             .to_string();
@@ -1403,18 +1403,18 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
             .0,
         204
     );
-    let library = s.get("/libraries", &cookie).await["items"][0]["id"]
+    let library = s.get("/libraries", &headers).await["items"][0]["id"]
         .as_str()
         .unwrap()
         .to_owned();
     let captures = s
         .get(
             &format!("/libraries/{library}/captures?sort=rating"),
-            &cookie,
+            &headers,
         )
         .await;
     let capture = captures["items"][0]["id"].as_str().unwrap();
-    let detail = s.get(&format!("/captures/{capture}"), &cookie).await;
+    let detail = s.get(&format!("/captures/{capture}"), &headers).await;
     let asset = detail["originals"]
         .as_array()
         .unwrap()
@@ -1433,11 +1433,11 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
             .as_str()
             .unwrap()
             .to_owned();
-        let done = wait_export(&s, &id, &cookie).await;
+        let done = wait_export(&s, &id, &headers).await;
         assert_eq!(done["state"], "succeeded");
         assert_eq!(done["kind"], "live_photo");
         let download = s
-            .request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+            .request("GET", &format!("/exports/{id}/download"), &headers, b"")
             .await;
         assert_eq!(download.0, 200);
         assert!(download.1.contains("application/zip"));
@@ -1477,7 +1477,7 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
             200
         );
         assert_eq!(
-            s.request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+            s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
                 .await
                 .0,
             404
@@ -1498,7 +1498,7 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
         .request(
             "GET",
             &format!("/exports/{cancel_id}/download"),
-            &cookie,
+            &headers,
             b"",
         )
         .await;
@@ -1521,7 +1521,7 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
         s.request(
             "GET",
             &format!("/exports/{cancel_id}/download"),
-            &cookie,
+            &headers,
             b""
         )
         .await
@@ -1539,22 +1539,22 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(wait_export(&s, &id, &cookie).await["state"], "failed");
+    assert_eq!(wait_export(&s, &id, &headers).await["state"], "failed");
     assert_eq!(
-        s.request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
             .await
             .0,
         404
     );
     assert_eq!(
-        s.request("GET", &format!("/assets/{asset}/download"), &cookie, b"")
+        s.request("GET", &format!("/assets/{asset}/download"), &headers, b"")
             .await
             .2,
         source
     );
     s.restart().await;
     assert_eq!(
-        s.request("GET", &format!("/exports/{id}/download"), &cookie, b"")
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
             .await
             .0,
         404
