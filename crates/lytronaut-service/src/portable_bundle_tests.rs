@@ -262,9 +262,11 @@ async fn round_trip(source_pg: bool, destination_pg: bool) {
     restore_owned(
         &archive,
         &destination.catalog,
-        &export_root,
-        "synthetic-restore",
-        1024 * 1024 * 1024,
+        RestoreOwner {
+            root: &export_root,
+            job: "synthetic-restore",
+            reserved: 1024 * 1024 * 1024,
+        },
         store.limits(),
         &cancel,
         &progress,

@@ -495,9 +495,11 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                     let result = crate::bundle::restore_owned(
                         &input,
                         &worker.0.catalog,
-                        &root(&worker.0.store),
-                        &job,
-                        u64::try_from(reserved).map_err(storage)?,
+                        crate::bundle::RestoreOwner {
+                            root: &root(&worker.0.store),
+                            job: &job,
+                            reserved: u64::try_from(reserved).map_err(storage)?,
+                        },
                         worker.0.store.limits(),
                         &flag,
                         &progress,

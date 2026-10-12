@@ -657,20 +657,31 @@ pub async fn restore(
     guard.0 = PathBuf::new();
     Ok(report)
 }
+/// Durable ownership identity of one restore job: the private results root its
+/// journal lives under, the owning job id and the quota it has reserved.
+#[derive(Clone, Copy)]
+pub struct RestoreOwner<'a> {
+    pub root: &'a Path,
+    pub job: &'a str,
+    pub reserved: u64,
+}
 /// Production isolated restore on the deployment-selected backend. The durable
 /// journal survives EVERY error, including prepare returning an error before a
 /// Journal value can be returned to the caller. Finalizer reloads it by job.
 pub async fn restore_owned(
     input: &Path,
     active: &Catalog,
-    root: &Path,
-    job: &str,
-    reserved: u64,
+    owner: RestoreOwner<'_>,
     limits: &Limits,
     cancel: &AtomicBool,
     progress: &std::sync::atomic::AtomicU64,
 ) -> Result<BundleReport, E> {
     use crate::restore_journal::{Journal, Phase};
+    let RestoreOwner {
+        root,
+        job,
+        reserved,
+    } = owner;
     let namespace = if active.backend() == lytronaut_storage::Backend::Postgres {
         let mut nonce = [0; 32];
         getrandom::fill(&mut nonce).map_err(|_| E::Unavailable)?;
