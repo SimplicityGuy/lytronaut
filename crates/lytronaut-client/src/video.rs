@@ -561,30 +561,30 @@ pub async fn export_container(
         pixels: 2 * 1024 * 1024,
         ..Default::default()
     };
-    let c = Container::parse(bytes, limits).map_err(|_| "invalid video container")?;
-    let processed = processed_asset(&c, limits).map_err(|_| "invalid video metadata")?;
-    let first = processed.planes.first().ok_or("video stack missing")?;
-    if processed.planes.iter().any(|p| {
-        p.representation != Representation::H264
-            || p.geometry != first.geometry
-            || p.block_index != first.block_index
-            || p.section_identity != first.section_identity
-    }) {
-        return Err("unsupported video stack");
-    }
-    let lambdas: Vec<_> = processed
-        .planes
-        .iter()
-        .map(|p| p.lambda.unwrap_or(f64::NAN))
-        .collect();
-    let parsed = AnnexB::parse(
-        first.payload,
-        &lambdas,
-        first.geometry.width,
-        first.geometry.height,
-    )
-    .map_err(|_| "invalid Annex-B stream")?;
-    let plan = lytronaut_format::live_photo::Plan::new(first.geometry, &lambdas, selected)
+    // Payload aliases source bytes, not the owned directory/plane/section tables.
+    // Release those parser allocations before codec and movie buffers are created.
+    let (payload, geometry, lambdas) = {
+        let c = Container::parse(bytes, limits).map_err(|_| "invalid video container")?;
+        let processed = processed_asset(&c, limits).map_err(|_| "invalid video metadata")?;
+        let first = processed.planes.first().ok_or("video stack missing")?;
+        if processed.planes.iter().any(|p| {
+            p.representation != Representation::H264
+                || p.geometry != first.geometry
+                || p.block_index != first.block_index
+                || p.section_identity != first.section_identity
+        }) {
+            return Err("unsupported video stack");
+        }
+        let lambdas: Vec<_> = processed
+            .planes
+            .iter()
+            .map(|p| p.lambda.unwrap_or(f64::NAN))
+            .collect();
+        (first.payload, first.geometry, lambdas)
+    };
+    let parsed = AnnexB::parse(payload, &lambdas, geometry.width, geometry.height)
+        .map_err(|_| "invalid Annex-B stream")?;
+    let plan = lytronaut_format::live_photo::Plan::new(geometry, &lambdas, selected)
         .map_err(|_| "Live Photo geometry or sweep exceeds limits; retain ordinary still export")?;
     let export = Export {
         builder: Rc::new(RefCell::new(None)),
@@ -598,7 +598,7 @@ pub async fn export_container(
                 .map_err(|_| "invalid export identifier")?,
         );
         if attempt(
-            first.payload,
+            payload,
             &parsed,
             selected,
             signal,

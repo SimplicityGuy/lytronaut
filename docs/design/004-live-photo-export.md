@@ -186,11 +186,12 @@ and must not be used as completion evidence.
 | Phase | Counted owners and overlap | Unmeasured or partial attribution |
 | --- | --- | --- |
 | UI fetch | Growing Rust source Vec, temporary Rust chunk and JS response chunk; old/new Vec storage may overlap during growth | Stream/network queues; manifest allocations retained during export; allocator growth overlap |
-| Parse/feed | Source **capacity**, owned processed JSON, plane/range/table storage, JS Uint8Array input and EncodedVideoChunk backing while feeding | serde map nodes/allocator overhead; released JS objects awaiting GC; opaque decoder pool |
+| Parse | Source **capacity**, owned processed JSON and plane/section tables | serde map nodes/allocator overhead; UI manifest allocation |
+| Feed | Source, owned lambdas/range tables, JS Uint8Array input and EncodedVideoChunk backing; processed JSON and plane/section tables already dropped | UI manifest allocation; released JS objects awaiting GC; opaque decoder pool |
 | Selected JPEG | Rust data URL String, temporary Rust atob String, raw JPEG Vec **capacity**, then paired JPEG allocation | JS data URL/atob strings (conservative UTF-16 estimates differ from physical storage); canvas/frame backing |
-| Strip copy | Source/metadata, retained encoded segments and paired JPEG, full Rust RGBA capacity, one Rust strip and one ImageData strip | Canvas/frame backing and GC retention after close/reset |
-| PCM encode | RGBA, existing segments, paired JPEG, raw PCM capacity, new escaped segment capacity | Metadata and small writer tables not fully observed |
-| Assembly/package | Source/metadata still retained, encoded segments, final preallocated movie/ZIP, selected JPEG and table/provenance capacities | Temporary atom/table construction, allocator overhead |
+| Strip copy | Source/UI manifest, retained encoded segments and paired JPEG, full Rust RGBA capacity, one Rust strip and one ImageData strip | Canvas/frame backing and GC retention after close/reset |
+| PCM encode | Source/UI manifest, RGBA, existing segments, paired JPEG, raw PCM capacity, new escaped segment capacity | UI manifest and small writer tables not fully observed |
+| Assembly/package | Source/UI manifest still retained, encoded segments, final preallocated movie/ZIP, selected JPEG and table/provenance capacities | Temporary atom/table construction, allocator overhead |
 | Download | Source dropped; Rust ZIP + JS Uint8Array copy, then Rust ZIP dropped before Uint8Array + Blob | JS backing sharing/copy policy, GC retention; retained UI baseline remains separate |
 
 The actual UI borrows its fetched Rust Vec into export; processed plane payloads
@@ -227,14 +228,21 @@ external JS-input seam, and writes the partial numeric trace into the existing
 owner result artifact with the same feature program/source identity. It performs
 no independent pair verification during collection. The trace labels its 32×32 synthetic geometry, observed source length and
 existing 8 MiB source admission cap. It is not a maximum-geometry or metadata-heap
-proof. No observations have been executed for
-this source revision; overflow/reset tests and this harness change await CI.
+proof. Historical `2cedaa4` CI run `38226127927` passed all three checks and collected
+36 events across 13 stages from a 32×32 UI fixture with a 992-byte source and no
+overflow. That partial trace predates the early metadata-drop change; the new
+source still awaits runtime validation, maximum-geometry/private traces and the
+full counted application budget proof.
 
 Current export metadata admission inherits format defaults (2 MiB JSON,
 100,000 nodes, 1,024 sections), whereas viewing specifies 256 KiB JSON,
-16,384 nodes and 256 sections. The owned `Processed.original` Value survives
-through export. This discrepancy is unresolved in the counted ledger; this change
-neither tightens these limits nor rejects additional captures. A production
+16,384 nodes and 256 sections. The parser validates all references and descriptors under those same limits,
+then returns only the source-borrowed payload, copied geometry and owned lambdas.
+Its `Processed.original` Value and plane/section tables are dropped at that lexical
+boundary before Plan/codec/PCM/assembly allocations. Source bytes and the UI
+manifest still survive until export completes. Parse-phase JSON heap remains
+unmeasured in the counted ledger; these limits are not tightened and no additional
+captures are rejected. A production
 policy change requires separate review.
 
 Enumerating admitted even dimensions up to 2048 and 2,097,152 visible pixels gives
