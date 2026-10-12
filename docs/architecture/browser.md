@@ -135,7 +135,7 @@ from stable product tools, then instrument actual browser Rust execution:
 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 \
 CARGO_TARGET_DIR=/private/tmp/lytronaut-wasm-coverage/target \
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='-Cinstrument-coverage -Zno-profiler-runtime -Clink-args=--no-gc-sections --cfg=wasm_bindgen_unstable_test_coverage' \
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='-Cinstrument-coverage -Zno-profiler-runtime -Clink-args=--no-gc-sections --cfg=wasm_bindgen_unstable_test_coverage --cfg=web_sys_unstable_apis' \
 cargo +nightly-2026-10-10 llvm-cov test --target wasm32-unknown-unknown -p lytronaut-client
 ```
 
@@ -235,3 +235,60 @@ color and preserved-only imported edits stay explicit. The backup control stream
 an originals/catalog bundle; restore uploads it into a separate isolated store.
 Current libraries are unchanged. Job status can be recovered after refresh, and
 uploads/pending jobs can be cancelled. These flows do not buffer archives in WASM.
+
+### Optional archived browser H.264 focus
+
+The viewer keeps the JPEG/static baseline and offers **Try browser H.264
+refocus** for a preserved standard `RefocusStack`. Each attempt validates the
+bounded original manifest, exact downloaded length and whole-container SHA256,
+then all LFP section digests and descriptors. It admits at most 8 MiB, 256
+sections, 256 KiB metadata and 64 frames. Only the recognized standard refocus
+descriptor is accepted; perspective and imported recipes remain preserved-only.
+
+The independent Rust Annex-B inspector derives codec, coded geometry, chroma
+crop units, whole-frame MBAFF geometry, SPS/PPS/slice references, AUD access
+units and consistent IDR boundaries. Initial SPS/PPS bytes are retained during
+software retry. WebCodecs configuration omits AVCC `description`. A support
+query is followed by actual decode, complete frame-count/geometry verification,
+flush and a selected-frame JPEG encode plus independent image decode. Failure
+retries once with software preference; cancellation does not retry. No failed
+attempt replaces the previously verified frame. Frame/capture/library/session
+generation guards discard stale completions. Every VideoFrame is closed and
+every temporary canvas is reset on success or error, with no decoded plane cache.
+
+One codec operation holds the shared 64 MiB transient lease, so grid/JPEG work
+waits. The conservative allowance covers four encoded copies (32 MiB), an 8 MiB
+current chunk, two visible RGBA allocations (16 MiB), and metadata/generated
+JPEG slack. Video output is limited to 2 megapixels, with its JPEG data URL
+capped at 2 MiB; previous/current stage imagery and the grid remain within the
+32 MiB persistent reserve. At most two encoded chunks are queued and no output
+frames are retained after their callback. Coded storage remains bounded by
+2048², with at most one macroblock of extra platform padding above normative
+SPS dimensions. Visible rectangle, crop origins and display extents must match
+the actual per-stream SPS and metadata. These are application admission bounds,
+not a browser/driver RSS measurement or guarantee about platform codec internals.
+
+H.264 lambdas are finite/unique in archived order; they are not sorted, because
+sorting metadata separately would lose encoded frame associations. Slider bounds
+are true extrema; nearest selection chooses the lower archived index on ties,
+including robust comparison of hostile finite values whose differences overflow.
+The default is explicit EXIF identity. The video orientation selector remains
+disabled, and imported orientation/aperture/perspective/color/animation are never
+replayed. Browser-video flattened export remains unverified; JPEG/static export
+and preserved originals retain their own gates.
+
+The [integrated private proof](../validation/lytronaut-hyy-video.md) passed all
+109 standard blocks / 654 frames and both five-frame LFE representatives on the
+declared Chrome/macOS/M1 Pro configuration. All blocks required software retry;
+there is no hardware codec claim. The UI still requires a successful actual
+decode for each asset and has no assumed cross-browser capability flag. Untested
+platforms are unverified and any absent/failed codec leaves previews usable.
+
+`mise exec -- just video-test` runs the real Rust decoder on the independent
+MIT colored AVC fixture plus public codec faults. `just browser-test` additionally
+imports that fixture through the actual service and tests video slider pixels,
+SHA-corrupt original retention, capture-switch cancellation, absence fallback and
+retry beside the existing JPEG/browser suite. The SHA-pinned browser CI job
+runs this same public fixture suite, with no private data. Coverage-only explicit
+Rust flags must retain `--cfg=web_sys_unstable_apis`; generated JavaScript coverage
+does not substitute for actual Rust/WASM line instrumentation.

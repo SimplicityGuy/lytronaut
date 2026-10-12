@@ -1,0 +1,35 @@
+{
+  "blocks": 109,
+  "frames": 654,
+  "retries": 109,
+  "repeatedFiveFrameRepresentatives": 2,
+  "repeatedFiveFrameVariants": [
+    10,
+    11
+  ],
+  "decoderOutputs": 664,
+  "closedFrames": 664,
+  "maxDecodeQueue": 2,
+  "pageErrors": 0,
+  "actualRustWasm": true,
+  "privateMode": true,
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+  "sealedIntegrity": {
+    "logicalFiles": 728,
+    "uniqueBlobs": 638,
+    "logicalBytes": 2001830074,
+    "sha256SizeMtimeUnchanged": true
+  },
+  "browser": "Chrome/154.0.8037.98",
+  "artifactProfiles": "wasm debug; native service not used",
+  "os": {
+    "version": "26.6.2",
+    "build": "25G83",
+    "hardware": "MacBookPro18,1",
+    "cpu": "Apple M1 Pro"
+  },
+  "revision": "29edb81dae0a598b9ab4d97046994c209a6756ca",
+  "applicationWasmSha256": "57023e5ca62746cd150ad62f098869f4effda7e45049b13d33dbfd61659551f7",
+  "generatedGlueSha256": "6cd166ab69cd095d02a41aabe31e2015cc7b800a32feb73f14cb9dabd6132d13",
+  "sourceTree": "3ab7de5b41f63690bb2e0cbbb2053294a055a8fa"
+}
