@@ -30,7 +30,7 @@ const server = http.createServer((req, res) => {
       const bytes = new Uint8Array(await (await fetch('/synthetic')).arrayBuffer());
       const identifier = 'A8A8A8A8-1111-4444-8888-121212121212';
       const invoke = (source, selected, signal = new AbortController().signal) => module.export_archived_live_photo(source, selected, identifier, signal);
-      const reject = async operation => { let failed = false; try { await operation(); } catch { failed = true; } if (!failed) throw Error('unsupported export accepted'); };
+      const reject = async (operation, expected, signal) => { let failed = false; try { await operation(); } catch (error) { if (error instanceof TypeError || (expected && (String(error) !== expected || !signal?.aborted))) throw error; failed = true; } if (!failed) throw Error('unsupported export accepted'); };
       let outputs = 0, closed = 0, queue = 0, decoderCreated = 0, decoderClosed = 0, maxImageDataBytes = 0, authoredFrames = 0;
       const getPixels = CanvasRenderingContext2D.prototype.getImageData;
       CanvasRenderingContext2D.prototype.getImageData = function(x,y,width,height,...rest) { maxImageDataBytes = Math.max(maxImageDataBytes, width * height * 4); return getPixels.call(this,x,y,width,height,...rest); };
@@ -65,7 +65,7 @@ const server = http.createServer((req, res) => {
         const rgb = context.getImageData(16, 16, 1, 1).data;
         if (rgb[0] < 200 || rgb[1] > 40 || rgb[2] > 40) throw Error('selected still pixels');
       } finally { URL.revokeObjectURL(url); }
-      const aborted = new AbortController(); aborted.abort(); await reject(() => invoke(bytes, 0, aborted.signal));
+      const aborted = new AbortController(); aborted.abort(); await reject(() => invoke(bytes, 0, aborted.signal), 'cancelled', aborted.signal);
       await reject(() => invoke(bytes, 63)); await reject(() => invoke(new Uint8Array([1, 2, 3]), 0));
       window.VideoDecoder = undefined; await reject(() => invoke(bytes, 0));
       class Unsupported extends Tracked { static async isConfigSupported() { return { supported: false }; } }
@@ -73,7 +73,7 @@ const server = http.createServer((req, res) => {
       class Retry extends Tracked { configure(config) { this.preference = config.hardwareAcceleration; super.configure(config); } decode(chunk) { if (this.preference === 'no-preference') throw Error('actual configuration cannot decode'); super.decode(chunk); } }
       window.VideoDecoder = Retry; await invoke(bytes, 2);
       class Cancel extends Tracked { decode(chunk) { super.decode(chunk); cancel.abort(); } }
-      const cancel = new AbortController(); window.VideoDecoder = Cancel; await reject(() => invoke(bytes, 0, cancel.signal));
+      const cancel = new AbortController(); window.VideoDecoder = Cancel; await reject(() => invoke(bytes, 0, cancel.signal), 'cancelled', cancel.signal);
       window.VideoDecoder = Tracked; await invoke(bytes, 4);
       // Test tooling only: independently authored maximum-geometry flat colors.
       // The production path never depends on VideoEncoder or this fixture writer.

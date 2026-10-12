@@ -91,18 +91,18 @@ async function verifySealed(after=false) {
         const raw=Uint8Array.from(atob(first.image.split(',')[1]),c=>c.charCodeAt(0));const generatedHash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',raw))].map(v=>v.toString(16).padStart(2,'0')).join('');if(first.content_sha256!==generatedHash||first.encoded_bytes!==raw.length)throw Error('generated JPEG integrity metadata mismatch');
         const image=new Image();image.src=first.image;await image.decode();context.drawImage(image,0,0);const pixel=context.getImageData(16,16,1,1).data;if(pixel[2]<200||pixel[0]>40||pixel[1]>40)throw Error('selected colored plane mismatch');
         recordDpb(first);blocks=1;frames=5;retries=Number(first.software_retry);
-        const reject=async fn=>{let rejected=false;try{await fn();}catch{rejected=true;}if(!rejected)throw Error('fault accepted');};
+        const reject=async(fn,expected,signal)=>{let rejected=false;try{await fn();}catch(error){if(error instanceof TypeError||(expected&&(String(error)!==expected||!signal?.aborted)))throw error;rejected=true;}if(!rejected)throw Error('fault accepted');};
         window.VideoDecoder=undefined;await reject(()=>invoke(bytes));window.VideoDecoder=Tracked;
         class Unsupported extends Tracked {static async isConfigSupported(){return {supported:false};}}window.VideoDecoder=Unsupported;await reject(()=>invoke(bytes));
         class ThrowSupport extends Tracked {static isConfigSupported(){throw Error('injected synchronous support error');}}window.VideoDecoder=ThrowSupport;await reject(()=>invoke(bytes));
-        const probeAbort=new AbortController();class PendingSupport extends Tracked {static isConfigSupported(){return new Promise(()=>{});}}window.VideoDecoder=PendingSupport;setTimeout(()=>probeAbort.abort(),20);await reject(()=>invoke(bytes,0,probeAbort.signal));
+        const probeAbort=new AbortController();class PendingSupport extends Tracked {static isConfigSupported(){return new Promise(()=>{});}}window.VideoDecoder=PendingSupport;setTimeout(()=>probeAbort.abort(),20);await reject(()=>invoke(bytes,0,probeAbort.signal),'cancelled',probeAbort.signal);
         class Retry extends Tracked {configure(c){this.preference=c.hardwareAcceleration;super.configure(c);}decode(c){if(this.preference==='no-preference')throw new DOMException('injected actual decode failure','EncodingError');super.decode(c);}}window.VideoDecoder=Retry;if(!(await invoke(bytes)).software_retry)throw Error('software retry missing');
         class Late extends Tracked {constructor(init){super({...init,output:f=>{init.output(f);init.error(new DOMException('injected late error','EncodingError'));}});}}window.VideoDecoder=Late;await reject(()=>invoke(bytes));window.VideoDecoder=Tracked;
         class Geometry extends Tracked {constructor(init){super({...init,output:f=>{Object.defineProperty(f,'displayWidth',{value:31});init.output(f);}});}}window.VideoDecoder=Geometry;await reject(()=>invoke(bytes));window.VideoDecoder=Tracked;
-        const flushAbort=new AbortController();class PendingFlush extends Tracked {flush(){return new Promise(()=>{});}}window.VideoDecoder=PendingFlush;setTimeout(()=>flushAbort.abort(),20);await reject(()=>invoke(bytes,0,flushAbort.signal));window.VideoDecoder=Tracked;
+        const flushAbort=new AbortController();class PendingFlush extends Tracked {flush(){return new Promise(()=>{});}}window.VideoDecoder=PendingFlush;setTimeout(()=>flushAbort.abort(),20);await reject(()=>invoke(bytes,0,flushAbort.signal),'cancelled',flushAbort.signal);window.VideoDecoder=Tracked;
         const getContext=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=()=>null;await reject(()=>invoke(bytes));HTMLCanvasElement.prototype.getContext=getContext;
-        const abort=new AbortController();abort.abort();await reject(()=>invoke(bytes,0,abort.signal));
-        const active=new AbortController();class Cancel extends Tracked {decode(c){super.decode(c);active.abort();}}window.VideoDecoder=Cancel;await reject(()=>invoke(bytes,0,active.signal));window.VideoDecoder=Tracked;
+        const abort=new AbortController();abort.abort();await reject(()=>invoke(bytes,0,abort.signal),'cancelled',abort.signal);
+        const active=new AbortController();class Cancel extends Tracked {decode(c){super.decode(c);active.abort();}}window.VideoDecoder=Cancel;await reject(()=>invoke(bytes,0,active.signal),'cancelled',active.signal);window.VideoDecoder=Tracked;
         const corrupt=bytes.slice();corrupt[corrupt.length-10]^=1;await reject(()=>invoke(corrupt));
         const final=await invoke(bytes,4);if(final.index!==4||final.frames!==5)throw Error('reset recovery failed');
       }
