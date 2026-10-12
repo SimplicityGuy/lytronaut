@@ -14,6 +14,13 @@ for(const key of ['revision','applicationWasmSha256','generatedWasmSha256','arti
 const retryBytes=Buffer.from(JSON.parse(fs.readFileSync(path.join(__dirname,'../fixtures/public/avc-colors.json'),'utf8')).container_base64,'base64');assert(retryBytes.length>0&&retryBytes.length<=8*1024*1024);
 const bounded=async(operation,ms)=>{let timer;try{return await Promise.race([operation,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('stress timeout')),ms);timer.unref();})]);}finally{clearTimeout(timer);}};
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+// Test observer only: public Node resource types, never handle objects or names.
+const resourceTypes=['Timeout','Immediate','FSReqCallback','FSReqPromise','GetAddrInfoReqWrap','GetNameInfoReqWrap','PipeWrap','ProcessWrap','TCPServerWrap','TCPSocketWrap','TTYWrap','UDPWrap','MessagePort'];
+function resourceSnapshot(){
+  const resources=process.getActiveResourcesInfo(),counts=Object.fromEntries(resourceTypes.map(type=>[type,0]));let unknownCount=0;
+  for(const type of resources.slice(0,256)){if(Object.hasOwn(counts,type))counts[type]++;else unknownCount++;}
+  return {counts,unknownCount,complete:resources.length<=256};
+}
 const runFile=promisify(execFile);
 async function stopProcess(child,signal,ms){
   if(child.exitCode!==null||child.signalCode!==null)return;
@@ -128,9 +135,12 @@ async function trial(index,bitrate){
   return report;
 }
 (async()=>{
+  const resourceBaseline=resourceSnapshot();
   // Always retain both fixed trial outcomes; no larger/adaptive search or injected output.
   const trials=[];for(const [index,bitrate] of [32000000,64000000].entries())trials.push(await trial(index,bitrate));
   const result={version:1,publicSynthetic:true,realEncoder:true,inputPath:'fixture-js-rust',totalMemoryProof:false,opaqueBrowserMemoryMeasured:false,accepted:trials.some(t=>t.accepted)&&trials.every(t=>['proven_rejection','jpeg_rejection_unproven','predictive_encoding_unproven','source_admission_unproven'].includes(t.outcome)),trials};
+  await new Promise(resolve=>setImmediate(resolve));
+  result.nodeResources={baseline:resourceBaseline,afterCleanup:resourceSnapshot()};
   const text=JSON.stringify(result);assert(text.length<=32*1024,'bounded numeric/fixed-enum stress report');
   fs.writeFileSync(path.join(evidence,'jpeg-stress.json'),text+'\n',{mode:0o600,flag:'wx'});
   console.log(text);if(!result.accepted)process.exitCode=1;
