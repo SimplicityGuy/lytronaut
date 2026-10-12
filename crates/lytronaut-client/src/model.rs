@@ -474,3 +474,147 @@ mod derivative_integrity_tests {
         assert!(!verified_derivative(&corrupt, &derivative));
     }
 }
+
+/// Only currently available selected controls may supersede a capture request.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn selected_control_available(
+    video: bool,
+    focus_available: bool,
+    video_available: bool,
+) -> bool {
+    if video {
+        video_available
+    } else {
+        focus_available
+    }
+}
+
+/// One running browse operation and one overwritten, not-yet-started intent.
+/// The runner remains owned until its current promises settle, including abort.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) struct LatestRequest<T> {
+    pending: Option<T>,
+    running: bool,
+}
+#[cfg(any(target_arch = "wasm32", test))]
+impl<T> Default for LatestRequest<T> {
+    fn default() -> Self {
+        Self {
+            pending: None,
+            running: false,
+        }
+    }
+}
+#[cfg(any(target_arch = "wasm32", test))]
+impl<T> LatestRequest<T> {
+    /// True only for the activation which must schedule the single runner.
+    pub(crate) fn submit(&mut self, request: T) -> bool {
+        self.pending = Some(request);
+        if self.running {
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+    /// Called only after the previous operation settled; never replace its future.
+    pub(crate) fn take_after_settlement(&mut self) -> Option<T> {
+        let next = self.pending.take();
+        if next.is_none() {
+            self.running = false;
+        }
+        next
+    }
+    pub(crate) fn clear_pending(&mut self) {
+        self.pending = None;
+    }
+}
+
+#[cfg(test)]
+mod browse_lifetime_tests {
+    use super::{LatestRequest, selected_control_available};
+    use std::{cell::Cell, rc::Rc};
+    struct Intent {
+        index: usize,
+        live: Rc<Cell<usize>>,
+    }
+    impl Intent {
+        fn new(index: usize, live: &Rc<Cell<usize>>) -> Self {
+            live.set(live.get() + 1);
+            Self {
+                index,
+                live: live.clone(),
+            }
+        }
+    }
+    impl Drop for Intent {
+        fn drop(&mut self) {
+            self.live.set(self.live.get() - 1);
+        }
+    }
+    #[test]
+    fn unavailable_focus_and_video_burst_preserves_pending_capture() {
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit("capture"));
+        for _ in 0..10000 {
+            if selected_control_available(false, false, false) {
+                lane.submit("focus");
+            }
+            if selected_control_available(true, false, false) {
+                lane.submit("video");
+            }
+        }
+        assert_eq!(lane.take_after_settlement(), Some("capture"));
+        assert!(lane.take_after_settlement().is_none());
+        assert!(selected_control_available(false, true, false));
+        assert!(selected_control_available(true, false, true));
+        assert!(!selected_control_available(false, false, true));
+        assert!(!selected_control_available(true, true, false));
+    }
+    #[test]
+    fn synchronous_burst_has_one_runner_and_drops_superseded_intents() {
+        let live = Rc::new(Cell::new(0));
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit(Intent::new(0, &live)));
+        for index in 1..10000 {
+            assert!(!lane.submit(Intent::new(index, &live)));
+            assert_eq!(live.get(), 1);
+        }
+        assert_eq!(lane.take_after_settlement().unwrap().index, 9999);
+        assert_eq!(live.get(), 0);
+        assert!(lane.take_after_settlement().is_none());
+        assert!(lane.submit(Intent::new(10000, &live)));
+    }
+    #[test]
+    fn stalled_active_operation_retains_only_latest_pending_until_settlement() {
+        let live = Rc::new(Cell::new(0));
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit(Intent::new(0, &live)));
+        let active = lane.take_after_settlement().unwrap();
+        for index in 1..10000 {
+            assert!(!lane.submit(Intent::new(index, &live)));
+            assert_eq!(live.get(), 2);
+        }
+        assert_eq!(active.index, 0);
+        drop(active);
+        let replacement = lane.take_after_settlement().unwrap();
+        assert_eq!(replacement.index, 9999);
+        drop(replacement);
+        assert!(lane.take_after_settlement().is_none());
+        assert_eq!(live.get(), 0);
+    }
+    #[test]
+    fn disposal_removes_pending_without_releasing_a_stalled_runner() {
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit(1));
+        let active = lane.take_after_settlement();
+        assert_eq!(active, Some(1));
+        assert!(!lane.submit(2));
+        lane.clear_pending();
+        // A replacement mount reuses the same draining slot, not a fresh runner.
+        assert!(!lane.submit(3));
+        assert_eq!(lane.take_after_settlement(), Some(3));
+        assert!(lane.take_after_settlement().is_none());
+        assert!(lane.submit(4));
+    }
+}
