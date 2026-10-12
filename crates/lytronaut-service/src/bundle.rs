@@ -108,8 +108,10 @@ pub async fn trusted_schema(catalog: &Catalog) -> Result<Schema, E> {
     let mut c = catalog.sqlite_snapshot_connection().await?;
     schema(&mut c).await
 }
-async fn readonly(path: &Path) -> Result<SqliteConnection, E> {
-    let mut c = SqliteConnection::connect_with(
+/// Read-only, query-only, trusted-schema-off typed cursor connection with
+/// `row_buffer_size(1)`. No validation work budget: see `readonly`.
+async fn readonly_cursor(path: &Path) -> Result<SqliteConnection, E> {
+    Ok(SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
             .filename(path)
             .read_only(true)
@@ -120,7 +122,14 @@ async fn readonly(path: &Path) -> Result<SqliteConnection, E> {
             .pragma("temp_store", "MEMORY")
             .row_buffer_size(1),
     )
-    .await?;
+    .await?)
+}
+/// Validation connection for an UNTRUSTED inbound legacy database: bounded VM
+/// steps and wall-clock time from open. Extraction after validation must not
+/// use this connection, because its deadline also counts time spent awaiting
+/// destination writes and would narrow legacy acceptance below the 32 MiB file.
+async fn readonly(path: &Path) -> Result<SqliteConnection, E> {
+    let mut c = readonly_cursor(path).await?;
     let mut handle = c.lock_handle().await?;
     handle.set_progress_handler(1000, {
         let mut steps = 0;
@@ -713,8 +722,11 @@ pub async fn restore_owned(
         let legacy = pending.join("legacy");
         let report = restore_legacy(input, &legacy, &expected, limits, cancel, progress).await?;
         let old_store = legacy.join("store");
-        let mut source = readonly(&old_store.join("catalog.db")).await?;
-        // The known old validator proved schema, records, references and inventory.
+        // The known old validator (budgeted) proved exact trusted schema, integrity,
+        // records, references and inventory. Extraction is linear cursors over that
+        // trusted schema in a <=32 MiB file, cancellable per row, so it carries no
+        // separate time budget that destination write latency could exhaust.
+        let mut source = readonly_cursor(&old_store.join("catalog.db")).await?;
         let has_order: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='application_job_order'").fetch_one(&mut source).await?;
         lytronaut_storage::portable_database::import_legacy(
             &catalog,
