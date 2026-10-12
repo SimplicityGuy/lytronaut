@@ -7,7 +7,7 @@ module.exports = async ({page, click, delay}) => {
     window.__ownerModule = await import('/client/lytronaut_client.js');
     if (typeof window.__ownerModule.harness_dispose !== 'function' || typeof window.__ownerModule.harness_remount !== 'function') throw Error('test-harness artifact required');
     window.__owner = {created:0, closed:0, outputs:0, framesClosed:0, downloads:0, aborts:0};
-    window.__ownerNative = {decoder:VideoDecoder, fetch:window.fetch, timer:window.setTimeout, anchor:HTMLAnchorElement.prototype.click};
+    window.__ownerNative = {decoder:VideoDecoder, fetch:window.fetch.bind(window), timer:window.setTimeout.bind(window), anchor:HTMLAnchorElement.prototype.click};
     const close = VideoFrame.prototype.close, abort = AbortController.prototype.abort;
     VideoFrame.prototype.close = function() { window.__owner.framesClosed++; return close.call(this); };
     AbortController.prototype.abort = function(...args) { window.__owner.aborts++; return abort.apply(this,args); };
@@ -57,8 +57,12 @@ module.exports = async ({page, click, delay}) => {
   // Hold an actual complete synthetic network response across disposal. Returning
   // it late exercises abort checks after fetch, rather than only fetch rejection.
   await page.evaluate(()=>{
+    window.__ownerFetchCounts={calls:0,requests:0,downloads:0};
     window.fetch=function(input,...args) {
+      window.__ownerFetchCounts.calls++;
+      if(input instanceof Request)window.__ownerFetchCounts.requests++;
       if(input instanceof Request&&input.url.endsWith('/download')) {
+        window.__ownerFetchCounts.downloads++;
         window.__ownerFetchSignal=input.signal;
         window.__ownerFetchPromise=window.__ownerNative.fetch(new Request(input,{signal:new AbortController().signal}));
         return new Promise(resolve=>window.__ownerFetchResolve=resolve);
@@ -67,7 +71,8 @@ module.exports = async ({page, click, delay}) => {
     };
   });
   await click('Export Live Photo pair (.zip)');
-  await page.waitForFunction(()=>typeof window.__ownerFetchResolve==='function');
+  try {await page.waitForFunction(()=>typeof window.__ownerFetchResolve==='function');}
+  catch(error) {console.error(JSON.stringify(await page.evaluate(()=>({publicOwnerPhase:'held-source-fetch',status:document.querySelector('.status')?.textContent,counts:window.__ownerFetchCounts,browserAvcActive:!document.querySelector('#cancel-live-photo')?.disabled,exportDisabled:document.querySelector('#export-live-photo')?.disabled}))));throw error;}
   await dispose();
   assert(await page.evaluate(()=>window.__ownerFetchSignal.aborted),'fetch signal actually aborted');
   await page.evaluate(async()=>{window.fetch=window.__ownerNative.fetch;window.__ownerFetchResolve(await window.__ownerFetchPromise);});
