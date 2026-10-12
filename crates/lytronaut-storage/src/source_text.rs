@@ -76,7 +76,10 @@ mod tests {
         let values = ["", "a", "a\0", "a\u{1}", "A", "雪", "é", "🌌"];
         for a in values {
             for b in values {
-                assert_eq!(a.as_bytes().cmp(b.as_bytes()), encode_key(a).cmp(&encode_key(b)));
+                assert_eq!(
+                    a.as_bytes().cmp(b.as_bytes()),
+                    encode_key(a).cmp(&encode_key(b))
+                );
             }
         }
     }
