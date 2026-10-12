@@ -4,20 +4,20 @@ use lytronaut_storage::{Backend, DatabaseConfig};
 use sqlx::{ConnectOptions, postgres::PgConnectOptions};
 use std::str::FromStr;
 
-const IDS: [i64; 4] = [i64::MIN, -7, 0, i64::MAX];
+pub(crate) const IDS: [i64; 4] = [i64::MIN, -7, 0, i64::MAX];
 const KEY: &str = "picture\0雪🛰";
 const NAME: &str = "Na\0mé雪";
 const CAPTION: &str = "Caption\0🛰";
 const ORIGINAL: &[u8] = &[0, 255, 128, 0, 0, 0, 0, 0, 0, 0, 128, 127, 1, 2, 3];
-const BLOB: &[u8] = b"synthetic original\0\xff\x80";
-struct Fixture {
-    root: PathBuf,
-    catalog: Catalog,
-    config: DatabaseConfig,
-    pg: Option<(sqlx::PgConnection, String)>,
+pub(crate) const BLOB: &[u8] = b"synthetic original\0\xff\x80";
+pub(crate) struct Fixture {
+    pub(crate) root: PathBuf,
+    pub(crate) catalog: Catalog,
+    pub(crate) config: DatabaseConfig,
+    pub(crate) pg: Option<(sqlx::PgConnection, String)>,
 }
 impl Fixture {
-    async fn new(postgres: bool) -> Self {
+    pub(crate) async fn new(postgres: bool) -> Self {
         let mut random = [0; 16];
         getrandom::fill(&mut random).unwrap();
         let name = format!("lytronaut_bundle_{:x}", u128::from_le_bytes(random));
@@ -57,15 +57,19 @@ impl Fixture {
             pg,
         }
     }
-    async fn seed(&self) -> Store {
+    pub(crate) async fn seed(&self) -> Store {
+        self.seed_with(Limits {
+            free_floor: 0,
+            ..Default::default()
+        })
+        .await
+    }
+    pub(crate) async fn seed_with(&self, limits: Limits) -> Store {
         let store = Store::open(
             self.catalog.clone(),
             &self.root.join("originals"),
             &self.root.join("staging"),
-            Limits {
-                free_floor: 0,
-                ..Default::default()
-            },
+            limits,
         )
         .await
         .unwrap();
@@ -130,7 +134,7 @@ impl Fixture {
         tx.commit().await.unwrap();
         store
     }
-    async fn finish(mut self) {
+    pub(crate) async fn finish(mut self) {
         self.catalog.pool().close().await;
         if let Some((connection, schema)) = self.pg.as_mut() {
             sqlx::query(AssertSqlSafe(format!("DROP SCHEMA \"{schema}\" CASCADE")))
@@ -148,7 +152,7 @@ fn logical_text(catalog: &Catalog, row: &sqlx::any::AnyRow, column: &str) -> Vec
         row.try_get::<String, _>(column).unwrap().into_bytes()
     }
 }
-async fn verify(catalog: &Catalog, original_root: &Path) {
+pub(crate) async fn verify(catalog: &Catalog, original_root: &Path) {
     verify_ordered(catalog, original_root, &IDS).await;
 }
 /// `job_order` is the expected logical intake order: preserved ordinals for the

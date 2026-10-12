@@ -127,11 +127,25 @@ worker cancellation/failure, final job UPDATE failure, and late DELETE. Only a d
 successful job plus fully published result is retained. Everything else is cleanup
 pending. It drops only a verified owned namespace, removes only the exclusively owned
 result, and releases quota/removes the journal only after both cleanups are durable.
-If the database is unreachable, permissions deny DROP, or filesystem deletion fails,
-the journal and reservation remain. Repeated recovery is idempotent; no guessed
+Namespace cleanup never uses CASCADE: it drops exactly the trusted application
+tables and then the schema, both RESTRICT, in one transaction, so an unrelated object
+outside the namespace that depends on a restored table makes cleanup fail closed
+instead of being dropped with it.
+If the database is unreachable, permissions deny access or DROP, a dependency
+restricts DROP, or filesystem deletion fails, the journal and reservation remain. Repeated recovery is idempotent; no guessed
 ownership, lost reservation, or unjournaled successful-looking result is allowed.
 
-## Required verification (not executed yet)
+## Verification
+
+Executed on both engines (SQLite by default; PostgreSQL through
+`just postgres-test`): the four round trips below, the four legacy forms and
+near-32 MiB legacy files, and the restore failure matrix in
+`restore_fault_tests.rs` (corruption, admission and mid-restore quota, cancel,
+shutdown, real child-process SIGKILL with restart recovery, owner-revoked cleanup,
+dependency-restricted DROP, failing final UPDATE, late DELETE racing publication,
+journal crash cuts, exactly-at-limit source cell) with unrelated SQL/filesystem
+sentinels. Not yet covered by an engine test: a disconnected database during
+cleanup, and measured memory under concurrent admission.
 
 Independent SQLite→SQLite, SQLite→PostgreSQL, PostgreSQL→SQLite and
 PostgreSQL→PostgreSQL round trips compare logical IDs, all typed record bytes,

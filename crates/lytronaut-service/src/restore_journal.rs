@@ -326,6 +326,11 @@ fn new_file(path: &Path) -> Result<File, E> {
 thread_local! {
     static JOURNAL_FAULT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
+/// Test-only crash cut for the next matching durability point on this thread.
+#[cfg(test)]
+pub(crate) fn inject_fault(point: &'static str) {
+    JOURNAL_FAULT.with(|fault| fault.set(Some(point)));
+}
 fn fault(point: &str) -> Result<(), E> {
     #[cfg(test)]
     if JOURNAL_FAULT.with(|fault| {

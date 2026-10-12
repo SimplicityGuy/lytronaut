@@ -8,7 +8,7 @@ const MAGIC: &[u8; 8] = b"LYTROR02";
 pub const MAX_BYTES: usize = 288 * 1024 * 1024;
 pub const MAX_ROWS: usize = 32 * 1024 * 1024;
 const MAX_CELLS: usize = 32 * 1024 * 1024;
-const MAX_CELL: usize = 32 * 1024 * 1024;
+pub const MAX_CELL: usize = 32 * 1024 * 1024;
 const MAX_ROW_BYTES: usize = MAX_CELL + 256;
 
 /// Debug deliberately omits source values.

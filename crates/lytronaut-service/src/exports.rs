@@ -1082,3 +1082,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "restore_fault_tests.rs"]
+mod restore_fault_tests;

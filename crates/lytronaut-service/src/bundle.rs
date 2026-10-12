@@ -845,4 +845,4 @@ mod portable_admission_tests {
 
 #[cfg(test)]
 #[path = "portable_bundle_tests.rs"]
-mod portable_bundle_tests;
+pub(crate) mod portable_bundle_tests;
