@@ -1,9 +1,10 @@
 # Optional Rust GPU derivative presentation
 
-The Leptos viewer offers **Try GPU presentation** for verified stored JPEG focus
-planes. The default remains CPU JPEG presentation and original downloads. GPU
+The Leptos viewer automatically tries GPU presentation for verified stored JPEG
+focus planes. CPU JPEG presentation and original downloads remain the baseline. GPU
 absence, failed acquisition, validation errors and device loss retain the last
-verified JPEG and controls. Explicit retry is required after failure. Native
+verified JPEG and controls. A failed GPU is not repeatedly reacquired in the page session; a fresh page may
+probe capability again. No renderer-selection or retry controls are exposed. Native
 server builds have no wgpu dependency. The WASM dependency pins wgpu 30.0.1 with
 only `webgpu` and `wgsl`; product orchestration is Rust, the shader is WGSL.
 

@@ -32,7 +32,7 @@ The initial frozen WIP run measured post-frame callback p95 **21.2 ms** at the
 256 cap. Its trace had 46 submit markers, 26 FramePresented, 182 FrameDisplayed
 and 366 DrawAndSwap events, with **zero attributable canvas-presentation samples**.
 The **16.7 ms compositor submit-to-present target is unverified**, and the
-observed frame-ready proxy exceeds it. Default optional quality is reduced to
+observed frame-ready proxy exceeds it. Default automatic GPU quality is reduced to
 512 from the 1024 interactive ceiling, with an explicit 256 choice. No guaranteed
 frame rate is advertised. Final exact-code evidence is recorded in the linked
 report when the branch artifact has been frozen and rerun.

@@ -77,6 +77,11 @@ mod web {
     }
     impl Renderer {
         pub async fn acquire(canvas: web_sys::HtmlCanvasElement) -> Result<Self, &'static str> {
+            if let Some(performance) = web_sys::window().and_then(|w| w.performance()) {
+                canvas
+                    .set_attribute("data-acquisition-start-ms", &performance.now().to_string())
+                    .ok();
+            }
             let creating = Box::pin(Self::new(canvas));
             match futures::future::select(creating, Box::pin(delay(700))).await {
                 futures::future::Either::Left((result, _)) => result,

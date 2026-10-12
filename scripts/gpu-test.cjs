@@ -3,8 +3,20 @@ const assert=require('node:assert/strict');
 const {PNG}=require('./browser/node_modules/pngjs');
 module.exports=async function gpuTest(page,click){
  const ready=()=>page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.startsWith('GPU verified derivative'));
- const render=async()=>{await click('Try GPU presentation');await ready();};
- await render();
+ const captureName=await page.$eval('.viewer-strip span',e=>e.textContent);
+ const initialize=async fault=>{
+  const script=await page.evaluateOnNewDocument(f=>{window.__gpuFault=f;if(f==='missing-api')Object.defineProperty(navigator,'gpu',{value:undefined,configurable:true});},fault);
+  await page.reload();await page.waitForSelector('#directory');
+  await page.waitForFunction(()=>document.querySelectorAll('.capture').length>0);
+  for(let pageIndex=0;pageIndex<2;pageIndex++){
+   const found=await page.evaluate(name=>{const b=[...document.querySelectorAll('.capture')].find(b=>b.textContent===name);if(!b)return false;b.click();return true;},captureName);
+   if(found)break;await click('Next page');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 2');
+  }
+  await page.removeScriptToEvaluateOnNewDocument(script.identifier);
+  await page.waitForFunction(()=>!document.querySelector('#focus').disabled&&document.querySelector('output[for=focus]').textContent.includes('Displayed:'));
+ };
+ await ready();
+ assert.equal(await page.$$eval('button',buttons=>buttons.some(b=>/Try GPU|Use CPU/.test(b.textContent))),false,'renderer selection is automatic');
  const hardware=await page.evaluate(async()=>{const a=await navigator.gpu.requestAdapter();return {info:{vendor:a.info.vendor,architecture:a.info.architecture,device:a.info.device},maxTextureDimension2D:a.limits.maxTextureDimension2D};});
  assert.equal(hardware.info.vendor,'apple');assert.equal(hardware.info.architecture,'metal-3');
  const compare=async orientation=>{const expected=await page.evaluate(async orientation=>{
@@ -52,10 +64,6 @@ module.exports=async function gpuTest(page,click){
    if(i>=5)times.push(performance.now()-submit);
   }times.sort((a,b)=>a-b);return {samples:times.length,p50SubmitToPostFrameCallbackMs:times[14],p95SubmitToPostFrameCallbackMs:times[28],maxMs:times[29],physicalPresentationMeasured:false};
  });
- // Observed device destruction: recover the already verified JPEG without input.
- const lossStart=Date.now();await page.evaluate(()=>window.__gpuDevice.destroy());
- await page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.includes('CPU fallback')&&getComputedStyle(document.querySelector('.stage img')).display!=='none');
- const lossFallbackMs=Date.now()-lossStart;assert(lossFallbackMs<=1000);assert(await page.$eval('.stage img',e=>e.complete&&e.naturalWidth>0));
  const oversized=await page.evaluate(async()=>{
   const library=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');const captures=(await (await fetch(`/libraries/${library.id}/captures?limit=100`)).json()).items;
   const c=captures.find(c=>c.name===document.querySelector('.viewer-strip span').textContent);const d=await (await fetch(`/captures/${c.id}`)).json();const id=d.originals.find(f=>f.role==='jpeg_focus_stack').id;
@@ -63,28 +71,35 @@ module.exports=async function gpuTest(page,click){
   const url=`/assets/${id}/focus/${index}/${orientation}`;const r=await fetch(url),metadata=JSON.parse(r.headers.get('X-Lytronaut-Derivative'));metadata.output_dimensions.width=2049;return {url,metadata,bytes:[...new Uint8Array(await r.arrayBuffer())]};
  });
  await page.setRequestInterception(true);const oversizeResponse=r=>{if(r.url().endsWith(oversized.url))r.respond({status:200,headers:{'Content-Type':'image/jpeg','X-Lytronaut-Derivative':JSON.stringify(oversized.metadata)},body:Buffer.from(oversized.bytes)}).catch(()=>{});else r.continue().catch(()=>{});};page.on('request',oversizeResponse);
- const previous=await page.$eval('.stage img',e=>e.src),oversizeStart=Date.now();await click('Try GPU presentation');await page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.includes('CPU fallback'));
+ const previous=await page.$eval('.stage img',e=>e.src),oversizeStart=Date.now();await page.$eval('#focus',e=>e.dispatchEvent(new Event('input',{bubbles:true})));await page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.includes('CPU fallback'));
  const oversizeFallbackMs=Date.now()-oversizeStart;assert(oversizeFallbackMs<=1000);assert.equal(await page.$eval('.stage img',e=>e.src),previous);
  await page.setRequestInterception(false);page.off('request',oversizeResponse);
+ await initialize('');await ready();
+ // Observed device destruction: recover the already verified JPEG without input.
+ const lossStart=Date.now();await page.evaluate(()=>window.__gpuDevice.destroy());
+ await page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.includes('CPU fallback')&&getComputedStyle(document.querySelector('.stage img')).display!=='none');
+ const lossFallbackMs=Date.now()-lossStart;assert(lossFallbackMs<=1000);assert(await page.$eval('.stage img',e=>e.complete&&e.naturalWidth>0));
+
  const faults=[];
  for(const fault of ['missing-api','adapter','device','pipeline','late-device']){
-  await page.evaluate(f=>{window.__gpuFault=f;if(f==='missing-api')Object.defineProperty(navigator,'gpu',{value:undefined,configurable:true});else Object.defineProperty(navigator,'gpu',{value:window.__gpuAPI,configurable:true});},fault);
-  const start=Date.now();await click('Try GPU presentation');
+  const start=Date.now();await initialize(fault);
   await page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.includes('CPU fallback'));
-  const elapsed=Date.now()-start;assert(elapsed<=1000);assert(await page.$eval('.stage img',e=>e.complete&&e.naturalWidth>0));faults.push({fault,fallbackMs:elapsed});
+  const fallbackMs=await page.evaluate(()=>performance.now()-Number(document.querySelector('#gpu-stage').dataset.acquisitionStartMs));assert(fallbackMs<=1000,'automatic acquisition/fallback indication within one second');
+  assert(await page.$eval('.stage img',e=>e.complete&&e.naturalWidth>0));
+  await new Promise(r=>setTimeout(r,fault==='late-device'?1500:100));
+  const devices=await page.evaluate(()=>window.__gpuCounts);assert.equal(devices.created,devices.destroyed,'failed and late devices explicitly destroyed');
+  faults.push({fault,fallbackMs,reloadThroughFallbackMs:Date.now()-start,devices});
  }
- await new Promise(r=>setTimeout(r,1500));
- const released=await page.evaluate(()=>window.__gpuCounts);assert.equal(released.created,released.destroyed,'failed and late devices explicitly destroyed');
- await page.evaluate(()=>{window.__gpuFault='';Object.defineProperty(navigator,'gpu',{value:window.__gpuAPI,configurable:true});});
- await render();
+ const released=await page.evaluate(()=>window.__gpuCounts);
+ await initialize('');await ready();
  for(let i=0;i<6;i++){
   await click('Next capture');await page.waitForFunction(()=>document.querySelector('#focus').disabled&&document.querySelector('.stage img')?.naturalWidth===640);
+  const between=await page.evaluate(()=>window.__gpuCounts);assert.equal(between.created,between.destroyed,'capture switch releases GPU device');
   await click('Previous capture');await page.waitForFunction(()=>!document.querySelector('#focus').disabled&&document.querySelector('.status').textContent.includes('Discrete focus:'));await ready();
  }
- await click('Use CPU presentation');
- const finalDevices=await page.evaluate(()=>window.__gpuCounts);assert.equal(finalDevices.created,finalDevices.destroyed,'capture switches and CPU selection release devices');
+ const finalDevices=await page.evaluate(()=>window.__gpuCounts);assert.equal(finalDevices.created-finalDevices.destroyed,1,'only current automatic renderer remains resident');
  await page.$eval('#orientation',e=>{e.value='1';e.dispatchEvent(new Event('change',{bubbles:true}));});
  await page.$eval('#focus',e=>{e.value=e.min;e.dispatchEvent(new Event('input',{bubbles:true}));});
  await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('EXIF 1')&&document.querySelector('.status').textContent.includes('stored plane 1 of 3')&&document.querySelector('.stage img')?.naturalWidth===360);
- return {hardware,transforms,scaling,timings,lossFallbackMs,oversizeFallbackMs,faults,released,finalDevices,repeatedSwitches:12,physicalPresentation:'unmeasured; post-frame callback does not certify scanout',target:'16.7ms physical submit-to-present unverified'};
+ return {hardware,transforms,scaling,timings,lossFallbackMs,oversizeFallbackMs,faults,released,finalDevices,repeatedSwitches:12,physicalPresentation:'unmeasured; post-frame callback does not certify scanout',target:'16.7ms compositor submit-to-present unverified'};
 };
