@@ -1,8 +1,12 @@
 // MIT independent TEST-only ZIP/JPEG/QuickTime reader and platform movie decoder.
 // No production writer/parser is called. Private resource bytes remain in-browser.
 (() => {
-  const fail = () => { throw Error('resource pair verification failed'); };
-  const check = value => { if (!value) fail(); };
+  let phase='zip',assertion=0;
+  const enter = value => {phase=value;assertion=0;};
+  // Only fixed phase names and bounded assertion counters escape this helper.
+  // The private harness catches them and emits its own aggregate phase counts.
+  const fail = () => { throw Error(`resource pair verification failed:${phase}:${assertion}`); };
+  const check = value => {assertion++;if (!value) fail();};
   const bounded = async promise => {let timer;try{return await Promise.race([promise,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('resource verification timeout')),30000))]);}finally{clearTimeout(timer);}};
   const text = bytes => new TextDecoder('utf-8', {fatal:true}).decode(bytes);
   const view = bytes => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -12,7 +16,7 @@
     for(const byte of bytes) {value^=byte;for(let bit=0;bit<8;bit++)value=(value>>>1)^((value&1)?0xedb88320:0);}
     return (value^0xffffffff)>>>0;
   };
-  const unzip = bytes => {
+  const unzip = bytes => {enter('zip');
     check(bytes.length<=18*1024*1024);const v=view(bytes),entries=[];let pos=0;
     for(let i=0;i<3;i++) {
       range(bytes,pos,30);check(v.getUint32(pos,true)===0x04034b50&&v.getUint16(pos+6,true)===0&&v.getUint16(pos+8,true)===0);
@@ -29,7 +33,7 @@
     range(bytes,pos,22);check(pos+22===bytes.length&&v.getUint32(pos,true)===0x06054b50&&v.getUint16(pos+8,true)===3&&v.getUint16(pos+10,true)===3&&v.getUint32(pos+12,true)===pos-central&&v.getUint32(pos+16,true)===central&&v.getUint16(pos+20,true)===0);
     check(entries[0].data.length<=16*1024*1024&&entries[2].data.length<=16*1024);return entries.map(e=>e.data);
   };
-  const jpegIdentity = jpeg => {
+  const jpegIdentity = jpeg => {enter('jpeg');
     check(jpeg.length<=2*1024*1024+256&&jpeg[0]===255&&jpeg[1]===216);let pos=2,identity=null;
     while(pos<jpeg.length) {
       check(jpeg[pos]===255);const marker=jpeg[pos+1];if(marker===218)break;
@@ -50,7 +54,7 @@
     }
     check(identity&&/^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(identity));return identity;
   };
-  const movieInfo = bytes => {
+  const movieInfo = bytes => {enter('movie');
     const v=view(bytes);
     const boxes=(start,end)=>{const out=[];while(start<end){range(bytes,start,8);const size=v.getUint32(start);check(size>=8&&start+size<=end&&out.length<128);out.push({start,data:start+8,end:start+size,type:text(range(bytes,start+4,4))});start+=size;}check(start===end);return out;};
     const children=(b,skip=0)=>boxes(b.data+skip,b.end);
@@ -92,16 +96,16 @@
     return {absoluteSum:sum,squaredSum:squared,samples:count,maxDifference:max};
   };
   window.verifyLivePhotoPair = async (zip,{identifier,referenceImage,expectedBlue=false}={}) => {
-    const [movie,jpeg,json]=unzip(zip),p=JSON.parse(text(json)),info=movieInfo(movie);check(info.identity===identifier&&jpegIdentity(jpeg)===identifier&&p.width===info.width&&p.height===info.height&&p.orientation===1&&p.duration_seconds===3&&p.audio==='none'&&p.motion==='generated_focus_animation'&&p.camera_recorded_temporal_motion===false&&p.calibrated_synthesis===false&&p.originals==='unchanged');
+    const [movie,jpeg,json]=unzip(zip),p=JSON.parse(text(json)),info=movieInfo(movie);const jpegId=jpegIdentity(jpeg);enter('pair');check(info.identity===identifier&&jpegId===identifier&&p.width===info.width&&p.height===info.height&&p.orientation===1&&p.duration_seconds===3&&p.audio==='none'&&p.motion==='generated_focus_animation'&&p.camera_recorded_temporal_motion===false&&p.calibrated_synthesis===false&&p.originals==='unchanged');
     check(Object.keys(p).sort().join(',')===['version','motion','duration_seconds','key_seconds','selected_stored_plane','sweep_stored_planes','source_variant','width','height','orientation','audio','originals','camera_recorded_temporal_motion','calibrated_synthesis','imported_adjustments','color'].sort().join(',')&&p.version===1&&p.source_variant==='verified_archived_avc_planes'&&p.imported_adjustments==='preserved_only_not_replayed'&&p.color==='source profile unknown; platform-decoded RGB; sRGB transfer, BT.709 primaries, BT.601 limited-range YCbCr; JPEG/chroma quantization are lossy');
     check(p.sweep_stored_planes.length===info.samples.length&&new Set(p.sweep_stored_planes).size===info.samples.length&&Math.abs(info.keySeconds-p.key_seconds)<1e-6);
     const key=p.sweep_stored_planes.indexOf(p.selected_stored_plane);check(key>=0&&Math.abs(info.keySeconds-key*3/info.samples.length)<1e-6);
-    const url=URL.createObjectURL(new Blob([jpeg],{type:'image/jpeg'})),still=canvas(info.width,info.height),motion=canvas(info.width,info.height),baseline=referenceImage?canvas(info.width,info.height):null;
+    enter('image');const url=URL.createObjectURL(new Blob([jpeg],{type:'image/jpeg'})),still=canvas(info.width,info.height),motion=canvas(info.width,info.height),baseline=referenceImage?canvas(info.width,info.height):null;
     let decoder,stillImage,referenceDecoded,failed=false,outputs=0,keySeen=false,stillLoss=null,motionLoss=null;
     try {
       const i=stillImage=await image(url);check(i.naturalWidth===info.width&&i.naturalHeight===info.height);still.getContext('2d').drawImage(i,0,0);i.src='';
       if(baseline){const ref=referenceDecoded=await image(referenceImage);check(ref.naturalWidth===info.width&&ref.naturalHeight===info.height);baseline.getContext('2d').drawImage(ref,0,0);ref.src='';stillLoss=difference(still.getContext('2d'),baseline.getContext('2d'),info.width,info.height);}
-      decoder=new VideoDecoder({error:()=>failed=true,output:frame=>{try{
+      enter('motion');decoder=new VideoDecoder({error:()=>failed=true,output:frame=>{try{
         const index=Math.round(frame.timestamp*info.samples.length/3000000);check(index===outputs&&frame.displayWidth===info.width&&frame.displayHeight===info.height);outputs++;
         if(index===key){keySeen=true;motion.getContext('2d').drawImage(frame,0,0);if(baseline)motionLoss=difference(motion.getContext('2d'),baseline.getContext('2d'),info.width,info.height);if(expectedBlue){const rgb=motion.getContext('2d').getImageData(Math.floor(info.width/2),Math.floor(info.height/2),1,1).data;check(rgb[2]>200&&rgb[0]<40&&rgb[1]<40);}}
       }catch{failed=true;}finally{frame.close();}}});
