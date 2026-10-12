@@ -46,9 +46,9 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
       };return a;
     };
    }window.__nativeVideoDecoder=window.VideoDecoder;Object.defineProperty(window,'VideoDecoder',{value:undefined,writable:true});
-   window.__urls={created:0,revoked:0};const create=URL.createObjectURL,revoke=URL.revokeObjectURL;
-   URL.createObjectURL=function(...args){window.__urls.created++;const url=create.apply(this,args);window.__lastCreatedUrl=url;return url;};
-   URL.revokeObjectURL=function(...args){window.__urls.revoked++;if(window.__gpuDestroyProbe?.url===args[0])window.__gpuDestroyProbe.revoked=true;return revoke.apply(this,args);};
+   window.__urls={created:0,revoked:0};window.__activeURLs=new Set();const create=URL.createObjectURL,revoke=URL.revokeObjectURL;
+   URL.createObjectURL=function(...args){const url=create.apply(this,args);window.__urls.created++;window.__activeURLs.add(url);window.__lastCreatedUrl=url;return url;};
+   URL.revokeObjectURL=function(...args){const result=revoke.apply(this,args);window.__urls.revoked++;window.__activeURLs.delete(args[0]);if(window.__gpuDestroyProbe?.url===args[0])window.__gpuDestroyProbe.revoked=true;return result;};
   },gpuMode);await instrument(page);
   const errors=[],responses=[];const attach=p=>{p.on('pageerror',e=>{errors.push(e.message);if(!privateMode)console.error(e.message);});p.on('response',r=>{if(/\/assets\//.test(r.url()))responses.push(r.status());});};attach(page);
   if(!privateMode)console.error('opening app');await page.goto(origin);checkpoint='direct-entry';await page.waitForSelector('#directory');
@@ -410,15 +410,16 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await click('Previous page');await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===24,{timeout:120000});
   }
   await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
-  // Only the currently displayed stage keeps a Blob URL; downsampled grid uses data URLs.
-  const preZoomURLs=await page.evaluate(()=>window.__urls);assert(preZoomURLs.created>0);assert.equal(preZoomURLs.created-preZoomURLs.revoked,1);
-  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
+  // Each accepted grid JPEG and the selected stage own a guarded Blob URL.
+  const preZoomURLProof=await page.evaluate(()=>{const stage=[...document.querySelectorAll('.stage img')].map(img=>img.src).filter(src=>src.startsWith('blob:'));const gridImages=[...document.querySelectorAll('.capture img')];const grid=gridImages.map(img=>img.src).filter(src=>src.startsWith('blob:'));const displayed=new Set([...stage,...grid]);return {created:window.__urls.created,revoked:window.__urls.revoked,owned:window.__activeURLs.size,stage:stage.length,grid:grid.length,gridImages:gridImages.length,distinctDisplayed:displayed.size,exactDisplayedOwnership:displayed.size===window.__activeURLs.size&&[...displayed].every(url=>window.__activeURLs.has(url))};});
+  assert(preZoomURLProof.created>0);assert.equal(preZoomURLProof.stage,1);assert(preZoomURLProof.grid<=24);assert.equal(preZoomURLProof.grid,preZoomURLProof.gridImages);assert.equal(preZoomURLProof.distinctDisplayed,1+preZoomURLProof.grid);assert(preZoomURLProof.exactDisplayedOwnership);assert.equal(preZoomURLProof.created-preZoomURLProof.revoked,preZoomURLProof.owned);
+  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);assert.equal(await page.evaluate(()=>window.__activeURLs.size),0,'pagehide releases every owned Blob URL');
   const preZoomGPUDevices=gpuMode?await page.evaluate(()=>window.__gpuCounts):null;if(gpuMode)assert.equal(preZoomGPUDevices.created,preZoomGPUDevices.destroyed,'all GPU devices released before browser restart');
   // Actual browser lifecycle callbacks restore a bfcache page without account state.
   await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
   await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0,{timeout:120000});
   await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
-  await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
+  await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);assert.equal(await page.evaluate(()=>window.__activeURLs.size),0,'pagehide releases every owned Blob URL');
   await page.waitForSelector('#directory');
   // Chromium stores default zoom as log(factor)/log(1.2), partition key x.
   // Restart the isolated profile with actual browser zoom; do not use page scaling.
@@ -450,9 +451,9 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   assert.notEqual(focus.outline,'0px');
   checkpoint='final-direct-entry';assert.equal(await page.$('#username'),null);
   const direct=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(direct,200);
-  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
+  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);assert.equal(await page.evaluate(()=>window.__activeURLs.size),0,'pagehide releases every owned Blob URL');
   assert.equal(errors.length,0);assert(!responses.includes(429));const urls=await page.evaluate(()=>window.__urls);assert.equal(urls.created,urls.revoked);
-  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,sidebarProof,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,videoHttpRustUi:!privateMode,videoUiProof,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
+  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,sidebarProof,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,videoHttpRustUi:!privateMode,videoUiProof,keyboardNavigation:true,contrast,preZoomURLProof,displayedBlobOwnershipVerified:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
   const clientDir=process.env.LYTRONAUT_CLIENT||'dist';const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
   result.applicationWasmSha256=hash(path.join(clientDir,'lytronaut_client_bg.wasm'));result.generatedGlueSha256=hash(path.join(clientDir,'lytronaut_client.js'));if(binary)result.nativeServiceSha256=hash(binary);
   console.log(JSON.stringify(result));
