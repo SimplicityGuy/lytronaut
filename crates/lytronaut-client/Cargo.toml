@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 # Explicit synthetic lifecycle harness; absent from normal application artifacts.
-test-harness = []
+test-harness = ["lytronaut-format/test-harness"]
 [dependencies]
 lytronaut-contracts.workspace = true
 lytronaut-format.workspace = true

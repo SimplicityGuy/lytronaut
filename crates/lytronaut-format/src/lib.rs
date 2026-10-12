@@ -3,6 +3,8 @@
 //! Sensor mosaics and relative float maps are never calibrated scene photographs.
 pub mod annex_b;
 mod assets;
+#[cfg(feature = "test-harness")]
+pub mod capacity_observations;
 mod container;
 pub mod live_photo;
 pub use assets::*;

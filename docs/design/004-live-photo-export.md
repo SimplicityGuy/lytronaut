@@ -172,29 +172,68 @@ central headers, duplicated fixed entry names and the end record. Both assembly
 and packaging use that shared bound; a final 18 MiB ZIP is allowed and one byte
 over is rejected before mutation.
 
-For the tested 2048×1024 geometry with three retained frames, allocated PCM
-scratch is at most 3.016 MiB and escaped picture scratch 4.524 MiB. The three
-pictures plus conservative tables occupy at most 13.579 MiB; the selected browser
-JPEG is bounded to about 1.5 MiB by its 2 MiB base64 data URL. Before this source
-optimization, contiguous movie growth could overlap old/new allocations, giving
-46.657 MiB of known live encoding allocations. Owned segments instead give
-approximately 36.087 MiB, including the full 8 MiB source, RGBA, selected JPEG and
-Rust data URL. Strip extraction still has about 44.798 MiB of known allocations;
-a conservative one-reference decoder plus one queued coded RGBA picture may add
-16 MiB. Final assembly overlaps retained segments and the preallocated movie/ZIP
-buffer at about 38.167 MiB, after decoder cleanup. Final ZIP-to-Uint8Array or
-Uint8Array-to-Blob copies can overlap about 30.191 MiB. These source estimates
-exclude allocator overhead, JS string/backing retention and opaque platform
-buffers, and the optimized source still requires runtime verification.
-This shape is not the largest coded-padding case: enumerating the admitted even
-dimensions up to 2048 and 2,097,152 visible pixels gives at most 8352 macroblocks.
-For example, 1138×1842 is padded to 1152×1856, bounding raw scratch to 3,223,936
-bytes and escaped scratch to 4,835,905 bytes. These shapes retain the same supported
-geometry and three-frame sweep bounds; their padded decoder and encoder allocations
-also require measurement. These estimates do not prove an opaque
-browser process stays within 64 MiB. B-picture reorder, additional references,
-padding, conversion, garbage collection and final ZIP/Uint8Array/Blob copy phases
-need actual source-bound measurements.
+The 64 MiB admission lease covers counted transient application work. Retained
+stage/grid resources have a separate 32 MiB budget. These are not a whole-Chrome
+RSS limit: engine baseline, opaque codec/driver pools and garbage collection are
+separate. A lease alone does not prove that every allocation fits it. The previous
+36.087/44.798 MiB totals omitted owned capacities and JS string/metadata overlaps
+and must not be used as completion evidence.
+
+| Phase | Counted owners and overlap | Unmeasured or partial attribution |
+| --- | --- | --- |
+| UI fetch | Growing Rust source Vec, temporary Rust chunk and JS response chunk; old/new Vec storage may overlap during growth | Stream/network queues; manifest allocations retained during export; allocator growth overlap |
+| Parse/feed | Source **capacity**, owned processed JSON, plane/range/table storage, JS Uint8Array input and EncodedVideoChunk backing while feeding | serde map nodes/allocator overhead; released JS objects awaiting GC; opaque decoder pool |
+| Selected JPEG | Rust data URL String, temporary Rust atob String, raw JPEG Vec **capacity**, then paired JPEG allocation | JS data URL/atob strings (conservative UTF-16 estimates differ from physical storage); canvas/frame backing |
+| Strip copy | Source/metadata, retained encoded segments and paired JPEG, full Rust RGBA capacity, one Rust strip and one ImageData strip | Canvas/frame backing and GC retention after close/reset |
+| PCM encode | RGBA, existing segments, paired JPEG, raw PCM capacity, new escaped segment capacity | Metadata and small writer tables not fully observed |
+| Assembly/package | Source/metadata still retained, encoded segments, final preallocated movie/ZIP, selected JPEG and table/provenance capacities | Temporary atom/table construction, allocator overhead |
+| Download | Source dropped; Rust ZIP + JS Uint8Array copy, then Rust ZIP dropped before Uint8Array + Blob | JS backing sharing/copy policy, GC retention; retained UI baseline remains separate |
+
+The actual UI borrows its fetched Rust Vec into export; processed plane payloads
+and Annex-B ranges borrow source bytes. It does not clone the full source again.
+The public wasm-bindgen fixture entry copies a JS input into a Rust Vec, so its
+external JS source must be attributed separately from the UI path. Independent
+pair verification also allocates test-only decoded images and must run after
+pipeline observations; its WASM page highwater is not the live owned-buffer sum.
+
+The opt-in `test-harness` feature propagates from client to format. Explicit
+`harness_capacity_start()` enables a fixed 1024-event buffer;
+`harness_capacity_take()` disables recording before serializing numeric records.
+No observer or these exports exists in default production builds. Field meanings:
+`fetch_before_extend` = destination capacity / Rust chunk capacity / JS chunk
+length; `fetch_after_extend` = resulting capacity / zero / JS chunk length;
+`wasm_boundary_source` = Rust capacity / length (external JS input separate);
+`ui_source_begin` = fetched capacity / length; `ui_source_end` = fetched capacity; `selected_jpeg` = data URL / atob Rust String /
+raw Vec capacities; `pixel_strip` = RGBA / Rust strip capacities / ImageData byte
+extent; `pcm_input` = RGBA / raw PCM capacities; `pcm_escape` = raw / escaped
+capacities at initial reserve; `segments` = summed segment / sample table / SPS /
+PPS capacities; `paired_jpeg` = borrowed input length / output / EXIF capacities;
+`assembly` = summed segments / final buffer / moov / offset-size table capacities;
+`package` = final buffer / JPEG capacities / borrowed provenance length;
+`download_array` = Rust ZIP capacity / intended JS copy length, recorded before
+allocation (not an observed JS backing). Zero fields carry no claim.
+These snapshots do not capture every reallocation, JS physical backing or JSON
+heap. `complete` means only that the event buffer did not overflow; `dropped > 0`
+invalidates even that partial coverage. Observer storage/report overhead is
+separate and reported; no event contains an identifier, path or pixel contents.
+No test script invokes these new start/take exports yet, and no observations
+have been executed for this source revision. Overflow/reset tests are source-only
+until the feature test build is run.
+
+Current export metadata admission inherits format defaults (2 MiB JSON,
+100,000 nodes, 1,024 sections), whereas viewing specifies 256 KiB JSON,
+16,384 nodes and 256 sections. The owned `Processed.original` Value survives
+through export. This discrepancy is unresolved in the counted ledger; this change
+neither tightens these limits nor rejects additional captures. A production
+policy change requires separate review.
+
+Enumerating admitted even dimensions up to 2048 and 2,097,152 visible pixels gives
+at most 8352 macroblocks. The tested padded 1138×1842 → 1152×1856 shape bounds raw
+PCM scratch to 3,223,936 bytes and initial escaped scratch to 4,835,905 bytes;
+2048×1024 is not the largest padded shape. Actual capacities, JS owners and
+metadata must be combined by simultaneous phase, not by summing nonoverlapping
+maxima. No whole-pipeline 64 MiB empirical proof is claimed. Opaque decoder DPB,
+B-picture reorder and reference pools remain separate from counted owned buffers.
 
 The prior private aggregate decoder proof contains 109 streams and 654 frames,
 but no SPS reference/geometry histogram. The updated decoder harness records

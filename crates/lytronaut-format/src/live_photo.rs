@@ -228,6 +228,11 @@ fn paired_jpeg(jpeg: &[u8], id: &str) -> Result<Vec<u8>> {
     output
         .try_reserve_exact(jpeg.len() + exif.len())
         .map_err(|_| E::Budget)?;
+    #[cfg(feature = "test-harness")]
+    crate::capacity_observations::record(
+        "paired_jpeg",
+        [jpeg.len(), output.capacity(), exif.capacity(), 0],
+    );
     output.extend(((exif.len() + 2) as u16).to_be_bytes());
     output.extend(exif);
     let mut pos = 2;
@@ -304,6 +309,11 @@ pub fn bundle(pair: Pair, provenance: &[u8]) -> Result<Vec<u8>> {
         return Err(E::Budget);
     }
     bytes.try_reserve_exact(needed).map_err(|_| E::Budget)?;
+    #[cfg(feature = "test-harness")]
+    crate::capacity_observations::record(
+        "package",
+        [bytes.capacity(), jpeg.capacity(), provenance.len(), 0],
+    );
     bytes.resize(movie_size + header.len(), 0);
     bytes.copy_within(0..movie_size, header.len());
     bytes[..header.len()].copy_from_slice(&header);

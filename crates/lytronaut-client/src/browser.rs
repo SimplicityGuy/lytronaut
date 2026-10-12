@@ -345,7 +345,23 @@ async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
             let _ = JsFuture::from(reader.cancel()).await;
             return Err("Response exceeds resource budget".into());
         }
-        bytes.extend(part.to_vec());
+        let chunk = part.to_vec();
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record(
+            "fetch_before_extend",
+            [
+                bytes.capacity(),
+                chunk.capacity(),
+                part.length() as usize,
+                0,
+            ],
+        );
+        bytes.extend(chunk);
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record(
+            "fetch_after_extend",
+            [bytes.capacity(), 0, part.length() as usize, 0],
+        );
     }
     Ok(bytes)
 }
@@ -692,12 +708,22 @@ impl Ui {
             .as_string()
             .ok_or("Invalid random export identifier")?;
         let status = self.status;
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record(
+            "ui_source_begin",
+            [bytes.capacity(), bytes.len(), 0, 0],
+        );
         let progress_abort = abort.clone();
         let result=crate::video::export_container(&bytes,selected,&uuid,&abort.signal(),move |done,total| {
             if !cancelled(&progress_abort) {
                 let _ = status.try_set(format!("Live Photo: {done} of {total} verified focus planes encoded · generated animation · no audio"));
             }
         }).await;
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record(
+            "ui_source_end",
+            [bytes.capacity(), 0, 0, 0],
+        );
         drop(bytes);
         let zip=result.map_err(|error|if cancelled(&abort){"Cancelled".into()}else{format!("{error}. Use verified JPEG/static still export or a browser with working AVC decoding")})?;
         if cancelled(&abort)
@@ -707,6 +733,11 @@ impl Ui {
             return Err("Cancelled".into());
         }
         let parts = Array::new();
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record(
+            "download_array",
+            [zip.capacity(), zip.len(), 0, 0],
+        );
         parts.push(&Uint8Array::from(zip.as_slice()));
         drop(zip);
         let options = BlobPropertyBag::new();

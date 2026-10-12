@@ -269,16 +269,20 @@ async fn attempt(
                     let mut owned = export.builder.borrow_mut();
                     let builder = owned.as_mut().ok_or("export builder unavailable")?;
                     if index == selected {
-                        let raw = web_sys::window()
+                        let binary = web_sys::window()
                             .ok_or("browser unavailable")?
                             .atob(
                                 data.strip_prefix("data:image/jpeg;base64,")
                                     .ok_or("invalid key JPEG")?,
                             )
-                            .map_err(|_| "invalid key JPEG")?
-                            .chars()
-                            .map(|c| c as u8)
-                            .collect::<Vec<_>>();
+                            .map_err(|_| "invalid key JPEG")?;
+                        let raw = binary.chars().map(|c| c as u8).collect::<Vec<_>>();
+                        #[cfg(feature = "test-harness")]
+                        lytronaut_format::capacity_observations::record(
+                            "selected_jpeg",
+                            [data.capacity(), binary.capacity(), raw.capacity(), 0],
+                        );
+                        drop(binary);
                         builder.set_still(&raw).map_err(|_| "key JPEG mismatch")?;
                     }
                     if builder.wants(index) {
@@ -303,7 +307,18 @@ async fn attempt(
                                         .map_err(|_| "frame pixel extent")?,
                                 )
                                 .map_err(|_| "frame pixels unavailable")?;
-                            rgba.extend(pixels.data().0);
+                            let strip = pixels.data().0;
+                            #[cfg(feature = "test-harness")]
+                            lytronaut_format::capacity_observations::record(
+                                "pixel_strip",
+                                [
+                                    rgba.capacity(),
+                                    strip.capacity(),
+                                    (width * (height - row).min(16) * 4) as usize,
+                                    0,
+                                ],
+                            );
+                            rgba.extend(strip);
                         }
                         let image = lytronaut_format::DecodedJpeg {
                             geometry: lytronaut_format::Geometry { width, height },
@@ -620,7 +635,25 @@ pub async fn export_archived_live_photo(
     id: String,
     signal: AbortSignal,
 ) -> std::result::Result<Vec<u8>, JsValue> {
+    #[cfg(feature = "test-harness")]
+    lytronaut_format::capacity_observations::record(
+        "wasm_boundary_source",
+        [bytes.capacity(), bytes.len(), 0, 0],
+    );
     export_container(&bytes, selected, &id, &signal, |_, _| {})
         .await
         .map_err(JsValue::from_str)
+}
+
+/// Numeric partial capacities only; absent from ordinary production artifacts.
+#[cfg(feature = "test-harness")]
+#[wasm_bindgen]
+pub fn harness_capacity_start() {
+    lytronaut_format::capacity_observations::start();
+}
+#[cfg(feature = "test-harness")]
+#[wasm_bindgen]
+pub fn harness_capacity_take() -> std::result::Result<String, JsValue> {
+    serde_json::to_string(&lytronaut_format::capacity_observations::take())
+        .map_err(|_| JsValue::from_str("capacity report failed"))
 }

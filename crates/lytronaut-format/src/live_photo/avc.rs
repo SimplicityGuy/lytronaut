@@ -36,6 +36,13 @@ impl Bits {
         self.n(1, 1);
         self.align();
         let mut output = Vec::with_capacity(self.bytes.len() * 3 / 2 + 1);
+        #[cfg(feature = "test-harness")]
+        if header == 0x65 {
+            crate::capacity_observations::record(
+                "pcm_escape",
+                [self.bytes.capacity(), output.capacity(), 0, 0],
+            );
+        }
         output.push(header);
         let mut zeros = 0;
         for byte in self.bytes {
@@ -132,6 +139,11 @@ pub(super) fn frame(
     bits.bytes
         .try_reserve_exact(raw_bound)
         .map_err(|_| E::Budget)?;
+    #[cfg(feature = "test-harness")]
+    crate::capacity_observations::record(
+        "pcm_input",
+        [image.rgba.capacity(), bits.bytes.capacity(), 0, 0],
+    );
     bits.ue(0);
     bits.ue(2);
     bits.ue(0);

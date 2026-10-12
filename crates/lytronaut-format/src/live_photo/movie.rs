@@ -182,6 +182,16 @@ impl Movie {
             offset: self.length as u32,
             bytes: sample,
         });
+        #[cfg(feature = "test-harness")]
+        crate::capacity_observations::record(
+            "segments",
+            [
+                self.samples.iter().map(|s| s.bytes.capacity()).sum(),
+                self.samples.capacity() * std::mem::size_of::<Sample>(),
+                self.sps.capacity(),
+                self.pps.capacity(),
+            ],
+        );
         self.length = length;
         Ok(())
     }
@@ -324,6 +334,17 @@ impl Movie {
             .min(super::BUNDLE_CAP);
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(capacity).map_err(|_| E::Budget)?;
+        #[cfg(feature = "test-harness")]
+        crate::capacity_observations::record(
+            "assembly",
+            [
+                self.samples.iter().map(|s| s.bytes.capacity()).sum(),
+                bytes.capacity(),
+                moov.capacity(),
+                offsets.capacity() * std::mem::size_of::<u32>()
+                    + sizes.capacity() * std::mem::size_of::<u32>(),
+            ],
+        );
         bytes.extend(atom(
             b"ftyp",
             [b"qt  ".to_vec(), u(0), b"qt  ".to_vec()].concat(),
