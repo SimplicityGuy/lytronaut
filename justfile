@@ -117,6 +117,21 @@ video-private-test sealed_root: wasm-build
     npm ci --ignore-scripts --prefix scripts/browser
     LYTRONAUT_VIDEO_PRIVATE_ROOT="$1" node scripts/video-test.cjs
 
+# Opt-in pair proof using frozen production programs; no build/install or CI.
+[positional-arguments]
+live-photo-private-test sealed_root:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -r "$1/app.db" || ! -d "$1/originals" || -z "${LYTRONAUT_CLIENT:-}" || ! "${LYTRONAUT_TEST_REVISION:-}" =~ ^[0-9a-f]{40}$ || ! "${LYTRONAUT_TEST_WASM_SHA256:-}" =~ ^[0-9a-f]{64}$ || ! "${LYTRONAUT_TEST_GLUE_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo 'An authorized sealed copy and frozen production directory/revision/WASM+glue manifest hashes are required.' >&2
+        exit 2
+    fi
+    if [[ ! -r "$LYTRONAUT_CLIENT/lytronaut_client_bg.wasm" || ! -r "$LYTRONAUT_CLIENT/lytronaut_client.js" || ! -d scripts/browser/node_modules/puppeteer-core ]]; then
+        echo 'Prepare and freeze production WASM/glue and locked browser tooling before private verification.' >&2
+        exit 2
+    fi
+    env -u LYTRONAUT_VIDEO_PRIVATE_ROOT LYTRONAUT_PRIVATE_SEALED_ROOT="$1" node scripts/live-photo-private-test.cjs
+
 # Explicit local Linux image builds; never publish to a registry.
 container-build architecture image relay_image revision:
     docker build --platform "linux/{{ architecture }}" --tag "{{ image }}" --build-arg "SOURCE_REVISION={{ revision }}" --progress=plain .

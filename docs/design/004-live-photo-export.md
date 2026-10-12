@@ -98,15 +98,43 @@ archive. Feature identity and hashes are distinct from production artifacts. Thi
 source addition still requires actual browser validation; pagehide is not owner
 disposal, and neither test proves whole-browser memory or Photos GUI recognition.
 
-Private fixture verification is a separate explicit command:
+Private fixture verification uses separate explicit commands:
 
 ```sh
 mise exec -- just --quiet video-private-test "$AUTHORIZED_SEALED_COPY"
+LYTRONAUT_CLIENT="$FROZEN_PRODUCTION_DIST" LYTRONAUT_TEST_REVISION="$FROZEN_SOURCE_HEAD" \
+  LYTRONAUT_TEST_WASM_SHA256="$FROZEN_WASM_SHA256" LYTRONAUT_TEST_GLUE_SHA256="$FROZEN_GLUE_SHA256" \
+  mise exec -- just --quiet live-photo-private-test "$AUTHORIZED_SEALED_COPY"
 ```
 
-That recipe invokes the existing aggregate-only AVC decoder/SPS corpus proof
-against an authorized prepared read-only sealed copy. It is not a private Live
-Photo export acceptance claim. It is excluded from default checks and CI. Public
+The video recipe invokes the existing aggregate-only AVC decoder/SPS corpus proof.
+The Live Photo recipe uses already frozen production WASM/glue and previously
+installed locked browser tooling; it builds and installs nothing. Before running,
+verify the frozen manifest binds the exact source revision, production feature
+set and supplied program hashes. The harness checks those hashes before opening
+the sealed catalog and rejects owner-harness artifacts. A supplied revision alone
+does not prove program/source correspondence.
+
+It attempts all 109 archived streams, deduplicates first/middle/last selections,
+checks strict cancellation and successful retries, and reports failures by bounded
+phase categories without identifiers or error strings. Source responses retain
+the existing 8 MiB admission, checked before serving and before bounded streaming
+into one exact-size buffer. An independent test-only reader checks stored ZIP
+checksums, JPEG pairing metadata, QuickTime sample tables, timed key metadata,
+silent duration, orientation and provenance. WebCodecs independently decodes all
+generated movie frames and checks the selected key against independently decoded
+source pixels. Aggregate RGB loss statistics describe JPEG/chroma conversion;
+they impose no invented lossless threshold. Elapsed corpus/export totals and
+min/max attempt times are aggregate measurements. SPS geometry/reference/B-frame
+aggregates remain separate from whole-browser peak memory.
+
+The harness checks every sealed source blob's digest, size, mode and mtime before
+testing and again in `finally`, including on failure. It serves GET requests only
+on loopback in an isolated 0700 browser profile, blocks external network requests
+and removes its temporary profile. Private bytes remain in browser/process memory;
+no private JPEG, MOV, ZIP or catalog rows are saved or logged. This source addition
+requires a coordinated runtime run before claiming corpus acceptance. Neither
+private recipe runs in default checks or CI. Public
 video/browser recipes remove the inherited private-root environment variable so
 public validation cannot accidentally select private corpus mode. Private paths,
 captures and identifiers must never enter public reports or CI artifacts.
