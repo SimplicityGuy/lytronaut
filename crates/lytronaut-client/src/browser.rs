@@ -920,26 +920,21 @@ impl Ui {
     fn fail(&self, error: String) {
         self.status.set(error);
     }
-    fn clear_stage(&self) {
-        self.cancel_browse(BrowseLane::Selected);
+    fn clear_stage(&self) -> u64 {
+        let generation = {
+            let mut current = self.stage_generation.borrow_mut();
+            *current += 1;
+            *current
+        };
+        let browse_abort = self.take_browse_abort(BrowseLane::Selected);
         let live_abort = self.live_photo_abort.borrow_mut().take();
-        if let Some(abort) = live_abort {
-            abort.abort();
-        }
+        let stage_abort = self.stage_abort.borrow_mut().take();
+        let renderer = self.gpu.borrow_mut().take();
+        let url = self.stage.get_untracked();
         if self.gpu_enabled.get_untracked() {
             self.gpu_status.set("CPU JPEG presentation".into());
         }
         self.gpu_visible.set(false);
-        self.gpu.borrow_mut().take();
-        *self.stage_generation.borrow_mut() += 1;
-        let stage_abort = self.stage_abort.borrow_mut().take();
-        if let Some(abort) = stage_abort {
-            abort.abort();
-        }
-        let url = self.stage.get_untracked();
-        if url.starts_with("blob:") {
-            let _ = web_sys::Url::revoke_object_url(&url);
-        }
         self.stage.set(String::new());
         self.detail.set(None);
         self.focus_stack.set(None);
@@ -947,18 +942,43 @@ impl Ui {
         self.video_label.set(String::new());
         self.displayed_derivative.set(None);
         self.orientation.set(1);
+        // All owned state is cleared before native callbacks can navigate again.
+        drop(renderer);
+        if url.starts_with("blob:") {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        }
+        for abort in [browse_abort, live_abort, stage_abort]
+            .into_iter()
+            .flatten()
+        {
+            abort.abort();
+        }
+        generation
     }
-    fn clear_assets(&self) {
-        *self.generation.borrow_mut() += 1;
-        self.cancel_browse(BrowseLane::Thumbnail0);
-        self.cancel_browse(BrowseLane::Thumbnail1);
-        for url in self.thumbs.get_untracked().values() {
+    fn clear_assets(&self) -> u64 {
+        let generation = {
+            let mut current = self.generation.borrow_mut();
+            *current += 1;
+            *current
+        };
+        let aborts = [
+            self.take_browse_abort(BrowseLane::Thumbnail0),
+            self.take_browse_abort(BrowseLane::Thumbnail1),
+        ];
+        let mut thumbs = BTreeMap::new();
+        self.thumbs
+            .update(|current| thumbs = std::mem::take(current));
+        self.clear_stage();
+        // Only previously owned URLs/controllers are released after reentrancy.
+        for url in thumbs.values() {
             if url.starts_with("blob:") {
                 let _ = web_sys::Url::revoke_object_url(url);
             }
         }
-        self.thumbs.set(BTreeMap::new());
-        self.clear_stage();
+        for abort in aborts.into_iter().flatten() {
+            abort.abort();
+        }
+        generation
     }
     async fn watch_export(&self, mut report: ExportProgress) -> Result<()> {
         let mount = self.mount.get();
@@ -1304,15 +1324,18 @@ impl Ui {
             abort.abort();
         }
     }
-    fn cancel_browse(&self, lane: BrowseLane) {
-        let abort = BROWSE.with(|runtime| {
+    fn take_browse_abort(&self, lane: BrowseLane) -> Option<AbortController> {
+        BROWSE.with(|runtime| {
             let mut runtime = runtime.borrow_mut();
             if runtime.mount == self.mount.get() {
                 runtime.cancel(lane)
             } else {
                 None
             }
-        });
+        })
+    }
+    fn cancel_browse(&self, lane: BrowseLane) {
+        let abort = self.take_browse_abort(lane);
         if let Some(abort) = abort {
             abort.abort();
         }
@@ -1392,8 +1415,14 @@ impl Ui {
                 return;
             }
         };
-        self.cancel_browse(BrowseLane::Main);
-        self.clear_assets();
+        let main_abort = self.take_browse_abort(BrowseLane::Main);
+        let generation = self.clear_assets();
+        if let Some(abort) = main_abort {
+            abort.abort();
+        }
+        if generation != *self.generation.borrow() || !self.attached(self.mount.get()) {
+            return;
+        }
         self.captures.set(Rc::new(Vec::new()));
         self.status.set("Loading captures…".into());
         let intent = MainIntent {
@@ -1403,7 +1432,7 @@ impl Ui {
             search,
             sort,
             offset,
-            generation: *self.generation.borrow(),
+            generation,
         };
         browse_submit(self, BrowseLane::Main, BrowseIntent::Main(intent));
     }
@@ -1438,16 +1467,23 @@ impl Ui {
         if !available {
             return;
         }
-        if matches!(operation, SelectedIntent::Capture(_)) {
-            self.clear_stage();
+        let generation = if matches!(operation, SelectedIntent::Capture(_)) {
+            self.clear_stage()
         } else {
-            *self.stage_generation.borrow_mut() += 1;
+            let generation = {
+                let mut current = self.stage_generation.borrow_mut();
+                *current += 1;
+                *current
+            };
             let abort = self.stage_abort.borrow_mut().take();
             if let Some(abort) = abort {
                 abort.abort();
             }
+            generation
+        };
+        if generation != *self.stage_generation.borrow() || !self.attached(self.mount.get()) {
+            return;
         }
-        let generation = *self.stage_generation.borrow();
         browse_submit(
             self,
             BrowseLane::Selected,
@@ -1505,20 +1541,31 @@ impl Ui {
         Ok(())
     }
     fn choose_library(&self, library: LibrarySummary) {
-        self.invalidate_sidebar_requests();
-        self.cancel_browse(BrowseLane::Main);
+        // Invalidate control requests without entering JS before ownership reset.
+        *self.library_requests.borrow_mut() += 1;
+        *self.album_requests.borrow_mut() += 1;
+        let aborts = [
+            self.take_browse_abort(BrowseLane::Libraries),
+            self.take_browse_abort(BrowseLane::Albums),
+            self.take_browse_abort(BrowseLane::Main),
+        ];
         self.list_target.set(self.list_offset.get_untracked());
         self.album_offset.set(0);
         self.album_target.set(0);
         self.album_next.set(None);
-        self.clear_assets();
         self.library.set(Some(library.clone()));
         self.album.set(None);
         self.albums.set(Vec::new());
         self.files.set(Vec::new());
         self.offset.set(0);
+        let generation = self.clear_assets();
+        for abort in aborts.into_iter().flatten() {
+            abort.abort();
+        }
+        if generation != *self.generation.borrow() || !self.attached(self.mount.get()) {
+            return;
+        }
         if library.state == LibraryState::Ready {
-            let generation = *self.generation.borrow();
             self.request_albums(0, Some(generation));
         } else {
             self.request_page(0);
