@@ -62,16 +62,25 @@ module.exports=async({browser,origin})=>{
         state.observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});
         window.__sidebarSelectionFence=state;
       });
+      let focus=false,geometry={width:0,height:0};
       try{
         await interact();
         if(mappedResponse){const response=await mappedResponse;assert(response.ok());const bytes=await response.buffer();assert(bytes.length<=256*1024);assert.equal(JSON.parse(bytes).items[0].id,expected.id,'mapped page selected expected first capture');}
         const response=await detailResponse;assert(response.ok());const bytes=await response.buffer();assert(bytes.length<=256*1024);const detail=JSON.parse(bytes);assert.equal(detail.capture.id,expected.id);
-        const focus=detail.originals.some(file=>file.role==='jpeg_focus_stack');
-        const geometry=focus?{width:360,height:240}:{width:640,height:360};
+        focus=detail.originals.some(file=>file.role==='jpeg_focus_stack');
+        geometry=focus?{width:360,height:240}:{width:640,height:360};
         await page.waitForFunction((expected,focus,geometry)=>{
           const image=document.querySelector('.stage img'),status=document.querySelector('.status')?.textContent;
           return window.__sidebarSelectionFence?.changed===true&&document.querySelector('.viewer-strip span')?.textContent===expected.name&&document.querySelector('.capture[aria-pressed="true"] span')?.textContent===expected.name&&image?.complete&&image.naturalWidth===geometry.width&&image.naturalHeight===geometry.height&&image.alt.endsWith(': '+expected.name)&&(focus?status?.startsWith('Discrete focus: stored plane '):status==='Static JPEG preview ready. Color profile unverified');
         },{},expected,focus,geometry);
+      }catch(error){
+        const diagnostic=await page.evaluate((expected,focus,geometry)=>{
+          const image=document.querySelector('.stage img'),status=document.querySelector('.status')?.textContent;
+          const statusKind=status==='Static JPEG preview ready. Color profile unverified'?'staticready':status?.startsWith('Discrete focus: stored plane ')?'focusready':status==='Discrete focus unavailable. Static preview and originals remain usable'?'focusunavailable':status==='Loading capture…'?'loading':'other';
+          return {sidebarSelectionDiagnostic:true,fenceChanged:window.__sidebarSelectionFence?.changed===true,gridMatch:document.querySelector('.capture[aria-pressed="true"] span')?.textContent===expected.name,viewerMatch:document.querySelector('.viewer-strip span')?.textContent===expected.name,altMatch:image?.alt.endsWith(': '+expected.name)===true,imageComplete:image?.complete===true,naturalWidth:image?.naturalWidth||0,naturalHeight:image?.naturalHeight||0,expectedWidth:geometry.width,expectedHeight:geometry.height,focusFlag:focus,statusKind};
+        },expected,focus,geometry).catch(()=>({sidebarSelectionDiagnosticUnavailable:true}));
+        console.error(JSON.stringify(diagnostic));
+        throw error;
       }finally{
         await page.evaluate(()=>{window.__sidebarSelectionFence?.observer.disconnect();delete window.__sidebarSelectionFence;});
       }
