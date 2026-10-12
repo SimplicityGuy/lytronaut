@@ -52,9 +52,53 @@ security-scan:
 # Synthetic-only actual service+Rust/WASM browser integration.
 browser-test:
     npm ci --ignore-scripts --prefix scripts/browser
-    bash scripts/browser-test.sh
+    env -u LYTRONAUT_VIDEO_PRIVATE_ROOT bash scripts/browser-test.sh
+    node scripts/live-photo-test.cjs
 
 # Actual platform codec acceptance using independently generated AVC pixels.
 video-test:
     npm ci --ignore-scripts --prefix scripts/browser
-    node scripts/video-test.cjs
+    env -u LYTRONAUT_VIDEO_PRIVATE_ROOT node scripts/video-test.cjs
+
+# Public synthetic portable format/contracts/API tests; no private source data.
+live-photo-test:
+    cargo test --locked -p lytronaut-format --test live_photo
+    cargo test --locked -p lytronaut-contracts live_photo
+    cargo test --locked -p lytronaut-service --test api live_photo
+
+# Produce independently authored RGB resources and one complete ZIP in output.
+[positional-arguments]
+live-photo-native output:
+    cargo run --locked -p lytronaut-format --example live_photo -- "$1"
+
+# Actual Rust/WASM codec, maximum geometry, cancellation and resource cleanup.
+live-photo-browser-test: wasm-build
+    npm ci --ignore-scripts --prefix scripts/browser
+    node scripts/live-photo-test.cjs
+
+# macOS resource-loader check only; does not open Photos or prove GUI import.
+[positional-arguments]
+live-photo-apple output:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ $(uname -s) != Darwin ]]; then
+        echo 'Apple resource verification requires macOS; use live-photo-test and live-photo-browser-test here.' >&2
+        exit 2
+    fi
+    just live-photo-native "$1"
+    mkdir -p "$1/swift-cache"
+    swiftc -module-cache-path "$1/swift-cache" scripts/verify-live-photo.swift -o "$1/apple-verify"
+    "$1/apple-verify" "$1"
+
+# Opt-in, aggregate-only existing AVC/SPS proof against a sealed read-only copy.
+# Not part of check, browser-test, public Live Photo recipes, or CI.
+[positional-arguments]
+video-private-test sealed_root: wasm-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -r "$1/app.db" || ! -d "$1/originals" ]]; then
+        echo 'An authorized prepared sealed catalog copy is required.' >&2
+        exit 2
+    fi
+    npm ci --ignore-scripts --prefix scripts/browser
+    LYTRONAUT_VIDEO_PRIVATE_ROOT="$1" node scripts/video-test.cjs

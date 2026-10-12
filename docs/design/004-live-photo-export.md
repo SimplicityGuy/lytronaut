@@ -55,7 +55,7 @@ a time. It offers only the complete ZIP and revokes its temporary download URL.
 It does not claim a durable server job or resume after the tab closes.
 
 The independently authored synthetic native example is
-`cargo run -p lytronaut-format --example live_photo -- /tmp/task-specific-output`.
+`mise exec -- just live-photo-native /tmp/task-specific-output`.
 The macOS test-only `scripts/verify-live-photo.swift` checks decoded frame colors,
 selected still, duration, geometry, no audio, pairing and timed metadata, plus
 rejection of an intentionally mismatched pairing identifier. It uses resource
@@ -66,6 +66,39 @@ cancellation, unsupported codecs, actual software retry and complete pair
 download. It records WASM memory high water, declared references/coded geometry,
 maximum strip-copy bytes and decoder/frame closure. These programs still require execution against the final build;
 their presence alone is not compatibility evidence.
+
+## Repeatable validation recipes
+
+Run these through the mise-pinned environment after normal setup:
+
+```sh
+mise exec -- just live-photo-test
+mise exec -- just live-photo-native /tmp/task-specific-output
+mise exec -- just live-photo-browser-test
+mise exec -- just live-photo-apple /tmp/task-specific-apple-output
+```
+
+`live-photo-test` covers portable format, wire contracts and native service API.
+`live-photo-browser-test` builds the WASM application and installs locked test
+tooling before exercising the public synthetic codec and resource tests. The
+existing `browser-test` recipe, reused by Linux browser CI, also runs that public
+Live Photo harness after the service/UI proof. `live-photo-apple` first generates
+the native public fixture, then compiles/runs the Apple-framework verifier with
+a task-specific module cache. It requires macOS and does not run in Linux CI;
+it does not open a Photos library or replace the isolated GUI import gate.
+
+Private fixture verification is a separate explicit command:
+
+```sh
+mise exec -- just --quiet video-private-test "$AUTHORIZED_SEALED_COPY"
+```
+
+That recipe invokes the existing aggregate-only AVC decoder/SPS corpus proof
+against an authorized prepared read-only sealed copy. It is not a private Live
+Photo export acceptance claim. It is excluded from default checks and CI. Public
+video/browser recipes remove the inherited private-root environment variable so
+public validation cannot accidentally select private corpus mode. Private paths,
+captures and identifiers must never enter public reports or CI artifacts.
 
 ## Resource verification still pending
 
