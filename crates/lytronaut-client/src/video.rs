@@ -257,6 +257,16 @@ async fn attempt(
                         .0
                         .to_data_url_with_type("image/jpeg")
                         .map_err(|_| "frame encode failed")?;
+                    #[cfg(feature = "test-harness")]
+                    lytronaut_format::capacity_observations::record(
+                        "jpeg_platform_result",
+                        [
+                            data.capacity(),
+                            data.len(),
+                            canvas.0.width() as usize,
+                            canvas.0.height() as usize,
+                        ],
+                    );
                     if data.len() > 2 * 1024 * 1024 || !data.starts_with("data:image/jpeg;base64,")
                     {
                         return Err("frame output budget");

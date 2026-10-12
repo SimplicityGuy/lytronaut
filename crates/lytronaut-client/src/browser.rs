@@ -328,7 +328,31 @@ pub async fn harness_read_response(
         .await
         .map_err(|error| JsValue::from_str(&error))
 }
+#[cfg(feature = "test-harness")]
+fn response_category(response: &Response) -> usize {
+    // Numeric categories only; no URL, query, identifier or path enters the trace.
+    let Ok(url) = web_sys::Url::new(&response.url()) else {
+        return 0;
+    };
+    let path = url.pathname();
+    let mut parts = path.trim_start_matches('/').split('/');
+    match (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) {
+        (Some("assets"), Some(_), Some("download"), None, None) => 1,
+        (Some("assets"), Some(_), Some("manifest"), None, None) => 2,
+        (Some("captures"), Some(_), None, None, None) => 3,
+        (Some("assets"), Some(_), Some("chunks"), Some(_), None) => 4,
+        _ => 0,
+    }
+}
 async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
+    #[cfg(feature = "test-harness")]
+    let category = response_category(&response);
     if response
         .headers()
         .get("Content-Length")
@@ -380,6 +404,8 @@ async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
             part.buffer().byte_length() as usize
         };
         #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record("fetch_category", [category, 0, 0, 0]);
+        #[cfg(feature = "test-harness")]
         lytronaut_format::capacity_observations::record(
             "fetch_before_extend",
             [
@@ -390,6 +416,8 @@ async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
             ],
         );
         bytes.extend(chunk);
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record("fetch_category", [category, 0, 0, 0]);
         #[cfg(feature = "test-harness")]
         lytronaut_format::capacity_observations::record(
             "fetch_after_extend",
@@ -771,7 +799,19 @@ impl Ui {
             "download_array",
             [zip.capacity(), zip.len(), 0, 0],
         );
-        parts.push(&Uint8Array::from(zip.as_slice()));
+        let array = Uint8Array::from(zip.as_slice());
+        #[cfg(feature = "test-harness")]
+        lytronaut_format::capacity_observations::record(
+            "download_array_live",
+            [
+                zip.capacity(),
+                array.length() as usize,
+                array.buffer().byte_length() as usize,
+                0,
+            ],
+        );
+        parts.push(&array);
+        drop(array); // The parts array retains the same JS object as before.
         drop(zip);
         let options = BlobPropertyBag::new();
         options.set_type("application/zip");

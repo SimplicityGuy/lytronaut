@@ -216,9 +216,15 @@ backing bytes / copied JS backing bytes; `fetch_after_extend` = resulting capaci
 views are reused; cross-realm/custom values retain the existing constructor
 conversion. Copied backing is zero when the exact input object is reused; original
 backing zero means unavailable attribution (custom arrays have no buffer), not
-zero ownership. View length is not assumed to equal backing length. These paired
-snapshots still do not measure old/new allocation overlap inside Vec growth;
+zero ownership. View length is not assumed to equal backing length. Each snapshot is immediately preceded, without an intervening await, by
+`fetch_category` = category / zero / zero / zero: 0 other, 1 download, 2 manifest,
+3 capture_detail, 4 asset_chunk. Chunk requests can include stage previews and
+concurrent grid work; none is assumed export-only. No URL or identifier is
+recorded. Feature-only URL classification temporarily allocates URL/path strings;
+that observer overhead is separate and unmeasured. These paired snapshots still do not measure old/new allocation overlap inside Vec growth;
 `wasm_boundary_source` = Rust capacity / length (external JS input separate);
+`jpeg_platform_result` = Rust data URL capacity / byte length / canvas width /
+height, recorded before the existing 2MiB output check (including rejection);
 `ui_source_begin` = fetched capacity / length; `ui_source_end` = fetched capacity; `selected_jpeg` = data URL / atob Rust String /
 raw Vec capacities; `pixel_strip` = RGBA / Rust strip capacities / ImageData byte
 extent; `pcm_input` = RGBA / raw PCM capacities; `pcm_escape` = raw / escaped
@@ -227,7 +233,11 @@ PPS capacities; `paired_jpeg` = borrowed input length / output / EXIF capacities
 `assembly` = summed segments / final buffer / moov / offset-size table capacities;
 `package` = final buffer / JPEG capacities / borrowed provenance length;
 `download_array` = Rust ZIP capacity / intended JS copy length, recorded before
-allocation (not an observed JS backing). Zero fields carry no claim.
+allocation (not an observed JS backing); `download_array_live` = Rust ZIP capacity
+/ actual Uint8Array view length / backing-buffer length / zero, after creating
+the array and before dropping ZIP. The temporary Rust array handle drops at the
+prior insertion point; the parts array retains the same JS object. Zero fields
+carry no claim.
 These snapshots do not capture every reallocation, JS physical backing or JSON
 heap. `complete` means only that the event buffer did not overflow; `dropped > 0`
 invalidates even that partial coverage. Fixed observer buffer bytes are reported; returned report Vec and serialization
@@ -236,7 +246,24 @@ The synthetic owner harness invokes start/take around its existing final
 successful mounted UI export, after the viewer has settled. It validates the
 bounded fixed schema, requires every UI stage and no overflow, excludes the
 external JS-input seam, and writes the partial numeric trace into the existing
-owner result artifact with the same feature program/source identity. The baseline
+owner result artifact with the same feature program/source identity. Around that
+same final export only, native canvas and Blob wrappers collect at most 128
+numeric records and are restored in finally. `canvas_result` = canvas width /
+height / actual JS result character length / conservative UTF16 logical bytes
+(twice length), before the result enters Rust. `zip_blob` = part count / typed
+array view bytes / backing bytes / actual Blob size; exactly one ZIP part is
+required. No result strings, canvases, typed arrays or blobs are retained by
+observations. Concurrent preview canvas calls are included within the existing
+2048-dimension/2Mi-pixel admission bounds, including 128×128 grid previews; each
+selected Rust JPEG result must match a canvas result's geometry and ASCII byte
+length, counting repeated outputs from codec fallback separately. Installation and operation failures restore wrappers.
+Zero dropped records is required, and the serialized JS report is capped at
+32KiB. Numeric array/object storage and serialization overhead remain separate
+and physically unmeasured. JS character counts and Blob sizes do not establish
+physical string storage, Blob copies/sharing or opaque canvas/codec heap sizes.
+These observations do not prove the full counted transient/retained budget;
+metadata ownership and retained stage/grid/DTO capacities remain separate gaps.
+The baseline
 `runtime.json` and separate `runtime-large.json` / `runtime-padded.json` records
 are bounded and checked for matching feature/source/program identity. It performs
 no independent pair verification during collection. Each trace labels its declared synthetic geometry, observed source length and
@@ -322,3 +349,13 @@ yielding capacity below twice the admitted limit when the limit is at least eigh
 bytes. Count old/new storage conservatively during growth. This implementation
 reasoning is not a public Vec API guarantee; actual WASM capacities and allocator
 overhead still require evidence, and JS backing size is not view length.
+
+The native byte-view reader change `ec646f7` passed all three CI checks in
+`38231526272`, and both container checks in `38231526275`.
+The independently matched tree was `d04a1ffc4f4c1276e23778c4f10a82be662d673a`.
+All nine public reader checks passed; small/large/padded traces had 98/212/396
+events, source lengths 992/32,160/33,360 bytes, zero drops and observed copied JS
+backing maxima zero. Each case retained eight closed decoders, 40 closed frames
+and three downloads. The new pre-rejection/platform/array/category observations
+remain source-only until a fresh actual run; these prior traces do not prove the
+full counted budget.

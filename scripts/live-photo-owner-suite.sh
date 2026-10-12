@@ -19,6 +19,8 @@ for(const [index,report] of reports.entries()){
   assert.equal(trace.shape,expected[index][0]);
   assert.deepEqual(trace.geometry,{width:expected[index][1],height:expected[index][2]});
   assert.equal(trace.complete,true);assert.equal(trace.dropped,0);assert.equal(trace.totalMemoryProof,false);
+  assert.equal(trace.platform.complete,true);assert.equal(trace.platform.dropped,0);
+  assert.equal(trace.platform.physicalHeapMeasured,false);
   assert.equal(report.downloads,3);
   assert(Number.isSafeInteger(report.created)&&report.created>0);assert.equal(report.created,report.closed);
   assert(Number.isSafeInteger(report.outputs)&&report.outputs>0);assert.equal(report.outputs,report.framesClosed);

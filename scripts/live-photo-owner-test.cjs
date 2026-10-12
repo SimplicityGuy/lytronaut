@@ -151,17 +151,52 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   await page.waitForFunction(expected=>{const image=document.querySelector('.stage img');return image?.complete&&image.naturalWidth===expected.width&&image.naturalHeight===expected.height;},{},expectedGeometry);
   const geometry=await page.$eval('.stage img',image=>({width:image.naturalWidth,height:image.naturalHeight}));
   assert.deepEqual(geometry,expectedGeometry,'declared synthetic UI fixture scope');
-  await page.evaluate(()=>window.__ownerModule.harness_capacity_start());
-  let capacityText;
+  await page.evaluate(()=>{
+    const nativeCanvas=HTMLCanvasElement.prototype.toDataURL, nativeBlob=window.Blob;
+    const observations=[];let dropped=0;
+    const record=(stage,bytes)=>{
+      if(!bytes.every(value=>Number.isSafeInteger(value)&&value>=0&&value<=128*1024*1024))throw Error('bounded platform observation required');
+      if(observations.length===128){dropped=Math.min(dropped+1,128*1024*1024);return;}
+      observations.push({stage,bytes});
+    };
+    const restore=()=>{HTMLCanvasElement.prototype.toDataURL=nativeCanvas;window.Blob=nativeBlob;delete window.__ownerPlatformTake;};
+    window.__ownerPlatformTake=()=>{
+      restore();
+      return {observations,dropped,complete:dropped===0,physicalHeapMeasured:false};
+    };
+    try {
+      HTMLCanvasElement.prototype.toDataURL=function(...args){
+        const result=Reflect.apply(nativeCanvas,this,args);
+        record('canvas_result',[this.width,this.height,result.length,2*result.length]);
+        return result;
+      };
+      window.Blob=new Proxy(nativeBlob,{construct(target,args,newTarget){
+        const blob=Reflect.construct(target,args,newTarget);
+        if(args[1]?.type==='application/zip'){
+          const parts=args[0];
+          if(!Array.isArray(parts)||parts.length!==1||!(parts[0] instanceof Uint8Array))throw Error('fixed ZIP parts required');
+          record('zip_blob',[parts.length,parts[0].byteLength,parts[0].buffer.byteLength,blob.size]);
+        }
+        return blob;
+      }});
+    } catch(error) {restore();throw error;}
+  });
+  let capacityText,platform;
   try {
+    await page.evaluate(()=>window.__ownerModule.harness_capacity_start());
     await click('Export Live Photo pair (.zip)');
     await page.waitForFunction(()=>document.querySelector('.status').textContent.includes('Complete Live Photo ZIP downloaded'));
   } finally {
-    capacityText=await page.evaluate(()=>{
-      const text=window.__ownerModule.harness_capacity_take();
+    const result=await page.evaluate(()=>{
+      let text,platform;
+      try {text=window.__ownerModule.harness_capacity_take();}
+      finally {platform=window.__ownerPlatformTake();}
       if(typeof text!=='string'||text.length>192*1024)throw Error('bounded capacity report required');
-      return text;
+      const serialized=JSON.stringify(platform);
+      if(serialized.length>32*1024)throw Error('bounded platform report required');
+      return {text,platform};
     });
+    capacityText=result.text;platform=result.platform;
   }
   const capacities=JSON.parse(capacityText);
   const keys=(value,expected)=>assert.deepEqual(Object.keys(value).sort(),[...expected].sort(),'fixed capacity record schema');
@@ -170,7 +205,7 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   assert.equal(capacities.dropped,0);
   assert(Number.isSafeInteger(capacities.observer_storage_bytes)&&capacities.observer_storage_bytes>0&&capacities.observer_storage_bytes<=256*1024);
   assert(Array.isArray(capacities.observations)&&capacities.observations.length>0&&capacities.observations.length<=1024);
-  const stages=new Set(['fetch_before_extend','fetch_after_extend','ui_source_begin','ui_source_end','selected_jpeg','pixel_strip','pcm_input','pcm_escape','segments','paired_jpeg','assembly','package','download_array']);
+  const stages=new Set(['fetch_category','fetch_before_extend','fetch_after_extend','ui_source_begin','ui_source_end','jpeg_platform_result','selected_jpeg','pixel_strip','pcm_input','pcm_escape','segments','paired_jpeg','assembly','package','download_array','download_array_live']);
   for(const observation of capacities.observations) {
     keys(observation,['stage','bytes']);
     assert(stages.has(observation.stage),'only fixed UI capacity stages are allowed');
@@ -178,6 +213,46 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
     for(const bytes of observation.bytes)assert(Number.isSafeInteger(bytes)&&bytes>=0&&bytes<=128*1024*1024,'bounded numeric capacity only');
   }
   for(const stage of stages)assert(capacities.observations.some(o=>o.stage===stage),`required partial UI stage: ${stage}`);
+  for(let index=0;index<capacities.observations.length;index++) {
+    const observation=capacities.observations[index];
+    if(observation.stage==='fetch_category') {
+      assert(observation.bytes[0]<=4&&observation.bytes.slice(1).every(v=>v===0),'fixed request category');
+      assert(['fetch_before_extend','fetch_after_extend'].includes(capacities.observations[index+1]?.stage),'category adjacent to chunk snapshot');
+    }
+    if(['fetch_before_extend','fetch_after_extend'].includes(observation.stage))assert.equal(capacities.observations[index-1]?.stage,'fetch_category');
+  }
+  for(const category of [1,2])assert(capacities.observations.some(o=>o.stage==='fetch_category'&&o.bytes[0]===category),'actual export download and manifest attributed');
+  keys(platform,['observations','dropped','complete','physicalHeapMeasured']);
+  assert.equal(platform.complete,true);assert.equal(platform.dropped,0);assert.equal(platform.physicalHeapMeasured,false);
+  assert(Array.isArray(platform.observations)&&platform.observations.length>0&&platform.observations.length<=128);
+  for(const observation of platform.observations) {
+    keys(observation,['stage','bytes']);assert(['canvas_result','zip_blob'].includes(observation.stage));
+    assert(Array.isArray(observation.bytes)&&observation.bytes.length===4);
+    for(const value of observation.bytes)assert(Number.isSafeInteger(value)&&value>=0&&value<=128*1024*1024);
+    if(observation.stage==='canvas_result') {
+      assert(observation.bytes[0]>0&&observation.bytes[0]<=2048&&observation.bytes[1]>0&&observation.bytes[1]<=2048);
+      assert(observation.bytes[0]*observation.bytes[1]<=2*1024*1024,'admitted export and concurrent preview canvas extents');
+      assert.equal(observation.bytes[3],2*observation.bytes[2]);
+    }
+  }
+  const blobs=platform.observations.filter(o=>o.stage==='zip_blob');
+  assert.equal(blobs.length,1);assert.equal(blobs[0].bytes[0],1);
+  assert.equal(blobs[0].bytes[1],blobs[0].bytes[3]);assert(blobs[0].bytes[2]>=blobs[0].bytes[1]);
+  const jpegResults=capacities.observations.filter(o=>o.stage==='jpeg_platform_result');
+  assert(jpegResults.length>0,'selected export JPEG observed');
+  const canvasCounts=new Map();
+  for(const observation of platform.observations.filter(o=>o.stage==='canvas_result')) {
+    const key=observation.bytes.slice(0,3).join(':');canvasCounts.set(key,(canvasCounts.get(key)||0)+1);
+  }
+  for(const result of jpegResults) {
+    const jpeg=result.bytes;
+    assert.equal(jpeg[2],geometry.width);assert.equal(jpeg[3],geometry.height);assert(jpeg[0]>=jpeg[1]);
+    const key=[jpeg[2],jpeg[3],jpeg[1]].join(':');
+    assert((canvasCounts.get(key)||0)>0,'selected ASCII JPEG result agrees across JS and Rust with retry multiplicity');
+    canvasCounts.set(key,canvasCounts.get(key)-1);
+  }
+  const arrays=capacities.observations.filter(o=>o.stage==='download_array_live');
+  assert.equal(arrays.length,1);assert.equal(arrays[0].bytes[1],blobs[0].bytes[1]);assert.equal(arrays[0].bytes[2],blobs[0].bytes[2]);
   const sources=capacities.observations.filter(o=>o.stage==='ui_source_begin');
   assert.equal(sources.length,1,'one actual UI export observed');
   assert(sources[0].bytes[1]>0&&sources[0].bytes[1]<=8*1024*1024,'existing source admission scope');
@@ -185,5 +260,5 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   await page.evaluate(()=>window.__ownerModule.harness_dispose());await released();
   const counts=await page.evaluate(()=>window.__owner);
   assert.equal(counts.downloads,3,'complete export works after every actual owner disposal');
-  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,responseReaderProof,partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,...capacities},...counts};
+  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,responseReaderProof,partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,platform,...capacities},...counts};
 };
