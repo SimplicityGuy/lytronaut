@@ -23,6 +23,19 @@ const server = http.createServer((req, res) => {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     browser = await pp.launch({ executablePath: process.env.LYTRONAUT_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, userDataDir: path.join(scratch, 'profile') });
     const page = await browser.newPage();
+    // Relay only the explicit public synthetic metadata diagnostic. Never print
+    // arbitrary browser console text, profile bytes, pixels or pairing IDs.
+    let metadataRecords=0;
+    page.on('console', message => {
+      const raw=message.text();if(message.type()!=='log'||raw.length>1024||!raw.startsWith('{"publicJpegMetadata":true,')||metadataRecords>=128)return;
+      try {
+        const record=JSON.parse(raw),keys=['publicJpegMetadata','marker','segmentBytes','iccSignature','sequence','segmentCount','profileBytes','declaredProfileBytes','profileMagic','colorSpace','connectionSpace','profileClass','profileTags','profileSha256'];
+        const integer=(value,max)=>Number.isSafeInteger(value)&&value>=0&&value<=max;
+        const optional=(value,max)=>value===null||integer(value,max);
+        if(Object.keys(record).sort().join(',')!==keys.sort().join(',')||record.publicJpegMetadata!==true||typeof record.iccSignature!=='boolean'||!integer(record.marker,239)||record.marker<226||record.marker===238||!integer(record.segmentBytes,65533)||!integer(record.profileBytes,65519)||!optional(record.sequence,255)||!optional(record.segmentCount,255)||!optional(record.declaredProfileBytes,0xffffffff)||!optional(record.profileTags,0xffffffff)||!['absent','other','acsp'].includes(record.profileMagic)||!['absent','other','RGB '].includes(record.colorSpace)||!['absent','other','XYZ ','Lab '].includes(record.connectionSpace)||!['absent','other','mntr','scnr','prtr','spac'].includes(record.profileClass)||(record.profileSha256!==null&&!/^[0-9a-f]{64}$/.test(record.profileSha256)))return;
+        metadataRecords++;console.log(JSON.stringify(record));
+      }catch{/* Unclassified console messages are never relayed. */}
+    });
     const errors = []; page.on('pageerror', () => errors.push('uncaught browser error'));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.addScriptTag({content:fs.readFileSync(path.join(__dirname,'live-photo-pair.js'),'utf8')});
