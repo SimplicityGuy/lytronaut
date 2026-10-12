@@ -18,7 +18,8 @@ sha2 = "=0.10.9"
 leptos.workspace = true
 wasm-bindgen.workspace = true
 
+wgpu = { version = "=30.0.1", default-features = false, features = ["webgpu", "wgsl"] }
 wasm-bindgen-futures = "=0.4.79"
 js-sys = "=0.3.106"
-web-sys = { version = "=0.3.106", features = ["Window", "Document", "HtmlInputElement", "File", "FileList", "Blob", "BlobPropertyBag", "Url", "Request", "RequestInit", "RequestCredentials", "Response", "Headers", "AbortController", "AbortSignal", "ReadableStream", "ReadableStreamDefaultReader", "XmlHttpRequest", "XmlHttpRequestUpload", "ProgressEvent", "Event", "KeyboardEvent", "Storage", "Location", "HtmlImageElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Element"] }
+web-sys = { version = "=0.3.106", features = ["Window", "Document", "HtmlInputElement", "File", "FileList", "Blob", "BlobPropertyBag", "Url", "Request", "RequestInit", "RequestCredentials", "Response", "Headers", "AbortController", "AbortSignal", "ReadableStream", "ReadableStreamDefaultReader", "XmlHttpRequest", "XmlHttpRequestUpload", "ProgressEvent", "Event", "KeyboardEvent", "Storage", "Location", "HtmlImageElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Element", "ImageData", "Performance"] }
 futures = "=0.3.34"
