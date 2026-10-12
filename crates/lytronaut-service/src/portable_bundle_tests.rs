@@ -149,6 +149,11 @@ fn logical_text(catalog: &Catalog, row: &sqlx::any::AnyRow, column: &str) -> Vec
     }
 }
 async fn verify(catalog: &Catalog, original_root: &Path) {
+    verify_ordered(catalog, original_root, &IDS).await;
+}
+/// `job_order` is the expected logical intake order: preserved ordinals for the
+/// current forms, rowid-derived ordinals for a pre-job-order legacy database.
+async fn verify_ordered(catalog: &Catalog, original_root: &Path, job_order: &[i64]) {
     let rows = sqlx::query("SELECT id,library_uuid FROM catalog_versions ORDER BY id")
         .fetch_all(catalog.pool())
         .await
@@ -166,7 +171,7 @@ async fn verify(catalog: &Catalog, original_root: &Path) {
             }
         );
     }
-    let rows = sqlx::query("SELECT version,ordinal,original FROM catalog_records ORDER BY version")
+    let rows = sqlx::query("SELECT version,ordinal,original FROM catalog_records WHERE kind='unknown-typed-values' ORDER BY version")
         .fetch_all(catalog.pool())
         .await
         .unwrap();
@@ -223,7 +228,19 @@ async fn verify(catalog: &Catalog, original_root: &Path) {
             .fetch_all(catalog.pool())
             .await
             .unwrap();
-    assert_eq!(ordinals, IDS);
+    assert_eq!(ordinals, job_order);
+    let jobs: Vec<String> = sqlx::query_scalar(
+        "SELECT job FROM application_job_order WHERE kind='intake' ORDER BY ordinal",
+    )
+    .fetch_all(catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        jobs,
+        (0..4)
+            .map(|i| format!("synthetic-job-{i}"))
+            .collect::<Vec<_>>()
+    );
     let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM api_ids ORDER BY version")
         .fetch_all(catalog.pool())
         .await
@@ -246,28 +263,26 @@ async fn verify(catalog: &Catalog, original_root: &Path) {
         BLOB
     );
 }
-async fn round_trip(source_pg: bool, destination_pg: bool) {
-    let source = Fixture::new(source_pg).await;
-    let store = source.seed().await;
-    verify(&source.catalog, &source.root.join("originals")).await;
-    let destination = Fixture::new(destination_pg).await;
-    let archive = source.root.join("synthetic.bundle");
+/// Restore through the production owned path and reopen the published result
+/// through the normal application connector, never the import connection.
+async fn restore_and_reopen(
+    destination: &Fixture,
+    archive: &Path,
+    limits: &Limits,
+) -> (Catalog, PathBuf, crate::restore_journal::Journal) {
     let cancel = AtomicBool::new(false);
     let progress = std::sync::atomic::AtomicU64::new(0);
-    backup(&source.catalog, &store, &archive, &cancel, &progress)
-        .await
-        .unwrap();
     let export_root = destination.root.join("restore-results");
     directory(&export_root).unwrap();
     restore_owned(
-        &archive,
+        archive,
         &destination.catalog,
         RestoreOwner {
             root: &export_root,
             job: "synthetic-restore",
             reserved: 1024 * 1024 * 1024,
         },
-        store.limits(),
+        limits,
         &cancel,
         &progress,
     )
@@ -286,16 +301,36 @@ async fn round_trip(source_pg: bool, destination_pg: bool) {
     } else {
         DatabaseConfig::Sqlite(result.join("catalog.db"))
     };
-    // Reopen through the normal application connector, not the import connection.
-    let reopened = Catalog::open(config).await.unwrap();
-    verify(&reopened, &result.join("originals")).await;
+    (Catalog::open(config).await.unwrap(), result, journal)
+}
+async fn release(
+    destination: &Fixture,
+    reopened: Catalog,
+    mut journal: crate::restore_journal::Journal,
+) {
     reopened.pool().close().await;
-    let mut journal = journal;
+    let export_root = destination.root.join("restore-results");
     journal
         .cleanup(&destination.catalog, &export_root)
         .await
         .unwrap();
     journal.forget_after_quota_release(&export_root).unwrap();
+}
+async fn round_trip(source_pg: bool, destination_pg: bool) {
+    let source = Fixture::new(source_pg).await;
+    let store = source.seed().await;
+    verify(&source.catalog, &source.root.join("originals")).await;
+    let destination = Fixture::new(destination_pg).await;
+    let archive = source.root.join("synthetic.bundle");
+    let cancel = AtomicBool::new(false);
+    let progress = std::sync::atomic::AtomicU64::new(0);
+    backup(&source.catalog, &store, &archive, &cancel, &progress)
+        .await
+        .unwrap();
+    let (reopened, result, journal) =
+        restore_and_reopen(&destination, &archive, store.limits()).await;
+    verify(&reopened, &result.join("originals")).await;
+    release(&destination, reopened, journal).await;
     source.finish().await;
     destination.finish().await;
 }
@@ -317,4 +352,251 @@ async fn postgres_matrix_postgres_to_sqlite_exact_logical_round_trip_and_reopen(
 #[ignore = "requires explicit disposable PostgreSQL service"]
 async fn postgres_matrix_postgres_to_postgres_exact_logical_round_trip_and_reopen() {
     round_trip(true, true).await;
+}
+
+// ---- Version-1 (LYTRONAUT-BNDL01) compatibility -------------------------------
+// The legacy payload is a SQLite file authored here with plain SQL against the
+// trusted application schema, never by the portable encoder or a restore helper.
+
+/// Version-1's acceptance bound is its 32 MiB SQLite FILE, not any v2 cap.
+const LEGACY_FILE_LIMIT: u64 = 32 * 1024 * 1024;
+const LEGACY_CREDENTIAL: &str = "synthetic-legacy-credential-7f3a";
+#[derive(Clone, Copy, PartialEq)]
+enum Bulk {
+    None,
+    /// One opaque record whose single cell nearly fills the legacy file.
+    LargeCell,
+    /// Many tiny records that together nearly fill the legacy file.
+    SmallRows,
+}
+const LARGE_CELL: usize = 31 * 1024 * 1024 + 256 * 1024;
+fn large_original() -> Vec<u8> {
+    (0..LARGE_CELL as u64)
+        .map(|i| (i.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as u8)
+        .collect()
+}
+fn small_original(ordinal: i64) -> Vec<u8> {
+    format!("{ordinal:016x}").into_bytes()
+}
+/// Build an exact accepted v1 form: `has_order` selects current vs pre-job-order,
+/// `has_auth` adds the three known legacy authentication tables with synthetic
+/// credential rows that restore must never carry forward. Returns the archive
+/// bytes and the number of near-limit small rows.
+async fn legacy_archive(has_order: bool, has_auth: bool, bulk: Bulk) -> (Vec<u8>, i64) {
+    let source = Fixture::new(false).await;
+    source.seed().await;
+    let mut small_rows = 0;
+    match bulk {
+        Bulk::None => {}
+        Bulk::LargeCell => {
+            sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) VALUES($1,'near-limit-large',0,$2)")
+                .bind(IDS[1])
+                .bind(large_original())
+                .execute(source.catalog.pool())
+                .await
+                .unwrap();
+        }
+        Bulk::SmallRows => loop {
+            // Measure the compacted file actually shipped, not live page usage,
+            // and grow by the remaining gap so the fixture never overshoots.
+            let probe = source.root.join("probe.db");
+            let _ = fs::remove_file(&probe);
+            sqlx::query("VACUUM INTO $1")
+                .bind(probe.to_str().unwrap())
+                .execute(source.catalog.pool())
+                .await
+                .unwrap();
+            let size = fs::metadata(&probe).unwrap().len();
+            fs::remove_file(&probe).unwrap();
+            let target = LEGACY_FILE_LIMIT - 512 * 1024;
+            if size >= target {
+                break;
+            }
+            // Rows cost ~70 bytes with their index entry; 128 under-fills each step.
+            let batch = ((target - size) / 128).max(1_000) as i64;
+            sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) WITH RECURSIVE n(i) AS (SELECT $1 UNION ALL SELECT i+1 FROM n WHERE i<$2) SELECT $3,'near-limit-small',i,CAST(printf('%016x',i) AS BLOB) FROM n")
+                .bind(small_rows + 1)
+                .bind(small_rows + batch)
+                .bind(IDS[2])
+                .execute(source.catalog.pool())
+                .await
+                .unwrap();
+            small_rows += batch;
+        },
+    }
+    let file = source.root.join("legacy.db");
+    sqlx::query("VACUUM INTO $1")
+        .bind(file.to_str().unwrap())
+        .execute(source.catalog.pool())
+        .await
+        .unwrap();
+    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&file))
+        .await
+        .unwrap();
+    if !has_order {
+        sqlx::query("DROP TABLE application_job_order")
+            .execute(&mut db)
+            .await
+            .unwrap();
+    }
+    if has_auth {
+        for (_, sql) in LEGACY_AUTH {
+            sqlx::raw_sql(AssertSqlSafe(sql))
+                .execute(&mut db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO auth_account VALUES(1,$1,$1,$1)")
+            .bind(LEGACY_CREDENTIAL)
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO auth_sessions VALUES($1,1,1)")
+            .bind(LEGACY_CREDENTIAL)
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO auth_attempts VALUES($1,1,1)")
+            .bind(LEGACY_CREDENTIAL)
+            .execute(&mut db)
+            .await
+            .unwrap();
+    }
+    sqlx::query("VACUUM").execute(&mut db).await.unwrap();
+    db.close().await.unwrap();
+    let database = fs::read(&file).unwrap();
+    assert!(database.len() as u64 <= LEGACY_FILE_LIMIT);
+    if bulk != Bulk::None {
+        // Near-limit means within 1 MiB of the legacy file allowance.
+        assert!(
+            database.len() as u64 >= LEGACY_FILE_LIMIT - 1024 * 1024,
+            "near-limit fixture is only {} bytes",
+            database.len()
+        );
+    }
+    // Header: magic, original count, database size, database SHA-256; then the
+    // database, then (SHA-256, length, bytes) for each inventory original.
+    let mut archive = MAGIC.to_vec();
+    archive.extend_from_slice(&1u32.to_le_bytes());
+    archive.extend_from_slice(&(database.len() as u64).to_le_bytes());
+    archive.extend_from_slice(&Sha256::digest(&database));
+    archive.extend_from_slice(&database);
+    archive.extend_from_slice(&Sha256::digest(BLOB));
+    archive.extend_from_slice(&(BLOB.len() as u64).to_le_bytes());
+    archive.extend_from_slice(BLOB);
+    source.finish().await;
+    (archive, small_rows)
+}
+async fn legacy_restore(destination_pg: bool, has_order: bool, has_auth: bool, bulk: Bulk) {
+    let (archive, small_rows) = legacy_archive(has_order, has_auth, bulk).await;
+    let destination = Fixture::new(destination_pg).await;
+    let input = destination.root.join("legacy.bundle");
+    fs::write(&input, &archive).unwrap();
+    drop(archive);
+    let limits = Limits {
+        free_floor: 0,
+        ..Default::default()
+    };
+    let (reopened, result, journal) = restore_and_reopen(&destination, &input, &limits).await;
+    // Pre-job-order databases derive intake order from intake_jobs rowid order.
+    let order: Vec<i64> = if has_order {
+        IDS.to_vec()
+    } else {
+        vec![1, 2, 3, 4]
+    };
+    verify_ordered(&reopened, &result.join("originals"), &order).await;
+    let auth: i64 = sqlx::query_scalar(reopened.dialect(
+        "SELECT count(*) FROM sqlite_master WHERE name LIKE 'auth%'",
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name LIKE 'auth%'",
+    ))
+    .fetch_one(reopened.pool())
+    .await
+    .unwrap();
+    assert_eq!(auth, 0, "legacy credentials must never be restored");
+    match bulk {
+        Bulk::None => {}
+        Bulk::LargeCell => {
+            let original: Vec<u8> = sqlx::query_scalar(
+                "SELECT original FROM catalog_records WHERE kind='near-limit-large'",
+            )
+            .fetch_one(reopened.pool())
+            .await
+            .unwrap();
+            assert_eq!(original.len(), LARGE_CELL);
+            assert!(
+                original == large_original(),
+                "large legacy cell must be byte-exact"
+            );
+        }
+        Bulk::SmallRows => {
+            // Keyset pages keep the verifier's own memory bounded.
+            let mut seen = 0;
+            loop {
+                let rows = sqlx::query(
+                    "SELECT version,ordinal,original FROM catalog_records WHERE kind='near-limit-small' AND ordinal>$1 ORDER BY ordinal LIMIT 50000",
+                )
+                .bind(seen)
+                .fetch_all(reopened.pool())
+                .await
+                .unwrap();
+                if rows.is_empty() {
+                    break;
+                }
+                for row in rows {
+                    seen += 1;
+                    assert_eq!(row.try_get::<i64, _>(0).unwrap(), IDS[2]);
+                    assert_eq!(row.try_get::<i64, _>(1).unwrap(), seen);
+                    assert_eq!(row.try_get::<Vec<u8>, _>(2).unwrap(), small_original(seen));
+                }
+            }
+            assert_eq!(seen, small_rows);
+            assert!(small_rows > 100_000);
+        }
+    }
+    if has_auth {
+        // No credential byte survives anywhere in the published result.
+        let mut pending = vec![result.clone()];
+        while let Some(path) = pending.pop() {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    pending.push(entry.path());
+                } else {
+                    let bytes = fs::read(entry.path()).unwrap();
+                    assert!(
+                        !bytes
+                            .windows(LEGACY_CREDENTIAL.len())
+                            .any(|w| w == LEGACY_CREDENTIAL.as_bytes()),
+                        "credential bytes leaked into the restored result"
+                    );
+                }
+            }
+        }
+    }
+    release(&destination, reopened, journal).await;
+    destination.finish().await;
+}
+#[tokio::test]
+async fn legacy_four_exact_forms_restore_onto_sqlite() {
+    for (has_order, has_auth) in [(true, false), (true, true), (false, false), (false, true)] {
+        legacy_restore(false, has_order, has_auth, Bulk::None).await;
+    }
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL service"]
+async fn postgres_matrix_legacy_four_exact_forms_restore_onto_postgres() {
+    for (has_order, has_auth) in [(true, false), (true, true), (false, false), (false, true)] {
+        legacy_restore(true, has_order, has_auth, Bulk::None).await;
+    }
+}
+#[tokio::test]
+async fn legacy_near_limit_large_cell_and_small_rows_restore_onto_sqlite() {
+    legacy_restore(false, true, true, Bulk::LargeCell).await;
+    legacy_restore(false, false, false, Bulk::SmallRows).await;
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL service"]
+async fn postgres_matrix_legacy_near_limit_large_cell_and_small_rows_restore_onto_postgres() {
+    legacy_restore(true, true, true, Bulk::LargeCell).await;
+    legacy_restore(true, false, false, Bulk::SmallRows).await;
 }
