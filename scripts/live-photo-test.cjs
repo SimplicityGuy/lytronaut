@@ -73,17 +73,18 @@ const server = http.createServer((req, res) => {
         const start = offset + 30 + nameLength + extra; entries[name] = zip.slice(start, start + size); offset = start + size;
       }
       if (Object.keys(entries).sort().join(',') !== 'focus.JPG,focus.MOV,provenance.json') throw Error('incomplete pair');
-      const jpeg=entries['focus.JPG'];
-      const metadataRejected=async(bytes,phase)=>{try{await window.verifyLivePhotoJpegMetadata(bytes);}catch(error){if(new RegExp('^Error: resource pair verification failed:'+phase+':[0-9]+$').test(String(error)))return;throw error;}throw Error('malformed JPEG metadata accepted');};
+      const jpeg=entries['focus.JPG'];let iccNegativePasses=0,validIccAccepted=false,iccFreeAccepted=false;
+      const metadataRejected=async(bytes,phase)=>{try{await window.verifyLivePhotoJpegMetadata(bytes);}catch(error){if(new RegExp('^Error: resource pair verification failed:'+phase+':[0-9]+$').test(String(error))){iccNegativePasses++;return;}throw error;}throw Error('malformed JPEG metadata accepted');};
       // These use the JPEG-only independent seam: no outer ZIP CRC can mask an
       // ICC-policy rejection. The platform profile itself is independently read
       // from a fresh, tiny sRGB canvas, without source pixels or a version hash.
       let iccStart=null,iccSize=null;
       for(let pos=2;pos<jpeg.length;){if(jpeg[pos+1]===218)break;const size=new DataView(jpeg.buffer,jpeg.byteOffset+pos+2,2).getUint16(0);if(jpeg[pos+1]===226){iccStart=pos;iccSize=size;}pos+=size+2;}
+      if(iccStart===null)throw Error('reference Chrome ICC fixture missing');
       if(iccStart!==null){
         const changed=mutate=>{const b=jpeg.slice();mutate(b,new DataView(b.buffer,b.byteOffset,b.byteLength));return b;};
-        const accepted=await window.verifyLivePhotoJpegMetadata(jpeg);if(!accepted.platformIccVerified||accepted.identity!==identifier||!pairProof.platformIccVerified)throw Error('valid platform ICC rejected');
-        const noProfile=new Uint8Array(jpeg.length-iccSize-2);noProfile.set(jpeg.subarray(0,iccStart));noProfile.set(jpeg.subarray(iccStart+iccSize+2),iccStart);const nativeMetadata=await window.verifyLivePhotoJpegMetadata(noProfile);if(nativeMetadata.platformIccVerified||nativeMetadata.identity!==identifier)throw Error('ICC-free JPEG metadata rejected');
+        const accepted=await window.verifyLivePhotoJpegMetadata(jpeg);if(!accepted.platformIccVerified||accepted.identity!==identifier||!pairProof.platformIccVerified)throw Error('valid platform ICC rejected');validIccAccepted=true;
+        const noProfile=new Uint8Array(jpeg.length-iccSize-2);noProfile.set(jpeg.subarray(0,iccStart));noProfile.set(jpeg.subarray(iccStart+iccSize+2),iccStart);const nativeMetadata=await window.verifyLivePhotoJpegMetadata(noProfile);if(nativeMetadata.platformIccVerified||nativeMetadata.identity!==identifier)throw Error('ICC-free JPEG metadata rejected');iccFreeAccepted=true;
         const profileStart=iccStart+18;
         await metadataRejected(changed(b=>b[iccStart+4]=255),'icc'); // arbitrary APP2 signature
         await metadataRejected(changed(b=>b[iccStart+16]=2),'icc'); // reordered/unsupported split profile
@@ -93,6 +94,7 @@ const server = http.createServer((req, res) => {
         await metadataRejected(changed(b=>b[profileStart+4]^=1),'icc-match'); // valid structure, foreign/private payload
         const duplicate=new Uint8Array(jpeg.length+iccSize+2);duplicate.set(jpeg.subarray(0,iccStart));duplicate.set(jpeg.subarray(iccStart,iccStart+iccSize+2),iccStart);duplicate.set(jpeg.subarray(iccStart),iccStart+iccSize+2);await metadataRejected(duplicate,'icc');
       }
+      if(iccNegativePasses!==7||!validIccAccepted||!iccFreeAccepted)throw Error('ICC acceptance denominator mismatch');
       const provenance = JSON.parse(new TextDecoder().decode(entries['provenance.json']));
       if (provenance.motion !== 'generated_focus_animation' || provenance.selected_stored_plane !== 0 || provenance.key_seconds !== 0.6 || provenance.sweep_stored_planes.join(',') !== '2,0,3,4,1') throw Error('selected key/order/provenance mismatch');
       for (const resource of ['focus.JPG', 'focus.MOV']) if (!new TextDecoder().decode(entries[resource]).includes(identifier)) throw Error('pairing identifier missing');
@@ -161,7 +163,7 @@ const server = http.createServer((req, res) => {
       if (decoderCreated !== decoderClosed) throw Error('decoder leak');
       if (maxImageDataBytes > 128 * 1024) throw Error('full-frame platform pixel copy');
       if (closed !== outputs + authoredFrames) throw Error('decoder frame leak');
-      return { largeResources, paddedResources, pairProof, largePair, paddedPair, initialWasmBytes, finalWasmHighWaterBytes:wasm.memory.buffer.byteLength, maxImageDataBytes, decoderCreated, decoderClosed, actualRustWasm: true, completePair: true, selectedStillCorrect: true, softwareRetry: true, cancellation: true, unsupportedFallback: true, maxDecodeQueue: queue, decodedFrames: outputs, closedFrames: closed, authoredFrames, zip: Array.from(zip) };
+      return { iccNegativePasses, validIccAccepted, iccFreeAccepted, largeResources, paddedResources, pairProof, largePair, paddedPair, initialWasmBytes, finalWasmHighWaterBytes:wasm.memory.buffer.byteLength, maxImageDataBytes, decoderCreated, decoderClosed, actualRustWasm: true, completePair: true, selectedStillCorrect: true, softwareRetry: true, cancellation: true, unsupportedFallback: true, maxDecodeQueue: queue, decodedFrames: outputs, closedFrames: closed, authoredFrames, zip: Array.from(zip) };
     });
     if (errors.length) throw Error('uncaught page error');
     if (process.env.LYTRONAUT_LIVE_PHOTO_OUT) fs.writeFileSync(process.env.LYTRONAUT_LIVE_PHOTO_OUT, Buffer.from(result.zip), { mode: 0o600 });
