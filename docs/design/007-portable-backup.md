@@ -1,6 +1,6 @@
 # Portable backup and isolated restore
 
-Status: implementation design approved for source work; runtime validation pending.
+Status: implemented; engine-verified on SQLite and PostgreSQL 18 (see Verification).
 
 The archive carries logical application rows and immutable original blobs, never
 database credentials, generated PostgreSQL display/search projections, authentication
@@ -91,7 +91,11 @@ Version-2 transport admission includes 288 MiB catalog bytes, a 60-byte header a
 40 bytes for each admitted original, in addition to configured encoded payload.
 Archive reservation includes both the logical spool and its archive copy plus
 framing and original bytes. Restore reservation includes two declared archive
-sizes plus the maximum logical spool. SQL database/index storage is deployment
+sizes plus the maximum logical spool. These staging reservations are deliberately
+fixed upper bounds, not measured sizes: an archive job reserves its unique original
+bytes plus 2 x 288 MiB (spool and archive copy at the v2 catalog maximum) plus
+framing, and a restore reserves 2 x the declared upload plus 288 MiB, even for a
+small catalog. Admission therefore needs that much free staging space. SQL database/index storage is deployment
 storage too; these application reservations are not a physical bound on PostgreSQL
 WAL/index growth. Cleanup retains reservations until every owned filesystem and
 SQL namespace removal succeeds. Failed uploads use that same cleanup path rather
@@ -134,31 +138,50 @@ instead of being dropped with it.
 If the database is unreachable, permissions deny access or DROP, a dependency
 restricts DROP, or filesystem deletion fails, the journal and reservation remain. Repeated recovery is idempotent; no guessed
 ownership, lost reservation, or unjournaled successful-looking result is allowed.
+Without a journal, a `<job>.restored` or `<job>.pending-*` path is not provably
+owned: cleanup leaves it untouched and keeps the job's reservation (no quota is
+released while those bytes remain), exactly like the other fixed transfer names.
+
+The worker's final status UPDATE can fail ambiguously (committed, but reported as
+an error). The worker therefore re-reads the durable job state and acts only on it:
+a committed success keeps its published result, a durable failure or cancellation
+triggers owned cleanup, and any other state leaves ownership, files and quota to
+startup reconciliation. Recovery keeps an already recorded cancellation or failure
+reason and marks only never-finished jobs `interrupted`.
+
+A restore namespace is created fresh and exclusively owned by one journaled job, so
+its catalog writes do not take the deployment-wide PostgreSQL writer key; a long row
+import never stalls live intake, export/restore admission or job ordering.
+
+No migration of older on-disk state is needed: fixed-name `<job>.artifact`,
+`.snapshot` and `.upload` files without ownership records were only ever produced by
+unreleased integration-branch history (introduced 2026-10-11, never on `main`, no
+release or tag), and the current code creates them only inside a recorded transfer
+owner directory.
 
 ## Verification
 
-Executed on both engines (SQLite by default; PostgreSQL through
-`just postgres-test`): the four round trips below, the four legacy forms and
-near-32 MiB legacy files, and the restore failure matrix in
-`restore_fault_tests.rs` (corruption, admission and mid-restore quota, cancel,
-shutdown, real child-process SIGKILL with restart recovery, owner-revoked cleanup,
-dependency-restricted DROP, failing final UPDATE, late DELETE racing publication,
-journal crash cuts, exactly-at-limit source cell) with unrelated SQL/filesystem
-sentinels. Not yet covered by an engine test: a disconnected database during
-cleanup, and measured memory under concurrent admission.
+Executed on SQLite in the default suite and on PostgreSQL 18.6 through the strict
+`just postgres-test` recipe (exact counts, restricted role, public sentinel):
 
-Independent SQLite→SQLite, SQLite→PostgreSQL, PostgreSQL→SQLite and
-PostgreSQL→PostgreSQL round trips compare logical IDs, all typed record bytes,
-signed64 MIN/negative/zero/MAX IDs and ordinals, Unicode/NUL names and keys, album
-ordering, originals and SHA-256. Each restored result must reopen through normal
-startup. Legacy four-form fixtures and malicious schema/rows remain separate gates.
+- Independent SQLite→SQLite, SQLite→PostgreSQL, PostgreSQL→SQLite and
+  PostgreSQL→PostgreSQL round trips comparing every portable table's logical
+  values (signed64 MIN/negative/zero/MAX IDs and ordinals, Unicode/NUL keys and
+  names, item errors, intake and source columns, opaque bytes, originals and
+  SHA-256) and reopening the result through normal startup.
+- The four exact version-1 legacy forms with synthetic credential rows (never
+  restored) and near-32 MiB legacy files (one large cell; many small rows).
+- `restore_fault_tests.rs`: corruption, admission and mid-restore quota, cancel,
+  graceful shutdown, a real child-process SIGKILL with restart recovery,
+  owner-revoked cleanup, dependency-restricted DROP, failing and ambiguous final
+  status UPDATE, late DELETE racing publication, journal crash cuts (prepared,
+  mkdir, marker, rename, namespace created before SchemaOwned, files ready, files
+  published with and without a committed success), unjournaled restore paths,
+  live writes during a restore import, and an exactly-at-limit source cell. Every
+  case checks unrelated SQL/filesystem sentinels and the live library.
 
-Deterministic interruption, cancellation and SQL/filesystem error injection covers
-every publication phase, marker/CREATE transaction, failed final job UPDATE, DELETE
-racing commit/publication, denied DROP, disconnected database, restart, repeated
-cleanup and concurrent admission. Tests verify retained quota until cleanup succeeds,
-active-store preservation, and unrelated-schema/file sentinels. Actual engine tests
-must pass before submission; this design document is not evidence of runtime success.
+Not covered by an engine test: a database connection lost during cleanup, and
+measured memory under concurrent admission. Coverage is gated separately.
 
 Transient ownership uses a separate durable nonce record before creating a private
 job transfer directory and marker. Uploads, export artifacts and logical spools

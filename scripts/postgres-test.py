@@ -32,7 +32,7 @@ def main():
         ("portable-matrix", 5, ["-p", "lytronaut-service", "--lib", "bundle::portable_bundle_tests::postgres_matrix_", "--", "--ignored", "--test-threads=1"]),
         # Includes a real SIGKILL of a child test process mid-restore; the child's
         # output goes to its fixture log, so exactly one result line is parsed here.
-        ("restore-faults", 11, ["-p", "lytronaut-service", "--lib", "api::exports::restore_fault_tests::postgres_", "--", "--ignored", "--test-threads=1"]),
+        ("restore-faults", 14, ["-p", "lytronaut-service", "--lib", "api::exports::restore_fault_tests::postgres_", "--", "--ignored", "--test-threads=1"]),
     ]
     total = 0
     for name, expected, args in cases:
