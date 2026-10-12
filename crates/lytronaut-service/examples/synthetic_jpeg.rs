@@ -11,7 +11,24 @@ fn main() {
             pixels[p + 2] = if circle { 235 } else { 65 + (x / 20) as u8 };
         }
     }
-    image::codecs::jpeg::JpegEncoder::new_with_quality(std::fs::File::create(path).unwrap(), 85)
+    image::codecs::jpeg::JpegEncoder::new_with_quality(std::fs::File::create(&path).unwrap(), 85)
         .encode(&pixels, 640, 360, image::ExtendedColorType::Rgb8)
         .unwrap();
+    for plane in 0..3 {
+        let mut corners = vec![0; 360 * 240 * 3];
+        let colors = [[240, 20, 20], [20, 240, 20], [20, 20, 240], [240, 240, 20]];
+        for y in 0..240 {
+            for x in 0..360 {
+                let color = colors[(usize::from(y >= 120) * 2 + usize::from(x >= 180) + plane) % 4];
+                corners[(y * 360 + x) * 3..(y * 360 + x) * 3 + 3].copy_from_slice(&color);
+            }
+        }
+        let output = std::path::Path::new(&path).with_extension(format!("focus{plane}.jpg"));
+        image::codecs::jpeg::JpegEncoder::new_with_quality(
+            std::fs::File::create(output).unwrap(),
+            95,
+        )
+        .encode(&corners, 360, 240, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    }
 }

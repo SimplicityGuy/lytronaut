@@ -154,3 +154,41 @@ uses `cargo run -p lytronaut-service --example private_api -- <retained-scratch>
 it reuses the existing catalog/originals, saves validation-only auth state in
 private mode-0600 files, and prints aggregate counts only. No private captures,
 source values, manifests or credentials belong in Git or public CI.
+
+## Discrete JPEG focus derivatives
+
+`GET /assets/{file-id}/focus` validates the ready capture's `jpeg_focus_stack`
+original and returns `FocusStack`: V1, opaque application file ID, strictly
+increasing finite lambdas, source dimensions, and orientation policy. Availability
+comes from this payload validation, never the LFE version alone. Only one uniform
+JPEG block with at most 64 stored planes and dimensions at most 512 × 512 is
+admitted. LFE 10 without a verified JPEG stack remains static with disabled focus;
+H.264 stays separately gated.
+
+`GET /assets/{file-id}/focus/{plane-index}/{exif-code}` produces a newly encoded
+lossy JPEG of exactly that stored plane. It requires authentication under the
+same whole-router origin/CSRF policy as existing asset routes. It returns
+`X-Lytronaut-Derivative` containing typed `FocusDerivative` JSON: V1,
+`jpeg_focus_plane`, opaque file ID, plane index/lambda, source/output dimensions,
+explicit EXIF 1–8, encoded length, SHA256 of the **generated** bytes, unknown color
+space and processing provenance. This header is part of the response contract,
+not a hash of a source file. The browser admits the metadata, verifies identity,
+selection, geometry, length and generated hash, then actually decodes the JPEG
+and checks its dimensions. Output is at most 2 MiB in one bounded transfer;
+metadata and focus manifests stay below the existing 256 KiB JSON limit.
+
+The default transform is identity. Existing processed recipes may already be
+baked into pixels. Sidecar, embedded recipe and catalog orientation remain
+preserved; this endpoint does not choose or combine them implicitly. Catalog 0
+is not EXIF. User-selected EXIF transforms apply only to these verified derivative
+pixels. Neither complete recipes nor unsupported aperture/perspective/tone/
+denoise/animation are replayed. This flow does not establish Desktop pixel parity.
+
+The shared two-transfer permit stays owned by the response body through EOF/drop.
+Native parsing/decoding is serialized with preview validation; there is no plane
+pixel cache. Original descriptors retain the existing 128-record bounded cache.
+Focus admission reserves at most 8 MiB source bytes, 64 MiB conservative codec/
+transform/encoding working memory, 8 MiB metadata/slack, and 16 MiB transfer
+reserve within the common 96 MiB CPU limit. The encoding writer caps allocation
+and writes before crossing its output limit. GPU work remains a separate future
+64 MiB cap. No generated derivative is written into original storage.

@@ -447,3 +447,129 @@ pub fn decode_jpeg(bytes: &[u8], limits: Limits) -> Result<DecodedJpeg> {
         rgba: image.into_raw(),
     })
 }
+
+/// Standard EXIF 1–8 transform of verified derivative pixels. Catalog code 0 is invalid.
+/// Coordinates are defined independently of any imported/baked processing recipe.
+pub fn orient_derivative(
+    image: DecodedJpeg,
+    orientation: u8,
+    limits: Limits,
+) -> Result<DecodedJpeg> {
+    if !(1..=8).contains(&orientation) {
+        return Err(E::Unsupported);
+    }
+    let Geometry {
+        width: w,
+        height: h,
+    } = image.geometry;
+    let n = limits.extent(w, h, 4)?;
+    if image.rgba.len() != n
+        || (n as u64)
+            .checked_mul(if orientation == 1 { 1 } else { 2 })
+            .is_none_or(|v| v > limits.decoder_working_bytes)
+    {
+        return Err(E::Budget);
+    }
+    if orientation == 1 {
+        return Ok(image);
+    }
+    let (ow, oh) = if orientation >= 5 { (h, w) } else { (w, h) };
+    let mut rgba = vec![0; n];
+    for y in 0..h {
+        for x in 0..w {
+            let (dx, dy) = match orientation {
+                1 => (x, y),
+                2 => (w - 1 - x, y),
+                3 => (w - 1 - x, h - 1 - y),
+                4 => (x, h - 1 - y),
+                5 => (y, x),
+                6 => (h - 1 - y, x),
+                7 => (h - 1 - y, w - 1 - x),
+                8 => (y, w - 1 - x),
+                _ => unreachable!(),
+            };
+            let src = ((y * w + x) * 4) as usize;
+            let dst = ((dy * ow + dx) * 4) as usize;
+            rgba[dst..dst + 4].copy_from_slice(&image.rgba[src..src + 4]);
+        }
+    }
+    Ok(DecodedJpeg {
+        geometry: Geometry {
+            width: ow,
+            height: oh,
+        },
+        rgba,
+    })
+}
+/// Capacity growth and every codec write are admitted before allocation.
+struct CappedJpeg {
+    bytes: Vec<u8>,
+    cap: usize,
+    exceeded: bool,
+}
+impl std::io::Write for CappedJpeg {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let Some(required) = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .filter(|n| *n <= self.cap)
+        else {
+            self.exceeded = true;
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        };
+        if required > self.bytes.capacity() {
+            let capacity = required
+                .max(self.bytes.capacity().saturating_mul(2))
+                .max(4096)
+                .min(self.cap);
+            self.bytes
+                .try_reserve_exact(capacity - self.bytes.len())
+                .map_err(|_| {
+                    self.exceeded = true;
+                    std::io::Error::from(std::io::ErrorKind::OutOfMemory)
+                })?;
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+/// Conservative encoder admission includes borrowed RGBA, owned RGB, codec
+/// scratch and two output capacities during allocator growth; never an unbounded Vec.
+pub fn encode_derivative(image: &DecodedJpeg, limits: Limits) -> Result<Vec<u8>> {
+    let n = limits.extent(image.geometry.width, image.geometry.height, 4)?;
+    if image.rgba.len() != n {
+        return Err(E::Extent);
+    }
+    let working = (n as u64)
+        .checked_mul(16)
+        .and_then(|v| v.checked_add((limits.jpeg_bytes as u64).checked_mul(2)?))
+        .and_then(|v| v.checked_add(16 * 1024))
+        .ok_or(E::Budget)?;
+    if limits.jpeg_bytes == 0 || working > limits.decoder_working_bytes {
+        return Err(E::Budget);
+    }
+    let rgb: Vec<u8> = image
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| p[..3].iter().copied())
+        .collect();
+    let mut output = CappedJpeg {
+        bytes: Vec::new(),
+        cap: limits.jpeg_bytes,
+        exceeded: false,
+    };
+    let result = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 90).encode(
+        &rgb,
+        image.geometry.width,
+        image.geometry.height,
+        image::ExtendedColorType::Rgb8,
+    );
+    result.map_err(|_| if output.exceeded { E::Budget } else { E::Codec })?;
+    Ok(output.bytes)
+}

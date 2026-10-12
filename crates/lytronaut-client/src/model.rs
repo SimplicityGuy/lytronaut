@@ -450,3 +450,27 @@ mod metadata_tests {
         assert!(path_metadata(usize::MAX, "a").is_err());
     }
 }
+
+/// Validate generated derivative bytes against the authenticated typed response metadata.
+pub fn verified_derivative(
+    bytes: &[u8],
+    derivative: &lytronaut_contracts::FocusDerivative,
+) -> bool {
+    bytes.len() as u64 == derivative.encoded_bytes
+        && format!("{:x}", Sha256::digest(bytes)) == String::from(derivative.content_sha256.clone())
+}
+
+#[cfg(test)]
+mod derivative_integrity_tests {
+    use super::*;
+    #[test]
+    fn generated_derivative_length_and_digest_reject_corruption_and_truncation() {
+        let bytes = b"independent generated JPEG response stand-in";
+        let derivative:lytronaut_contracts::FocusDerivative=serde_json::from_value(serde_json::json!({"version":1,"representation":"jpeg_focus_plane","id":"synthetic","plane_index":0,"lambda":0.0,"source_dimensions":{"width":360,"height":360},"output_dimensions":{"width":360,"height":360},"orientation":1,"encoded_bytes":bytes.len(),"content_sha256":format!("{:x}",Sha256::digest(bytes)),"color_space":"unknown","provenance":"Lossy synthetic derivative"})).unwrap();
+        assert!(verified_derivative(bytes, &derivative));
+        assert!(!verified_derivative(&bytes[..bytes.len() - 1], &derivative));
+        let mut corrupt = bytes.to_vec();
+        corrupt[0] ^= 1;
+        assert!(!verified_derivative(&corrupt, &derivative));
+    }
+}

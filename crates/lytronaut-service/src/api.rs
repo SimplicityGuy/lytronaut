@@ -11,6 +11,7 @@ use axum::{
 use lytronaut_contracts::*;
 use lytronaut_storage::{Catalog, SourceEntry, Store, desktop};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use sqlx::{Row, sqlite::SqliteRow};
 use std::future::Future;
 use std::os::unix::fs::FileExt;
@@ -340,6 +341,8 @@ impl Api {
             .route("/libraries/{id}/files", get(files))
             .route("/albums/{id}/captures", get(album_captures))
             .route("/captures/{id}", get(detail))
+            .route("/assets/{id}/focus", get(focus_manifest))
+            .route("/assets/{id}/focus/{index}/{orientation}", get(focus_plane))
             .route("/assets/{id}/manifest", get(manifest))
             .route("/assets/{id}/chunks/{index}", get(chunk))
             .route("/assets/{id}/download", get(download))
@@ -840,6 +843,7 @@ async fn detail(
         let mut preview = None;
         let mut preview_error = Some(api_error(ErrorCode::NotFound));
         let mut originals = Vec::new();
+        let mut discrete_focus = CapabilityState::Disabled;
         for source in sources {
             let file_id: String = source.get("id");
             let source_role = role(&source.get::<String, _>("path"));
@@ -848,6 +852,12 @@ async fn detail(
                 encoded_bytes: source.get::<i64, _>("length") as u64,
                 role: source_role,
             });
+            if source_role == OriginalRole::JpegFocusStack {
+                discrete_focus = match a.focus(&file_id, None).await {
+                    Ok(_) => CapabilityState::Available,
+                    Err(failure) => CapabilityState::Unavailable(failure.1),
+                };
+            }
             if source_role == OriginalRole::Thumbnail {
                 match a.descriptor(&file_id, true).await {
                     Ok(descriptor)
@@ -888,7 +898,11 @@ async fn detail(
             capture: capture_summary(&row),
             caption,
             caption_truncated: truncated || row.get::<i64, _>("caption_truncated") != 0,
-            capabilities: capabilities(preview.is_some()),
+            capabilities: {
+                let mut c = capabilities(preview.is_some());
+                c.discrete_focus = discrete_focus;
+                c
+            },
             preview,
             preview_error,
             item_errors,
@@ -908,6 +922,147 @@ async fn manifest(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::UnsupportedFormat,
         ))?)
+    }
+    .await;
+    r.unwrap_or_else(Failure::response)
+}
+fn focus_limits() -> lytronaut_format::Limits {
+    lytronaut_format::Limits {
+        container_bytes: 8 * 1024 * 1024,
+        json_bytes: PAGE_BYTES,
+        sections: 256,
+        json_nodes: 16_384,
+        dimension: 512,
+        pixels: 512 * 512,
+        decoded_bytes: 512 * 512 * 4,
+        decoder_working_bytes: 64 * 1024 * 1024,
+        jpeg_bytes: CHUNK as usize,
+        ..Default::default()
+    }
+}
+impl Api {
+    async fn focus(
+        &self,
+        id: &str,
+        selection: Option<(usize, u8)>,
+    ) -> Result<(FocusStack, Vec<u8>)> {
+        let (_, key) = self.lookup(id, "file", true).await?;
+        if role(&key) != OriginalRole::JpegFocusStack {
+            return Err(Failure::missing());
+        }
+        let d = self.descriptor(id, false).await?;
+        if d.length > focus_limits().container_bytes as u64 {
+            return Err(Failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::ResourceLimit,
+            ));
+        }
+        let permit = self
+            .0
+            .validation
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| Failure::missing())?;
+        let id = opaque(id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut bytes = vec![0; d.length as usize];
+            d.file.read_exact_at(&mut bytes, 0).map_err(|_| Failure(StatusCode::SERVICE_UNAVAILABLE, ErrorCode::StorageUnavailable))?;
+            let limits = focus_limits();
+            let error = |e: lytronaut_format::FormatError| Failure(StatusCode::UNPROCESSABLE_ENTITY, e.error_code());
+            let container = lytronaut_format::Container::parse(&bytes, limits).map_err(error)?;
+            let processed = lytronaut_format::processed_asset(&container, limits).map_err(error)?;
+            let planes = &processed.planes;
+            let first = planes.first().ok_or(Failure::missing())?;
+            if planes.len() > 64 || planes.iter().any(|p| p.representation != lytronaut_format::Representation::Jpeg || p.geometry != first.geometry || p.block_index != first.block_index) {
+                return Err(Failure(StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::UnsupportedFormat));
+            }
+            let stack = FocusStack { version: WireVersion::V1, id,
+                lambdas: planes.iter().map(|p| p.lambda.unwrap_or(f64::NAN)).collect(),
+                source_dimensions: Dimensions { width: first.geometry.width, height: first.geometry.height },
+                orientation_policy: "Processed recipe may be baked; default identity. Explicit viewer EXIF transform only; catalog orientation and sidecar edits preserved.".into() };
+            stack.validate().map_err(|_| Failure::invalid())?;
+            let output = if let Some((index, orientation)) = selection {
+                let plane = planes.get(index).ok_or(Failure::missing())?;
+                let decoded = plane.decode_jpeg(limits).map_err(error)?;
+                let oriented = lytronaut_format::orient_derivative(decoded, orientation, limits).map_err(error)?;
+                lytronaut_format::encode_derivative(&oriented, lytronaut_format::Limits { jpeg_bytes: 2 * 1024 * 1024, ..limits }).map_err(error)?
+            } else { Vec::new() };
+            Ok((stack, output))
+        }).await.map_err(|_| Failure(StatusCode::SERVICE_UNAVAILABLE, ErrorCode::Internal))?
+    }
+}
+async fn focus_manifest(
+    Extension(a): Extension<Api>,
+    p: std::result::Result<Path<String>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let r = async {
+        let (stack, _) = a.focus(&path(p)?, None).await?;
+        json_bounded(stack)
+    }
+    .await;
+    r.unwrap_or_else(Failure::response)
+}
+struct DerivativeBody {
+    bytes: Option<Bytes>,
+    _permit: OwnedSemaphorePermit,
+}
+impl HttpBody for DerivativeBody {
+    type Data = Bytes;
+    type Error = std::io::Error;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<std::result::Result<http_body::Frame<Bytes>, Self::Error>>> {
+        Poll::Ready(self.bytes.take().map(|b| Ok(http_body::Frame::data(b))))
+    }
+    fn is_end_stream(&self) -> bool {
+        self.bytes.is_none()
+    }
+}
+async fn focus_plane(
+    Extension(a): Extension<Api>,
+    p: std::result::Result<Path<(String, String, String)>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let r = async {
+        let Path((id, index, orientation)) = p.map_err(|_| Failure::invalid())?;
+        let index = index.parse().map_err(|_| Failure::invalid())?;
+        let orientation: u8 = orientation.parse().map_err(|_| Failure::invalid())?;
+        if !(1..=8).contains(&orientation) {
+            return Err(Failure::invalid());
+        }
+        let permit =
+            a.0.transfers
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))?;
+        let (stack, bytes) = a.focus(&id, Some((index, orientation))).await?;
+        let source = stack.source_dimensions.clone();
+        let output = if orientation >= 5 { Dimensions { width: source.height, height: source.width } } else { source.clone() };
+        let derivative = FocusDerivative { version: WireVersion::V1, representation: Representation::JpegFocusPlane, id: stack.id.clone(),
+            plane_index: index, lambda: stack.lambdas[index], source_dimensions: source,
+            output_dimensions: output, orientation, encoded_bytes: bytes.len() as u64,
+            content_sha256: format!("{:x}", Sha256::digest(&bytes)).try_into().map_err(|_| Failure::invalid())?,
+            color_space: ColorSpace::Unknown,
+            provenance: "Lossy JPEG re-encode of stored JPEG plane; explicit viewer EXIF transform. Processed recipe may be baked; imported recipe/sidecar/catalog orientation preserved, never replayed.".into() };
+        derivative.validate(&stack).map_err(|_| Failure(StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::ResourceLimit))?;
+        let metadata = serde_json::to_string(&derivative).map_err(|_| Failure::invalid())?;
+        if metadata.len() > PAGE_BYTES { return Err(Failure(StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::ResourceLimit)); }
+        let length = bytes.len();
+        let mut response = Body::new(DerivativeBody {
+            bytes: Some(bytes.into()),
+            _permit: permit,
+        })
+        .into_response();
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, length.to_string().parse().unwrap());
+        response.headers_mut().insert("X-Lytronaut-Derivative", metadata.parse().map_err(|_| Failure::invalid())?);
+        Ok(response)
     }
     .await;
     r.unwrap_or_else(Failure::response)
@@ -1350,5 +1505,34 @@ mod tests {
         drop(store);
         drop(catalog);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod derivative_body_tests {
+    use super::*;
+    use http_body_util::BodyExt;
+    #[tokio::test]
+    async fn derivative_permit_covers_emitted_frame_eof_and_drop() {
+        let permits = Arc::new(Semaphore::new(2));
+        let mut body = DerivativeBody {
+            bytes: Some(Bytes::from_static(b"synthetic")),
+            _permit: permits.clone().acquire_owned().await.unwrap(),
+        };
+        assert_eq!(permits.available_permits(), 1);
+        assert_eq!(
+            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            Bytes::from_static(b"synthetic")
+        );
+        assert_eq!(permits.available_permits(), 1);
+        assert!(body.frame().await.is_none());
+        drop(body);
+        assert_eq!(permits.available_permits(), 2);
+        let body = DerivativeBody {
+            bytes: Some(Bytes::from_static(b"cancel")),
+            _permit: permits.clone().acquire_owned().await.unwrap(),
+        };
+        drop(body);
+        assert_eq!(permits.available_permits(), 2);
     }
 }

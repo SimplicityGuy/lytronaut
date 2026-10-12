@@ -12,6 +12,28 @@ use std::{
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
 };
+fn synthetic_focus(jpeg: &[u8]) -> Vec<u8> {
+    use sha1::{Digest, Sha1};
+    let identity = |b: &[u8]| format!("sha1-{:x}", Sha1::digest(b));
+    let directory = serde_json::to_vec(&json!({"version":{"major":1,"minor":0},"picture":{"recipe":{"orientation":8,"unknown":"preserve"},"accelerationArray":[{"type":"com.lytro.acceleration.refocusStack","vendorContent":{"imageArray":[{"representation":"jpeg","width":2,"height":1,"lambda":-1,"imageRef":identity(jpeg)},{"representation":"jpeg","width":2,"height":1,"lambda":1,"imageRef":identity(jpeg)}]}}]}})).unwrap();
+    let mut bytes = b"\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0".to_vec();
+    for (directory, payload) in [(true, directory.as_slice()), (false, jpeg)] {
+        bytes.extend_from_slice(if directory {
+            b"\x89LFM\r\n\x1a\n"
+        } else {
+            b"\x89LFC\r\n\x1a\n"
+        });
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(identity(payload).as_bytes());
+        bytes.extend_from_slice(&[0; 35]);
+        bytes.extend_from_slice(payload);
+        while !bytes.len().is_multiple_of(16) {
+            bytes.push(0);
+        }
+    }
+    bytes
+}
 struct Server {
     root: PathBuf,
     store: Option<Store>,
@@ -216,6 +238,11 @@ CREATE TABLE event(uuid TEXT,library_uuid TEXT);INSERT INTO event VALUES('event'
                 b"valid preservation bytes".to_vec(),
             ),
             ("empty.bin", vec![]),
+            ("bin/synthetic-p1/stacklq.lfp", synthetic_focus(&jpeg)),
+            (
+                "bin/synthetic-p1/view_parameters.json",
+                br#"{"orientation":6,"unknown":"preserve"}"#.to_vec(),
+            ),
             (
                 "bin/synthetic-p2/stacklq.lfp",
                 b"preserved future JPEG planes".to_vec(),
@@ -278,6 +305,78 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
     assert_eq!(detail["caption"], "Caption café");
     assert_eq!(detail["capture"]["flag_status"], 2);
     assert!(!detail["item_errors"].as_array().unwrap().is_empty());
+    assert_eq!(
+        detail["capabilities"]["discrete_focus"]["state"],
+        "available"
+    );
+    let stack_id = detail["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["role"] == "jpeg_focus_stack")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let stack = s.get(&format!("/assets/{stack_id}/focus"), &cookie).await;
+    assert_eq!(stack["lambdas"], json!([-1.0, 1.0]));
+    assert!(
+        stack["orientation_policy"]
+            .as_str()
+            .unwrap()
+            .contains("default identity")
+    );
+    for orientation in 1..=8 {
+        let r = s
+            .request(
+                "GET",
+                &format!("/assets/{stack_id}/focus/0/{orientation}"),
+                &cookie,
+                b"",
+            )
+            .await;
+        assert_eq!(r.0, 200);
+        let decoded =
+            lytronaut_format::decode_jpeg(&r.2, lytronaut_format::Limits::default()).unwrap();
+        assert_eq!(
+            (decoded.geometry.width, decoded.geometry.height),
+            if orientation >= 5 { (1, 2) } else { (2, 1) }
+        );
+    }
+    for (suffix, status) in [
+        ("0/0", 400),
+        ("0/9", 400),
+        ("0/no", 400),
+        ("no/1", 400),
+        ("99/1", 404),
+    ] {
+        assert_eq!(
+            s.request(
+                "GET",
+                &format!("/assets/{stack_id}/focus/{suffix}"),
+                &cookie,
+                b""
+            )
+            .await
+            .0,
+            status
+        );
+    }
+    assert_eq!(
+        s.request("GET", &format!("/assets/{stack_id}/focus"), "", b"")
+            .await
+            .0,
+        401
+    );
+    assert_eq!(
+        s.request("GET", &format!("/assets/{stack_id}/focus/0/1"), "", b"")
+            .await
+            .0,
+        401
+    );
+    let original_stack = s
+        .request("GET", &format!("/assets/{stack_id}/download"), &cookie, b"")
+        .await;
+    assert_eq!(original_stack.2, synthetic_focus(&jpeg));
     let preview = detail["preview"].as_str().unwrap();
     let manifest = s.get(&format!("/assets/{preview}/manifest"), &cookie).await;
     assert_eq!(manifest["dimensions"], json!({"width":2,"height":1}));
@@ -349,7 +448,14 @@ async fn authenticated_upload_catalog_preview_original_restart_and_recovery() {
             .count(),
         1
     );
-    assert_eq!(bad["capabilities"]["discrete_focus"]["state"], "disabled");
+    assert_eq!(
+        bad["capabilities"]["discrete_focus"]["state"],
+        "unavailable"
+    );
+    assert_eq!(
+        bad["capabilities"]["discrete_focus"]["reason"],
+        "corrupt_asset"
+    );
     assert_eq!(bad["preview_error"]["code"], "corrupt_asset");
     assert_eq!(bad["capabilities"]["originals"]["state"], "available");
     for file in bad["originals"].as_array().unwrap() {
@@ -431,7 +537,7 @@ async fn finish_adapts_unknown_schema_preserved_download_and_cancel_consistency(
         409
     );
     let files = s.get(&format!("/libraries/{lib}/files"), &cookie).await;
-    assert_eq!(files["items"].as_array().unwrap().len(), 7);
+    assert_eq!(files["items"].as_array().unwrap().len(), 9);
     let mut empty = 0;
     for f in files["items"].as_array().unwrap() {
         let id = f["id"].as_str().unwrap();
