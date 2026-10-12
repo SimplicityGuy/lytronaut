@@ -367,12 +367,29 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await click('Cancel import');holdUploads=false;await Promise.all(heldUploads.map(r=>r.abort().catch(()=>{})));
    await page.waitForFunction(async()=>{const id=sessionStorage.getItem('lytronaut-import');return (await (await fetch('/imports/'+id)).json()).phase==='cancelled';});
    await page.setRequestInterception(false);page.off('request',intercept);
-   await click('Recover import status');
-   await page.waitForFunction(()=>document.querySelector('.status').textContent.toLowerCase().includes('cancelled'));
-   checkpoint='preserved-only';
-   // Unknown schema stays useful through preserved-only original links.
-   await (await page.$('#directory')).uploadFile(path.join(root,'Preserved.lytrolibrary'));
-   await page.waitForFunction(async()=>['catalog_complete','catalog_failed'].includes((await (await fetch('/imports/'+sessionStorage.getItem('lytronaut-import'))).json()).phase)&&!document.querySelector('#directory').disabled,{timeout:120000});
+   const priorImport=await page.evaluate(()=>sessionStorage.getItem('lytronaut-import'));
+   let recoveryRequest=null,recoveryFinished=false,recoveryFailed=false;
+   const recoveryStarted=request=>{if(!recoveryRequest&&request.method()==='GET'&&new URL(request.url()).pathname==='/imports/'+priorImport)recoveryRequest=request;};
+   const recoveryEnded=request=>{if(request===recoveryRequest)recoveryFinished=true;};
+   const recoveryErrored=request=>{if(request===recoveryRequest)recoveryFailed=true;};
+   page.on('request',recoveryStarted);page.on('requestfinished',recoveryEnded);page.on('requestfailed',recoveryErrored);
+   try{
+    await page.evaluate(()=>{window.__importBusyObserved=false;window.__importStatusObserver=new MutationObserver(()=>{if(document.querySelector('.status')?.textContent.includes('Previous operation still pending'))window.__importBusyObserved=true;});window.__importStatusObserver.observe(document.querySelector('.status'),{subtree:true,childList:true,characterData:true});});
+    await click('Recover import status');
+    await page.waitForFunction(()=>document.querySelector('.status').textContent.toLowerCase().includes('cancelled'));
+    checkpoint='preserved-only';
+    // Unknown schema stays useful through preserved-only original links.
+    await (await page.$('#directory')).uploadFile(path.join(root,'Preserved.lytrolibrary'));
+    try{await page.waitForFunction(async()=>['catalog_complete','catalog_failed'].includes((await (await fetch('/imports/'+sessionStorage.getItem('lytronaut-import'))).json()).phase)&&!document.querySelector('#directory').disabled,{timeout:120000});}
+    catch(error){
+     let state={diagnosticReadFailed:true};
+     try{state=await page.evaluate(async prior=>{const id=sessionStorage.getItem('lytronaut-import');let phase='unavailable';try{const response=await fetch('/imports/'+id,{signal:AbortSignal.timeout(10000)});if(response.ok){const value=(await response.json()).phase;phase=['intake','catalog_pending','catalog_complete','catalog_failed','failed','cancelled','cancelling'].includes(value)?value:'other';}}catch{}const status=document.querySelector('.status')?.textContent||'';return {diagnosticReadFailed:false,importIdentityChanged:id!==prior,directoryDisabled:!!document.querySelector('#directory')?.disabled,busyFeedbackObserved:window.__importBusyObserved===true,phase,statusKind:status.includes('Previous operation still pending')?'busy':status.toLowerCase().includes('cancelled')?'cancelled':'other'};},priorImport);}catch{}
+     console.error(JSON.stringify({preservedImportDiagnostic:true,recoveryRequested:recoveryRequest!==null,recoveryFinished,recoveryFailed,...state}));throw error;
+    }
+   }finally{
+    page.off('request',recoveryStarted);page.off('requestfinished',recoveryEnded);page.off('requestfailed',recoveryErrored);
+    await page.evaluate(()=>{window.__importStatusObserver?.disconnect();delete window.__importStatusObserver;delete window.__importBusyObserved;}).catch(()=>{});
+   }
    const preservedPhase=await page.evaluate(async()=> (await (await fetch('/imports/'+sessionStorage.getItem('lytronaut-import'))).json()).phase);
    if(preservedPhase==='catalog_failed')await click('Retry catalog adaptation');
    await page.waitForFunction(()=>document.querySelectorAll('.browser-panel ul a').length===2,{timeout:120000});
