@@ -1,0 +1,39 @@
+name: Linux containers
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: containers-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  runtime:
+    name: container-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup
+      - run: mise exec -- cargo build --locked -p lytronaut-service --example synthetic_jpeg
+      - run: docker compose config --quiet
+      - run: docker build --platform linux/${{ matrix.arch }} --tag lytronaut:ci --build-arg SOURCE_REVISION=${{ github.sha }} .
+      - run: docker build --platform linux/${{ matrix.arch }} --tag lytronaut:smoke-relay --file scripts/Dockerfile.smoke-relay scripts
+      - name: Runtime and package inventory
+        run: mise exec -- python3 scripts/container-smoke.py lytronaut:ci linux/${{ matrix.arch }}
+        env:
+          LYTRONAUT_TEST_REVISION: ${{ github.sha }}

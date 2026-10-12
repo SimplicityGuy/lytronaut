@@ -1,0 +1,38 @@
+services:
+  lytronaut:
+    image: lytronaut:local
+    build: .
+    user: "10001:10001"
+    read_only: true
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      LYTRONAUT_ORIGIN: ${LYTRONAUT_ORIGIN:-http://127.0.0.1:3000}
+      LYTRONAUT_UPLOAD_BYTES: "2147483648"
+      LYTRONAUT_FILE_BYTES: "536870912"
+      LYTRONAUT_UPLOAD_FILES: "100000"
+      LYTRONAUT_ENCODED_BYTES: "3221225472"
+      LYTRONAUT_RESERVED_BYTES: "8589934592"
+      LYTRONAUT_FREE_FLOOR: "2147483648"
+      LYTRONAUT_IMPORT_JOBS: "2"
+      LYTRONAUT_IMPORT_DECODERS: "1"
+    volumes:
+      - catalog:/data/catalog
+      - originals:/data/originals
+      - work:/data/work
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 128
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  catalog:
+  originals:
+  work:

@@ -6,14 +6,12 @@ logic is Rust with Leptos CSR 0.8.22; CSS and the tiny module initialization in
 owned HTML are presentation/glue. SQLite, native JPEG decoding and service crates
 stay outside the WASM dependency graph.
 
-Use **First run? Set up administrator**, read the private data directory's
-`bootstrap.secret` locally, create the administrator, then sign in. Credentials
-and CSRF stay in browser memory; the HttpOnly cookie is managed by the service.
+Open the library workspace directly; access control belongs to deployment.
 Only an opaque import job ID is retained in sessionStorage for status recovery.
-The configured Origin/Host and CSRF policy remain authoritative. The server
+The configured Origin/Host and mutation-intent policy remain authoritative. The server
 loads only the fixed trusted generated JS/WASM filenames from `LYTRONAUT_CLIENT`
 (default `dist`) and embeds application-owned HTML/CSS. Uploaded libraries never
-become public static assets; unknown paths remain authenticated.
+become public static assets; unknown paths remain deployment-protected.
 
 `LYTRONAUT_DATA` defaults to `data`. `LYTRONAUT_DATABASE` optionally selects a
 single filename inside that private directory (default `catalog.db`); the owner
@@ -59,7 +57,7 @@ DOM imagery. Stage preview admission is at most 28 MiB by that conservative
 formula. Grid images are decoded and downsized under Rust control to 128² JPEGs,
 with data URLs capped at 128 KiB each. Original image URLs are revoked immediately
 after downsizing; stage URLs are revoked on replacement/logout/unmount. Old
-requests are aborted and generation/session/selection checks discard late results.
+requests are aborted and generation/selection checks discard late results.
 This is conservative application allocation accounting, not a measured bound on
 browser/driver process RSS or browser decoder internal allocations.
 
@@ -70,8 +68,8 @@ browser/driver process RSS or browser decoder internal allocations.
 contain independently generated content only.
 
 `mise exec -- just setup wasm-build build browser-test` runs the actual binary,
-setup/login, synthetic directory and multi-file ZIP import, capture pagination,
-ordered album comparisons, search/sort, previews and logout/unauthorized replay in
+direct entry, synthetic directory and multi-file ZIP import, capture pagination,
+ordered album comparisons, search/sort, previews and direct entry and foreign-origin rejection in
 an isolated Chrome profile. Public test inputs are independently authored schema
 records and a Rust-encoded abstract scene. Puppeteer-core 25.13.0 is exact locked,
 MIT/Apache/BSD/ISC test tooling, excluded from product assets. The npm inventory
@@ -160,13 +158,13 @@ rendering parity. Unknown or conflicting edits are not combined. Synthetic
 embedded orientation 8 versus sidecar 6 verifies default identity and explicit
 viewer precedence. Catalog 0 is rejected as EXIF.
 
-Source bytes use the authenticated native CPU flow documented in `api.md`.
+Source bytes use the deployment-protected native CPU flow documented in `api.md`.
 Each response carries a typed selection, geometry, generated-byte hash and lossy
 provenance. The Rust client checks these before actual JPEG decoding/display.
 Stage requests share the existing two-transfer browser admission; each focus
 operation reserves 20 MiB within the 64 MiB transient viewer allowance, leaving
 32 MiB for persistent stage/grid within the common 96 MiB CPU/WASM budget.
-Changing focus, capture, library or session aborts obsolete requests; generation
+Changing focus, capture or library aborts obsolete requests; generation
 checks discard late results. Temporary decode objects are released, superseded
 Blob URLs are revoked, and logout clears the displayed derivative. There is no
 unbounded plane cache. Failed derivatives retain the previous verified frame and
@@ -181,7 +179,7 @@ pre-restart URL/canvas cleanup, sorting, actual 200% DPR/CSS zoom, responsive,
 forced-colors, reduced-motion and AX checks remain required. AX inspection does
 not certify manual VoiceOver behavior. Native tests cover all eight EXIF rotation/
 reflection coordinate maps, inverse geometry, hostile metadata and resource
-limits, exact source preservation, authentication and response permit lifecycle.
+limits, exact source preservation, deployment access and response permit lifecycle.
 
 Latency measurement is input event through verified Rust/WASM derivative decode,
 stage image decode and the next animation-frame callback: **decoded frame ready**,
