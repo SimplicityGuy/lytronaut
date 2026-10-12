@@ -1,14 +1,18 @@
 //! Lawfully authored schema-23 records and encoder-generated synthetic pixels only.
 use lytronaut_service::{AppState, SecurityConfig, api::Api, router_with_routes, uploads};
-use lytronaut_storage::{Catalog, Limits, Store};
+use lytronaut_storage::{Catalog, DatabaseConfig, Limits, Store};
 use serde_json::{Value, json};
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+use sqlx::{
+    ConnectOptions, Connection, PgConnection, SqliteConnection, any::AnyConnectOptions,
+    postgres::PgConnectOptions, sqlite::SqliteConnectOptions,
+};
 use std::{
     fs,
     io::{Read, Write},
     net::TcpStream,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
+    str::FromStr,
 };
 fn synthetic_focus(jpeg: &[u8]) -> Vec<u8> {
     use sha1::{Digest, Sha1};
@@ -35,6 +39,9 @@ fn synthetic_focus(jpeg: &[u8]) -> Vec<u8> {
 struct Server {
     root: PathBuf,
     store: Option<Store>,
+    catalog: Option<Catalog>,
+    database: DatabaseConfig,
+    postgres: Option<(PgConnection, String)>,
     port: u16,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -53,8 +60,57 @@ impl Server {
         let root =
             std::env::temp_dir().join(format!("lytronaut-api-test-{:x}", u128::from_le_bytes(b)));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let mut postgres = None;
+        let database = match std::env::var("LYTRONAUT_TEST_BACKEND").as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("sqlite") => {
+                DatabaseConfig::Sqlite(root.join("catalog.db"))
+            }
+            Ok("postgres") => {
+                let url = std::env::var("LYTRONAUT_TEST_POSTGRES_URL")
+                    .expect("PostgreSQL API tests require the explicit disposable test URL");
+                let options = PgConnectOptions::from_str(&url)
+                    .expect("invalid test PostgreSQL configuration")
+                    .disable_statement_logging();
+                let mut admin = PgConnection::connect_with(&options)
+                    .await
+                    .expect("test PostgreSQL connection failed");
+                let restricted: bool = sqlx::query_scalar("SELECT NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication) FROM pg_roles WHERE rolname=current_user")
+                    .fetch_one(&mut admin).await.unwrap();
+                assert!(
+                    restricted,
+                    "parity tests require a restricted application role"
+                );
+                let public_create: bool = sqlx::query_scalar(
+                    "SELECT has_schema_privilege(current_user,'public','CREATE')",
+                )
+                .fetch_one(&mut admin)
+                .await
+                .unwrap();
+                assert!(
+                    !public_create,
+                    "test role must not create objects in public"
+                );
+                let schema = format!("lytronaut_api_{:x}", u128::from_le_bytes(b));
+                sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA \"{schema}\"")))
+                    .execute(&mut admin)
+                    .await
+                    .unwrap();
+                let mut selected = AnyConnectOptions::from_str(&url)
+                    .expect("invalid test database URL")
+                    .database_url;
+                selected
+                    .query_pairs_mut()
+                    .append_pair("options", &format!("-c search_path={schema}"));
+                postgres = Some((admin, schema));
+                DatabaseConfig::Postgres(selected.to_string())
+            }
+            _ => panic!("LYTRONAUT_TEST_BACKEND must be sqlite or postgres"),
+        };
         let mut s = Self {
             root,
+            database,
+            postgres,
+            catalog: None,
             store: None,
             port: 0,
             task: None,
@@ -63,9 +119,25 @@ impl Server {
         s
     }
     async fn start(&mut self) {
-        let catalog = Catalog::open_application_database(&self.root.join("catalog.db"))
-            .await
-            .unwrap();
+        self.assert_public_sentinel().await;
+        let catalog = Catalog::open(self.database.clone()).await.unwrap();
+        if let Some((_, schema)) = &self.postgres {
+            // Hold all four leases together: checking one repeatedly could miss
+            // a connection whose session options selected the wrong schema.
+            let mut connections = Vec::new();
+            for _ in 0..4 {
+                let mut connection = catalog.pool().acquire().await.unwrap();
+                let actual: String = sqlx::query_scalar("SELECT current_schema()::text")
+                    .fetch_one(&mut *connection)
+                    .await
+                    .unwrap();
+                assert_eq!(&actual, schema);
+                connections.push(connection);
+            }
+            drop(connections);
+            self.assert_public_sentinel().await;
+            assert!(!self.root.join("catalog.db").exists());
+        }
         let store = Store::open(
             catalog.clone(),
             &self.root.join("originals"),
@@ -84,9 +156,10 @@ impl Server {
         .await
         .unwrap();
         let api = Api::open(catalog.clone(), store.clone()).await.unwrap();
+        self.assert_public_sentinel().await;
         let app = router_with_routes(
             AppState {
-                catalog,
+                catalog: catalog.clone(),
                 security: SecurityConfig::new("http://127.0.0.1:3000").unwrap(),
             },
             uploads::routes(store.clone()).merge(api.routes()),
@@ -97,13 +170,53 @@ impl Server {
             axum::serve(listener, app).await.unwrap()
         }));
         self.store = Some(store);
+        self.catalog = Some(catalog);
     }
     async fn restart(&mut self) {
         let t = self.task.take().unwrap();
         t.abort();
         let _ = t.await;
         self.store.take();
+        self.catalog.take().unwrap().pool().close().await;
         self.start().await;
+    }
+    async fn assert_public_sentinel(&self) {
+        if let Some((_, schema)) = &self.postgres {
+            let options =
+                PgConnectOptions::from_str(&std::env::var("LYTRONAUT_TEST_POSTGRES_URL").unwrap())
+                    .unwrap()
+                    .disable_statement_logging();
+            let mut connection = PgConnection::connect_with(&options).await.unwrap();
+            let intact: bool = sqlx::query_scalar("SELECT count(*)=1 AND min(marker)='synthetic-persistence-parity' FROM public.lytronaut_parity_sentinel")
+                .fetch_one(&mut connection).await.unwrap();
+            assert!(intact, "public sentinel must remain unchanged");
+            let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('intake_jobs','application_job_order','catalog_versions','export_jobs')")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(
+                leaked, 0,
+                "application objects must remain in the owned schema"
+            );
+            assert!(schema.starts_with("lytronaut_api_"));
+            connection.close().await.unwrap();
+        }
+    }
+    async fn close(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.store.take();
+        self.catalog.take().unwrap().pool().close().await;
+        self.assert_public_sentinel().await;
+        if let Some((mut admin, schema)) = self.postgres.take() {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA \"{schema}\" CASCADE"
+            )))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+            admin.close().await.unwrap();
+        }
     }
     async fn request(
         &self,
@@ -476,6 +589,7 @@ async fn direct_upload_catalog_preview_original_restart_and_recovery() {
         before,
         s.get(&format!("/albums/{album}/captures"), &headers).await
     );
+    s.close().await;
 }
 #[tokio::test]
 async fn finish_adapts_unknown_schema_preserved_download_and_cancel_consistency() {
@@ -560,6 +674,7 @@ async fn finish_adapts_unknown_schema_preserved_download_and_cancel_consistency(
             .len(),
         1
     );
+    s.close().await;
 }
 
 fn stored_zip(name: &str, data: &[u8]) -> Vec<u8> {
@@ -637,6 +752,7 @@ async fn zip_completion_adapts_without_an_extra_finish_request() {
             .0,
         204
     );
+    s.close().await;
 }
 
 #[tokio::test]
@@ -666,6 +782,7 @@ async fn polling_during_catalog_publication_keeps_completed_import_visible() {
         assert_eq!(progress["phase"], "catalog_complete");
         assert_eq!(progress["catalog_state"], "preserved_only");
     }
+    s.close().await;
 }
 
 async fn wait_export(s: &Server, id: &str, headers: &str) -> Value {
@@ -862,6 +979,7 @@ async fn direct_flatten_png_jpeg_exact_pixels_provenance_cancel_and_restart() {
             .2,
         jpeg
     );
+    s.close().await;
 }
 #[tokio::test]
 async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_and_interruption() {

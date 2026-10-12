@@ -1,7 +1,7 @@
 //! Independently authored MIT synthetic Desktop data; never private captures.
 use lytronaut_contracts::{ImportKind, ImportRequest, WireVersion};
 use lytronaut_storage::{
-    Catalog, Limits, Store,
+    Catalog, DatabaseConfig, Limits, Store,
     desktop::{self, CatalogState, OriginalRecord, TypedValue},
 };
 use sqlx::{Connection, Row, SqliteConnection, sqlite::SqliteConnectOptions};
@@ -18,6 +18,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_database(None).await
+    }
+    async fn with_database(config: Option<DatabaseConfig>) -> Self {
         let mut b = [0; 16];
         getrandom::fill(&mut b).unwrap();
         let root = std::env::temp_dir().join(format!(
@@ -25,9 +28,12 @@ impl Fixture {
             u128::from_le_bytes(b)
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
-        let catalog = Catalog::open_application_database(&root.join("app.db"))
-            .await
-            .unwrap();
+        let catalog = match config {
+            Some(config) => Catalog::open(config).await.unwrap(),
+            None => Catalog::open_application_database(&root.join("app.db"))
+                .await
+                .unwrap(),
+        };
         let store = Store::open(
             catalog.clone(),
             &root.join("originals"),
@@ -425,4 +431,160 @@ async fn schema_admission_and_check_expressions_are_bounded() {
             .state,
         CatalogState::PreservedOnly
     );
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable actual PostgreSQL service via LYTRONAUT_TEST_POSTGRES_URL"]
+async fn postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport_and_reopen() {
+    use sqlx::{ConnectOptions, PgConnection, postgres::PgConnectOptions};
+    use std::str::FromStr;
+    let base = std::env::var("LYTRONAUT_TEST_POSTGRES_URL")
+        .expect("explicit disposable PostgreSQL test URL required");
+    let options = PgConnectOptions::from_str(&base)
+        .unwrap()
+        .disable_statement_logging();
+    let mut random = [0; 16];
+    getrandom::fill(&mut random).unwrap();
+    let schema = format!("lytronaut_desktop_test_{:x}", u128::from_le_bytes(random));
+    let mut admin = PgConnection::connect_with(&options).await.unwrap();
+    let restricted: bool = sqlx::query_scalar("SELECT NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication) FROM pg_roles WHERE rolname=current_user")
+        .fetch_one(&mut admin).await.unwrap();
+    assert!(
+        restricted,
+        "parity tests require a restricted application role"
+    );
+    let public_create: bool =
+        sqlx::query_scalar("SELECT has_schema_privilege(current_user,'public','CREATE')")
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+    assert!(
+        !public_create,
+        "test role must not create objects in public"
+    );
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA \"{schema}\"")))
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let mut selected = sqlx::any::AnyConnectOptions::from_str(&base)
+        .unwrap()
+        .database_url;
+    selected
+        .query_pairs_mut()
+        .append_pair("options", &format!("-c search_path={schema}"));
+    let config = DatabaseConfig::Postgres(selected.to_string());
+    let f = Fixture::with_database(Some(config.clone())).await;
+    let actual_schema: String = sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(f.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(actual_schema, schema);
+    let outside_owned_schema: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('intake_jobs','application_job_order','catalog_versions')")
+        .fetch_one(f.catalog.pool()).await.unwrap();
+    assert_eq!(outside_owned_schema, 0);
+    let source = f.source("UPDATE picture SET name='Alpha'||char(0)||'hidden', caption='Café 🌌'||char(0)||'tail' WHERE uuid='p1'").await;
+    let expected_source = source.clone();
+    let job = f.intake(source.clone(), false, false).await;
+    let (a, b) = tokio::join!(
+        desktop::import_desktop(&f.catalog, &f.store, &job),
+        desktop::import_desktop(&f.catalog, &f.store, &job),
+    );
+    let a = a.unwrap();
+    assert_eq!(a.version_id, b.unwrap().version_id);
+    assert_eq!(a.state, CatalogState::Ready);
+    assert_eq!(
+        (a.pictures, a.albums, a.memberships, a.files),
+        (2, 2, 3, 15)
+    );
+    let original: Vec<u8> = sqlx::query_scalar("SELECT original FROM catalog_records WHERE version=$1 AND kind='picture' ORDER BY ordinal LIMIT 1")
+        .bind(a.version_id).fetch_one(f.catalog.pool()).await.unwrap();
+    let original: OriginalRecord = serde_json::from_slice(&original).unwrap();
+    assert_eq!(
+        original.fields["name"],
+        TypedValue::Text(b"Alpha\0hidden".to_vec())
+    );
+    assert_eq!(
+        original.fields["caption"],
+        TypedValue::Text("Café 🌌\0tail".as_bytes().to_vec())
+    );
+    assert_eq!(
+        original.fields["unknown_int"],
+        TypedValue::Integer(i64::MAX.to_string())
+    );
+    let name: Vec<u8> =
+        sqlx::query_scalar("SELECT name FROM catalog_pictures WHERE version=$1 AND uuid=$2")
+            .bind(a.version_id)
+            .bind(f.catalog.encode_source_key("p1"))
+            .fetch_one(f.catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(name, b"Alpha\0hidden");
+    let encoded_order: Vec<String> = sqlx::query_scalar("SELECT picture_uuid FROM catalog_memberships WHERE version=$1 AND album_uuid=$2 ORDER BY picture_index")
+        .bind(a.version_id).bind(f.catalog.encode_source_key("a"))
+        .fetch_all(f.catalog.pool()).await.unwrap();
+    let order: Vec<String> = encoded_order
+        .into_iter()
+        .map(|key| f.catalog.decode_source_key(key).unwrap())
+        .collect();
+    assert_eq!(order, ["p2", "p1"]);
+    let manifest = f.store.manifest(&job).await.unwrap();
+    let source_entry = manifest
+        .iter()
+        .find(|entry| entry.logical_path == "lytrolibrary.db")
+        .unwrap();
+    let mut preserved = Vec::new();
+    std::io::Read::read_to_end(
+        &mut f.store.open_blob(source_entry).unwrap(),
+        &mut preserved,
+    )
+    .unwrap();
+    assert_eq!(preserved, expected_source);
+    let repeat = f.intake(source, false, false).await;
+    assert_eq!(
+        desktop::import_desktop(&f.catalog, &f.store, &repeat)
+            .await
+            .unwrap()
+            .version_id,
+        a.version_id
+    );
+    let changed = f
+        .source("UPDATE picture SET caption='changed' WHERE uuid='p1'")
+        .await;
+    let changed_job = f.intake(changed, true, false).await;
+    let changed = desktop::import_desktop(&f.catalog, &f.store, &changed_job)
+        .await
+        .unwrap();
+    assert_eq!(changed.state, CatalogState::Quarantined);
+    assert!(changed.conflicting_identity);
+    let reopened = Catalog::open(config).await.unwrap();
+    assert_eq!(
+        desktop::summary(&reopened, a.version_id)
+            .await
+            .unwrap()
+            .memberships,
+        3
+    );
+    assert_eq!(
+        desktop::import_desktop(&reopened, &f.store, &job)
+            .await
+            .unwrap()
+            .version_id,
+        a.version_id
+    );
+    let orders: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM application_job_order WHERE kind='intake'")
+            .fetch_one(reopened.pool())
+            .await
+            .unwrap();
+    assert_eq!(orders, 3);
+    reopened.pool().close().await;
+    f.catalog.pool().close().await;
+    drop(f);
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA \"{schema}\" CASCADE"
+    )))
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    admin.close().await.unwrap();
 }
