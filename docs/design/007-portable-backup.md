@@ -79,8 +79,10 @@ before receiving the next (connection/executor.rs); its connection retains frame
 receive-buffer capacity, and Any conversion plus owned logical cells may coexist.
 This source audit is not a measured RSS or a proved whole-process bound.
 
-Export admission permits at most two pending jobs, so deployment memory sizing
-must account for two concurrent cursor/import working sets, the active application
+Export admission permits at most two pending jobs. A shared validation permit
+serializes portable archive/restore cursors within each API instance; the second
+job can still upload or flatten. Deployment memory sizing must account for every
+admitted worker and for multiple application instances, the active application
 pool, intake/adaptation work and database/container overhead. No smaller implicit
 legacy cell/row cap is introduced to simplify that accounting. Near-limit fixtures
 and measured concurrent memory are still required validation gates.
@@ -143,3 +145,12 @@ racing commit/publication, denied DROP, disconnected database, restart, repeated
 cleanup and concurrent admission. Tests verify retained quota until cleanup succeeds,
 active-store preservation, and unrelated-schema/file sentinels. Actual engine tests
 must pass before submission; this design document is not evidence of runtime success.
+
+Transient ownership uses a separate durable nonce record before creating a private
+job transfer directory and marker. Uploads, export artifacts and logical spools
+live inside that directory. Startup, DELETE and finalization verify its marker
+before deletion. A pre-existing fixed-name legacy file or unmarked transfer directory
+is never deleted based on its filename; quota remains until ownership is resolved.
+Successful upload crashes before restore journal creation are recoverable through
+this earlier ownership record. Initial mkdir/marker crash cuts retain the record
+and quota rather than guessing that an unmarked directory is safe to remove.

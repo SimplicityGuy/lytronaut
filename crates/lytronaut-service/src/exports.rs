@@ -16,7 +16,7 @@ fn root(store: &Store) -> PathBuf {
     store.staging_root().with_extension("exports")
 }
 fn artifact(a: &Api, id: &str) -> PathBuf {
-    root(&a.0.store).join(format!("{id}.artifact"))
+    crate::transient_owner::Owner::directory(&root(&a.0.store), id).join("artifact")
 }
 fn storage(_: impl std::fmt::Debug) -> Failure {
     Failure(
@@ -145,6 +145,14 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
         .await?;
     sqlx::query("DELETE FROM application_job_order WHERE kind='export' AND job NOT IN (SELECT id FROM export_jobs)").execute(&mut *tx).await?;
     tx.commit().await?;
+    if let Err(error) = crate::transient_owner::Owner::prepare(&root(&a.0.store), &id) {
+        sqlx::query("UPDATE export_jobs SET state='failed',error='storage' WHERE id=$1")
+            .bind(&id)
+            .execute(a.0.catalog.pool())
+            .await?;
+        // Persisted intent (if any) and quota survive initial marker/mkdir errors.
+        return Err(storage(error));
+    }
     Ok(id)
 }
 async fn report(a: &Api, id: &str) -> Result<JobReport> {
@@ -217,11 +225,23 @@ async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()
             .await
             .map_err(storage)?;
     }
-    for suffix in ["artifact", "snapshot", "upload"] {
-        match fs::remove_file(directory.join(format!("{id}.{suffix}"))) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(storage(error)),
+    let transient = crate::transient_owner::Owner::load(&directory, id).map_err(storage)?;
+    if let Some(owner) = transient.as_ref() {
+        owner.cleanup(&directory).map_err(storage)?;
+    } else {
+        // Neither an old filename nor an unmarked directory proves ownership.
+        // Fail closed across startup, DELETE and worker finalization.
+        for path in [
+            crate::transient_owner::Owner::directory(&directory, id),
+            directory.join(format!("{id}.artifact")),
+            directory.join(format!("{id}.snapshot")),
+            directory.join(format!("{id}.upload")),
+        ] {
+            match fs::symlink_metadata(path) {
+                Ok(_) => return Err(Failure::invalid()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(storage(e)),
+            }
         }
     }
     fs::File::open(&directory)
@@ -240,6 +260,9 @@ async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()
         journal
             .forget_after_quota_release(&directory)
             .map_err(storage)?;
+    }
+    if let Some(owner) = transient {
+        owner.forget(&directory).map_err(storage)?;
     }
     Ok(())
 }
@@ -344,6 +367,10 @@ async fn download(
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))?;
+        let owner = crate::transient_owner::Owner::load(&root(&a.0.store), &id)
+            .map_err(storage)?
+            .ok_or_else(Failure::invalid)?;
+        owner.verify(&root(&a.0.store)).map_err(storage)?;
         let f = fs::File::open(artifact(&a, &id)).map_err(storage)?;
         let length = f.metadata().map_err(storage)?.len();
         let value: Option<String> =
@@ -719,7 +746,7 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
             .filter(|n| *n <= i64::MAX as u64)
             .ok_or(Failure::invalid())?;
         let id = create(&a, "restore", reservation).await?;
-        let path = root(&a.0.store).join(format!("{id}.upload"));
+        let path = crate::transient_owner::Owner::directory(&root(&a.0.store), &id).join("upload");
         let mut upload_created = false;
         let result = async {
             let mut f = tokio::fs::OpenOptions::new()
@@ -788,6 +815,101 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn unowned_collision_survives_restart_and_delete_with_quota_retained() {
+        let dir = std::env::temp_dir().join(random_id().unwrap());
+        crate::local::private_directory(&dir).unwrap();
+        let catalog = Catalog::open_application_database(&dir.join("app.db"))
+            .await
+            .unwrap();
+        let store = Store::open(
+            catalog.clone(),
+            &dir.join("originals"),
+            &dir.join("staging"),
+            lytronaut_storage::Limits {
+                free_floor: 0,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let api = Api::open(catalog.clone(), store.clone()).await.unwrap();
+        let id = random_id().unwrap();
+        // Independent pre-existing fixed-name upload and transfer-directory
+        // sentinels: neither was created by the application ownership protocol.
+        let sentinel = root(&store).join(format!("{id}.upload"));
+        fs::write(&sentinel, b"unrelated upload").unwrap();
+        let directory = crate::transient_owner::Owner::directory(&root(&store), &id);
+        crate::local::private_directory(&directory).unwrap();
+        fs::write(directory.join("sentinel"), b"unrelated directory").unwrap();
+        sqlx::query(
+            "INSERT INTO export_jobs(id,kind,state,reserved) VALUES($1,'restore','failed',4096)",
+        )
+        .bind(&id)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        assert!(crate::transient_owner::Owner::prepare(&root(&store), &id).is_err());
+        assert!(migrate(&catalog, &store).await.is_err());
+        // DELETE's central cleanup path must fail closed on the same proof.
+        assert!(remove_owned(&api, &id).await.is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"unrelated upload");
+        assert_eq!(
+            fs::read(directory.join("sentinel")).unwrap(),
+            b"unrelated directory"
+        );
+        let reserved: i64 = sqlx::query_scalar("SELECT reserved FROM export_jobs WHERE id=$1")
+            .bind(&id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(reserved, 4096);
+        drop(api);
+        catalog.pool().close().await;
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn uploaded_owned_file_recovers_before_restore_journal_exists() {
+        let dir = std::env::temp_dir().join(random_id().unwrap());
+        crate::local::private_directory(&dir).unwrap();
+        let catalog = Catalog::open_application_database(&dir.join("app.db"))
+            .await
+            .unwrap();
+        let store = Store::open(
+            catalog.clone(),
+            &dir.join("originals"),
+            &dir.join("staging"),
+            lytronaut_storage::Limits {
+                free_floor: 0,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let api = Api::open(catalog.clone(), store.clone()).await.unwrap();
+        let id = create(&api, "restore", 4096).await.unwrap();
+        let directory = crate::transient_owner::Owner::directory(&root(&store), &id);
+        fs::write(directory.join("upload"), b"synthetic completed upload").unwrap();
+        assert!(
+            crate::restore_journal::Journal::load(&root(&store), &id)
+                .unwrap()
+                .is_none()
+        );
+        migrate(&catalog, &store).await.unwrap();
+        assert!(!directory.exists());
+        let reserved: i64 = sqlx::query_scalar("SELECT reserved FROM export_jobs WHERE id=$1")
+            .bind(&id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(reserved, 0);
+        migrate(&catalog, &store).await.unwrap();
+        drop(api);
+        catalog.pool().close().await;
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn service_shutdown_cancels_a_queued_background_archive_before_publish() {
         let dir = std::env::temp_dir().join(random_id().unwrap());
