@@ -14,7 +14,7 @@ use lytronaut_contracts::*;
 use lytronaut_storage::{Catalog, SourceEntry, Store, desktop};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, sqlite::SqliteRow};
+use sqlx::{Row, any::AnyRow};
 use std::future::Future;
 use std::os::unix::fs::FileExt;
 use std::{
@@ -136,16 +136,14 @@ async fn migrate(c: &Catalog) -> Result<()> {
             ErrorCode::StorageUnavailable,
         )
     })?;
-    let mut tx = c.pool().begin_with("BEGIN IMMEDIATE").await?;
-    for sql in [
-        "CREATE TABLE IF NOT EXISTS api_ids(id TEXT PRIMARY KEY,kind TEXT NOT NULL,version INTEGER NOT NULL REFERENCES catalog_versions(id),source_key TEXT NOT NULL,UNIQUE(kind,version,source_key))",
-        "CREATE TABLE IF NOT EXISTS api_imports(job TEXT PRIMARY KEY REFERENCES intake_jobs(id),version INTEGER NOT NULL REFERENCES catalog_versions(id))",
-        "CREATE INDEX IF NOT EXISTS api_ids_lookup ON api_ids(kind,version,source_key)",
-        "CREATE TABLE IF NOT EXISTS api_adaptation_errors(job TEXT PRIMARY KEY REFERENCES intake_jobs(id),code TEXT NOT NULL)",
-    ] {
+    let mut tx = c.begin_write().await?;
+    for &sql in c.schema_statements(lytronaut_storage::SchemaComponent::Api) {
         sqlx::query(sql).execute(&mut *tx).await?;
     }
-    let tables:i64=sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('api_ids','api_imports','api_adaptation_errors')").fetch_one(&mut *tx).await?;
+    let tables:i64=sqlx::query_scalar(c.dialect(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('api_ids','api_imports','api_adaptation_errors')",
+        "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relkind='r' AND c.relname IN ('api_ids','api_imports','api_adaptation_errors')"
+    )).fetch_one(&mut *tx).await?;
     if tables != 3 {
         return Err(Failure(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -166,7 +164,7 @@ async fn migrate(c: &Catalog) -> Result<()> {
 async fn map_version(c: &Catalog, job: &str, version: i64) -> Result<String> {
     // Reserve the writer before reading keys: a deferred read upgrade can fail
     // immediately with SQLITE_BUSY when import progress holds another writer.
-    let mut tx = c.pool().begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = c.begin_write().await?;
     let mut keys = vec![("library".to_string(), String::new())];
     for (kind, sql) in [
         (
@@ -179,7 +177,7 @@ async fn map_version(c: &Catalog, job: &str, version: i64) -> Result<String> {
         ),
         (
             "file",
-            "SELECT path AS key FROM catalog_sources WHERE version=$1",
+            c.dialect("SELECT path AS key FROM catalog_sources WHERE version=$1", "SELECT encode(convert_to(path,'UTF8'),'hex') AS key FROM catalog_sources WHERE version=$1"),
         ),
     ] {
         for row in sqlx::query(sql).bind(version).fetch_all(&mut *tx).await? {
@@ -311,7 +309,7 @@ impl Api {
         migrate(&catalog)
             .await
             .map_err(|_| desktop::CatalogError::Unavailable)?;
-        let jobs:Vec<String>=sqlx::query_scalar("SELECT id FROM intake_jobs WHERE state='succeeded' AND id NOT IN (SELECT job FROM api_imports) ORDER BY rowid").fetch_all(catalog.pool()).await?;
+        let jobs:Vec<String>=sqlx::query_scalar("SELECT j.id FROM intake_jobs j JOIN application_job_order o ON o.kind='intake' AND o.job=j.id WHERE j.state='succeeded' AND j.id NOT IN (SELECT job FROM api_imports) ORDER BY o.ordinal").fetch_all(catalog.pool()).await?;
         for job in jobs {
             if adapt(&catalog, &store, &job).await.is_err() {
                 // A source failure is isolated only after its redacted status is durable.
@@ -362,7 +360,10 @@ impl Api {
         if ready && row.get::<String, _>("state") != "ready" {
             return Err(Failure(StatusCode::CONFLICT, ErrorCode::UnsupportedVersion));
         }
-        Ok((row.get("version"), row.get("source_key")))
+        Ok((
+            row.get("version"),
+            self.0.catalog.decode_source_key(row.get("source_key"))?,
+        ))
     }
     async fn descriptor(&self, id: &str, viewer: bool) -> Result<Arc<Descriptor>> {
         let (v, key) = self.lookup(id, "file", false).await?;
@@ -570,6 +571,14 @@ impl Browse {
                 .replace('_', "~_")
         )
     }
+    fn search_binding(&self, catalog: &Catalog) -> String {
+        match catalog.backend() {
+            lytronaut_storage::Backend::Sqlite => self.search_pattern(),
+            lytronaut_storage::Backend::Postgres => {
+                catalog.encode_source_key(&self.search.to_ascii_lowercase())
+            }
+        }
+    }
 }
 fn decode_query(v: &str) -> Result<String> {
     let mut out = Vec::with_capacity(v.len());
@@ -665,7 +674,7 @@ async fn albums(
             return Err(Failure::invalid());
         }
         let (version, _) = a.lookup(&path(p)?, "library", true).await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(a.0.catalog.dialect(
             "SELECT a.id,substr(c.name,1,256) AS name,
              length(CAST(c.name AS BLOB))>256 AS truncated,c.sort_order,
              (SELECT count(*) FROM catalog_memberships
@@ -675,9 +684,19 @@ async fn albums(
              WHERE c.version=$1 AND c.name LIKE $2 ESCAPE '~'
              ORDER BY CASE WHEN $3='name' THEN c.name END COLLATE NOCASE,c.sort_order,a.id
              LIMIT $4 OFFSET $5",
-        )
+            "SELECT a.id,c.name_display AS name,
+             CASE WHEN c.name_bytes>256 THEN 1 ELSE 0 END AS truncated,c.sort_order,
+             (SELECT count(*) FROM catalog_memberships
+              WHERE version=c.version AND album_uuid=c.uuid) AS captures
+             FROM catalog_albums c JOIN api_ids a
+              ON a.version=c.version AND a.source_key=c.uuid AND a.kind='album'
+             WHERE c.version=$1 AND position(decode($2,'hex') in c.name_fold)>0
+             ORDER BY CASE WHEN $3='name' THEN c.name_fold END NULLS FIRST,
+              CASE WHEN $3='name' THEN c.name_bytes END NULLS FIRST,c.sort_order,a.id
+             LIMIT $4 OFFSET $5",
+        ))
         .bind(version)
-        .bind(browse.search_pattern())
+        .bind(browse.search_binding(&a.0.catalog))
         .bind(&browse.sort)
         .bind(i64::from(browse.limit) + 1)
         .bind(i64::from(browse.offset))
@@ -701,7 +720,7 @@ async fn albums(
     .await;
     result.unwrap_or_else(Failure::response)
 }
-fn capture_summary(row: &SqliteRow) -> CaptureSummary {
+fn capture_summary(row: &AnyRow) -> CaptureSummary {
     let (name, truncated) = text_bounded(row.get("name"), 256);
     CaptureSummary {
         id: opaque(row.get("id")),
@@ -717,7 +736,7 @@ async fn capture_page(a: &Api, id: &str, album: bool, q: Option<String>) -> Resu
     let (version, key) = a
         .lookup(id, if album { "album" } else { "library" }, true)
         .await?;
-    let rows = sqlx::query(
+    let rows = sqlx::query(a.0.catalog.dialect(
         "SELECT a.id,substr(c.name,1,256) AS name,
          length(CAST(c.name AS BLOB))>256 AS truncated,c.rating,c.flag_status,m.picture_index
          FROM catalog_pictures c JOIN api_ids a
@@ -729,12 +748,24 @@ async fn capture_page(a: &Api, id: &str, album: bool, q: Option<String>) -> Resu
          ORDER BY CASE WHEN $6='name' THEN c.name END COLLATE NOCASE,
           CASE WHEN $7='rating' THEN c.rating END DESC,
           CASE WHEN $8='order' THEN m.picture_index END,a.id LIMIT $9 OFFSET $10",
-    )
-    .bind(key)
+        "SELECT a.id,c.name_display AS name,
+         CASE WHEN c.name_bytes>256 THEN 1 ELSE 0 END AS truncated,c.rating,c.flag_status,m.picture_index
+         FROM catalog_pictures c JOIN api_ids a
+          ON a.version=c.version AND a.source_key=c.uuid AND a.kind='capture'
+         LEFT JOIN catalog_memberships m
+          ON m.version=c.version AND m.picture_uuid=c.uuid AND m.album_uuid=$1
+         WHERE c.version=$2 AND ($3=0 OR m.album_uuid IS NOT NULL)
+          AND (position(decode($4,'hex') in c.name_fold)>0 OR position(decode($5,'hex') in c.caption_fold)>0)
+         ORDER BY CASE WHEN $6='name' THEN c.name_fold END NULLS FIRST,
+          CASE WHEN $6='name' THEN c.name_bytes END NULLS FIRST,
+          CASE WHEN $7='rating' THEN c.rating END DESC NULLS LAST,
+          CASE WHEN $8='order' THEN m.picture_index END NULLS FIRST,a.id LIMIT $9 OFFSET $10"
+    ))
+    .bind(a.0.catalog.encode_source_key(&key))
     .bind(version)
     .bind(album as i64)
-    .bind(browse.search_pattern())
-    .bind(browse.search_pattern())
+    .bind(browse.search_binding(&a.0.catalog))
+    .bind(browse.search_binding(&a.0.catalog))
     .bind(&browse.sort)
     .bind(&browse.sort)
     .bind(&browse.sort)
@@ -771,11 +802,14 @@ async fn files(
             return Err(Failure::invalid());
         }
         let (version, _) = a.lookup(&path(p)?, "library", false).await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(a.0.catalog.dialect(
             "SELECT a.id,s.path,s.length FROM catalog_sources s JOIN api_ids a
              ON a.version=s.version AND a.source_key=s.path AND a.kind='file'
              WHERE s.version=$1 ORDER BY a.id LIMIT $2 OFFSET $3",
-        )
+            "SELECT a.id,s.path,s.length FROM catalog_sources s JOIN api_ids a
+             ON a.version=s.version AND a.source_key=encode(convert_to(s.path,'UTF8'),'hex') AND a.kind='file'
+             WHERE s.version=$1 ORDER BY a.id LIMIT $2 OFFSET $3"
+        ))
         .bind(version)
         .bind(i64::from(browse.limit) + 1)
         .bind(i64::from(browse.offset))
@@ -801,7 +835,7 @@ async fn detail(
     let result = async {
         let id = path(p)?;
         let (version, key) = a.lookup(&id, "capture", true).await?;
-        let row = sqlx::query(
+        let row = sqlx::query(a.0.catalog.dialect(
             "SELECT a.id,substr(c.name,1,256) AS name,
              length(CAST(c.name AS BLOB))>256 AS truncated,c.rating,c.flag_status,
              NULL AS picture_index,substr(c.caption,1,1024) AS caption,
@@ -809,9 +843,16 @@ async fn detail(
              FROM catalog_pictures c JOIN api_ids a
               ON a.version=c.version AND a.source_key=c.uuid AND a.kind='capture'
              WHERE c.version=$1 AND c.uuid=$2",
-        )
+            "SELECT a.id,c.name_display AS name,
+             CASE WHEN c.name_bytes>256 THEN 1 ELSE 0 END AS truncated,c.rating,c.flag_status,
+             NULL::bigint AS picture_index,c.caption_display AS caption,
+             CASE WHEN c.caption_bytes>1024 THEN 1 ELSE 0 END AS caption_truncated,c.bin_uuid
+             FROM catalog_pictures c JOIN api_ids a
+              ON a.version=c.version AND a.source_key=c.uuid AND a.kind='capture'
+             WHERE c.version=$1 AND c.uuid=$2"
+        ))
         .bind(version)
-        .bind(&key)
+        .bind(a.0.catalog.encode_source_key(&key))
         .fetch_one(a.0.catalog.pool())
         .await?;
         // Source identities/prefixes are validated private catalog data, never request paths.
@@ -827,14 +868,17 @@ async fn detail(
             database
                 .strip_suffix("lytrolibrary.db")
                 .ok_or(Failure::missing())?,
-            row.get::<String, _>("bin_uuid"),
+            a.0.catalog.decode_source_key(row.get::<String, _>("bin_uuid"))?,
             key
         );
-        let sources = sqlx::query(
+        let sources = sqlx::query(a.0.catalog.dialect(
             "SELECT a.id,s.path,s.length FROM catalog_sources s JOIN api_ids a
               ON a.version=s.version AND a.source_key=s.path AND a.kind='file'
              WHERE s.version=$1 AND substr(s.path,1,$2)=$3 ORDER BY a.id LIMIT 257",
-        )
+            "SELECT a.id,s.path,s.length FROM catalog_sources s JOIN api_ids a
+              ON a.version=s.version AND a.source_key=encode(convert_to(s.path,'UTF8'),'hex') AND a.kind='file'
+             WHERE s.version=$1 AND substr(s.path,1,$2::integer)=$3 ORDER BY a.id LIMIT 257"
+        ))
         .bind(version)
         .bind(prefix.chars().count() as i64)
         .bind(prefix)
@@ -884,7 +928,7 @@ async fn detail(
             "SELECT code FROM catalog_item_errors WHERE version=$1 AND picture_uuid=$2 LIMIT 32",
         )
         .bind(version)
-        .bind(key)
+        .bind(a.0.catalog.encode_source_key(&key))
         .fetch_all(a.0.catalog.pool())
         .await?;
         let item_errors = missing

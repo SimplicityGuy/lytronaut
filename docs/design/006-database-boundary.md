@@ -100,3 +100,30 @@ NUL and controls. Actual-engine tests still must verify the SQL integration.
 Portable backup rows must carry logical source values and regenerate derived
 engine projections. PostgreSQL storage encodings are never exposed as source
 identities in API responses or treated as original library bytes.
+
+
+## Source wiring checkpoint (runtime verification pending)
+
+Application intake, adaptation, API mapping/browsing, export retention, recovery,
+and deployment startup now select the application backend. The source Desktop
+connection remains typed SQLite and read-only. The SQLite snapshot seam retains
+its generated schema and immutable originals; snapshots remove transient job
+order references alongside transient jobs. Restore accepts only the current exact
+trusted schema or that exact schema minus the newly introduced order table, which
+startup reconstructs from legacy SQLite rowids. Portable PostgreSQL bundles remain
+assigned to lytronaut-1ga; this checkpoint does not claim that capability complete.
+
+PostgreSQL generated catalog identity allocation preflights a restored signed64
+maximum under writer admission and then uses at most 100 collision-checked positive
+candidates, avoiding an overflowing nextval that aborts the transaction. SQLite
+keeps its native rowid allocation. Existing maximum-valued identities are retained.
+New job ordinal exhaustion is a distinct ordering concern assigned to the portable
+restore design: a random identifier cannot silently satisfy monotonic order.
+
+Source-written actual-engine tests cover integer/binary preservation, rollback,
+transaction-scoped PostgreSQL admission, named SQLite memory pool identity,
+legacy rowid backfill, NUL/Unicode/ASCII literal-search and display projections,
+and maximum catalog identity collision handling. They have not been executed:
+the packaging task retains the shared build and Docker validation slot. The final
+login-removal integration, dependency lockfile update, both-engine execution and
+submission gate must precede any completion claim.

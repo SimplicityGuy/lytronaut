@@ -40,12 +40,13 @@ async fn run() -> Result<(), AuthError> {
     let directory = std::env::var_os("LYTRONAUT_DATA").unwrap_or_else(|| "data".into());
     let directory = std::path::Path::new(&directory);
     local::private_directory(directory)?;
-    let database = local::application_database(directory)?;
-    local::database_file(&database)?;
     let bootstrap_path = directory.join("bootstrap.secret");
-    let catalog = lytronaut_storage::Catalog::open_application_database(&database)
+    let catalog = lytronaut_service::database::open(directory)
         .await
-        .map_err(|_| AuthError)?;
+        .map_err(|error| {
+            eprintln!("Lytronaut: {error}");
+            AuthError
+        })?;
     let token = if AuthStore::needs_bootstrap(catalog.pool()).await? {
         Some(local::bootstrap_file(&bootstrap_path)?)
     } else {

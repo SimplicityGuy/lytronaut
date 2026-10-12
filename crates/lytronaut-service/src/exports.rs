@@ -24,7 +24,13 @@ fn storage(_: impl std::fmt::Debug) -> Failure {
 }
 pub(super) async fn migrate(c: &Catalog, s: &Store) -> Result<()> {
     crate::local::private_directory(&root(s)).map_err(storage)?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS export_jobs(id TEXT PRIMARY KEY,kind TEXT NOT NULL,state TEXT NOT NULL,completed INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,reserved INTEGER NOT NULL DEFAULT 0,retained INTEGER NOT NULL DEFAULT 0,error TEXT,recipe TEXT)").execute(c.pool()).await?;
+    let mut tx = c.begin_write().await?;
+    for &sql in c.schema_statements(lytronaut_storage::SchemaComponent::Export) {
+        sqlx::query(sql).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    c.backfill_job_order(lytronaut_storage::SchemaComponent::Export)
+        .await?;
     sqlx::query("UPDATE export_jobs SET state='failed',error='interrupted' WHERE state IN ('queued','running','cancelling')").execute(c.pool()).await?;
     // Artifacts of interrupted jobs are never offered. Owned files only, no source mutation.
     let ids: Vec<String> =
@@ -87,8 +93,8 @@ async fn begin(
 }
 async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
     // Reserve atomically before spawning; at most two pending jobs, including uploads.
-    let mut tx = a.0.catalog.pool().begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query("DELETE FROM export_jobs WHERE id IN (SELECT id FROM export_jobs WHERE state IN ('cancelled','failed') AND retained=0 ORDER BY rowid LIMIT (SELECT max(count(*)-127,0) FROM export_jobs))").execute(&mut *tx).await?;
+    let mut tx = a.0.catalog.begin_write().await?;
+    sqlx::query("DELETE FROM export_jobs WHERE id IN (SELECT id FROM export_jobs WHERE state IN ('cancelled','failed') AND retained=0 ORDER BY (SELECT ordinal FROM application_job_order WHERE kind='export' AND job=export_jobs.id) LIMIT (SELECT CASE WHEN count(*)>127 THEN count(*)-127 ELSE 0 END FROM export_jobs))").execute(&mut *tx).await?;
     let active: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM export_jobs WHERE state IN ('queued','running','cancelling')",
     )
@@ -123,6 +129,10 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
         .bind(need as i64)
         .execute(&mut *tx)
         .await?;
+    a.0.catalog
+        .record_job_order(&mut tx, lytronaut_storage::SchemaComponent::Export, &id)
+        .await?;
+    sqlx::query("DELETE FROM application_job_order WHERE kind='export' AND job NOT IN (SELECT id FROM export_jobs)").execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -224,10 +234,11 @@ async fn recipe(
         if report(&a, &id).await?.state != JobState::Succeeded {
             return Err(Failure::missing());
         }
-        let value: Option<String> = sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
-            .bind(id)
-            .fetch_one(a.0.catalog.pool())
-            .await?;
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
+                .bind(id)
+                .fetch_one(a.0.catalog.pool())
+                .await?;
         let recipe: ExportRecipe =
             serde_json::from_str(&value.ok_or(Failure::missing())?).map_err(storage)?;
         json_bounded(recipe)
@@ -251,10 +262,11 @@ async fn download(
                 .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))?;
         let f = fs::File::open(artifact(&a, &id)).map_err(storage)?;
         let length = f.metadata().map_err(storage)?.len();
-        let value: Option<String> = sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
-            .bind(&id)
-            .fetch_one(a.0.catalog.pool())
-            .await?;
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
+                .bind(&id)
+                .fetch_one(a.0.catalog.pool())
+                .await?;
         let (mime, ext) = if let Some(s) = value {
             let recipe: ExportRecipe = serde_json::from_str(&s).map_err(storage)?;
             if recipe.format == ExportFormat::Png {

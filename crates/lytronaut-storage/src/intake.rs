@@ -274,12 +274,14 @@ impl Store {
         }
         let lock = root_lock(originals)?;
         let stage_lock = root_lock(staging)?;
-        for sql in [
-            "CREATE TABLE IF NOT EXISTS intake_jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, total INTEGER NOT NULL, budget INTEGER NOT NULL, max_files INTEGER NOT NULL, encoded_limit INTEGER NOT NULL, zip_complete INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, files INTEGER NOT NULL DEFAULT 0, path_bytes INTEGER NOT NULL DEFAULT 0, reserved INTEGER NOT NULL, error TEXT)",
-            "CREATE TABLE IF NOT EXISTS intake_sources (job TEXT NOT NULL REFERENCES intake_jobs(id), path TEXT NOT NULL, canonical TEXT NOT NULL, digest TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(job,path), UNIQUE(job,canonical))",
-        ] {
-            sqlx::query(sql).execute(catalog.pool()).await?;
+        let mut migration = catalog.begin_write().await?;
+        for &sql in catalog.schema_statements(crate::SchemaComponent::Intake) {
+            sqlx::query(sql).execute(&mut *migration).await?;
         }
+        migration.commit().await?;
+        catalog
+            .backfill_job_order(crate::SchemaComponent::Intake)
+            .await?;
         let s = Self(Arc::new(Inner {
             catalog,
             originals: originals.into(),
@@ -342,11 +344,8 @@ impl Store {
             .checked_add(encoded)
             .and_then(|x| x.checked_add(per_file))
             .ok_or(StorageError::Quota)?;
-        let mut tx = self.0.catalog.pool().begin().await?;
-        // Acquire SQLite's write reservation before calculating aggregate admission.
-        sqlx::query("UPDATE intake_jobs SET reserved=reserved WHERE 0")
-            .execute(&mut *tx)
-            .await?;
+        let mut tx = self.0.catalog.begin_write().await?;
+        // Writer admission precedes aggregate quota reads on both engines.
         let row=sqlx::query("SELECT COUNT(*) n, CAST(COALESCE(SUM(reserved),0) AS BIGINT) bytes FROM intake_jobs WHERE state='running'").fetch_one(&mut *tx).await?;
         let n: i64 = row.get("n");
         let bytes: i64 = row.get("bytes");
@@ -369,6 +368,10 @@ impl Store {
         }
         let id = unique()?;
         sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,reserved) VALUES($1,$2,'running',$3,$4,$5,$6,$7)").bind(&id).bind(match request.kind {lytronaut_contracts::ImportKind::ZipLibrary=>"zip",_=>"directory"}).bind(request.declared_bytes as i64).bind(request.declared_bytes as i64).bind(request.declared_files as i64).bind(encoded as i64).bind(reserve as i64).execute(&mut *tx).await?;
+        self.0
+            .catalog
+            .record_job_order(&mut tx, crate::SchemaComponent::Intake, &id)
+            .await?;
         tx.commit().await?;
         self.0
             .cancel
@@ -386,7 +389,7 @@ impl Store {
             .cloned()
             .ok_or(StorageError::Conflict)
     }
-    async fn running(&self, id: &str) -> Result<sqlx::sqlite::SqliteRow, StorageError> {
+    async fn running(&self, id: &str) -> Result<sqlx::any::AnyRow, StorageError> {
         id_valid(id)?;
         let r = sqlx::query("SELECT * FROM intake_jobs WHERE id=$1")
             .bind(id)
@@ -487,7 +490,7 @@ impl Store {
             .await
             .map_err(|_| StorageError::Unavailable)??;
         self.fault(FaultPoint::BeforeTransaction)?;
-        let mut tx = self.0.catalog.pool().begin().await?;
+        let mut tx = self.0.catalog.begin_write().await?;
         sqlx::query(
             "INSERT INTO intake_sources(job,path,canonical,digest,length) VALUES($1,$2,$3,$4,$5)",
         )
