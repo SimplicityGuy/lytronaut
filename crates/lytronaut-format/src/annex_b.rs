@@ -56,6 +56,7 @@ pub struct Sequence {
     pub sps_id: u32,
     pub frame_num_bits: usize,
     pub frame_mbs_only: bool,
+    pub reference_frames: u32,
     pub crop_left: u32,
     pub crop_top: u32,
     pub coded_width: u32,
@@ -67,6 +68,7 @@ pub struct Sequence {
 pub struct AccessUnit {
     pub bytes: Range<usize>,
     pub key: bool,
+    pub bidirectional: bool,
 }
 #[derive(Debug)]
 pub struct AnnexB {
@@ -189,7 +191,8 @@ fn sps(nal: &[u8]) -> Result<Sequence> {
         2 => (),
         _ => return Err(E::Metadata),
     }
-    if b.ue()? > 16 {
+    let reference_frames = b.ue()?;
+    if reference_frames > 16 {
         return Err(E::Budget);
     }
     b.n(1)?;
@@ -226,6 +229,7 @@ fn sps(nal: &[u8]) -> Result<Sequence> {
     Ok(Sequence {
         frame_num_bits: log2_frame_num as usize + 4,
         frame_mbs_only: frame == 1,
+        reference_frames,
         sps_id,
         crop_left,
         crop_top,
@@ -322,6 +326,7 @@ impl AnnexB {
                     units.push(AccessUnit {
                         bytes: pending_start..bytes.len(),
                         key: false,
+                        bidirectional: false,
                     });
                     has_slice = false;
                     first_slice = false;
@@ -334,7 +339,8 @@ impl AnnexB {
                     // Multiple slices are valid; a second first slice in an AUD unit is not.
                     let mut b = Bits::new(&nal[1..nal.len().min(64)])?;
                     let first_mb = b.ue()?;
-                    if b.ue()? > 9 || Some(b.ue()?) != pps {
+                    let slice_type = b.ue()?;
+                    if slice_type > 9 || Some(b.ue()?) != pps {
                         return Err(E::Metadata);
                     }
                     let sequence = sequence.as_ref().unwrap();
@@ -356,6 +362,7 @@ impl AnnexB {
                     slice_kind = Some(kind);
                     has_slice = true;
                     let u = units.last_mut().unwrap();
+                    u.bidirectional |= slice_type % 5 == 1;
                     if kind == 5 {
                         u.key = true;
                     } else if u.key {

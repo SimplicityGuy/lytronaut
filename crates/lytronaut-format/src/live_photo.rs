@@ -223,6 +223,9 @@ fn paired_jpeg(jpeg: &[u8], id: &str) -> Result<Vec<u8>> {
     ]
     .concat();
     let mut output = vec![255, 216, 255, 225];
+    output
+        .try_reserve_exact(jpeg.len() + exif.len())
+        .map_err(|_| E::Budget)?;
     output.extend(((exif.len() + 2) as u16).to_be_bytes());
     output.extend(exif);
     let mut pos = 2;

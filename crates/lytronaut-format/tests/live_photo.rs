@@ -129,3 +129,27 @@ fn sweep_is_bounded_and_preserves_key_and_extrema() {
         assert!(p.key_seconds() < 3.0);
     }
 }
+#[test]
+fn interrupted_picture_does_not_advance_or_leave_partial_movie() {
+    let plan = Plan::new(geometry(), &[-1.0, 1.0], 0).unwrap();
+    let mut builder = Builder::new(plan, ID).unwrap();
+    let probes = std::cell::Cell::new(0);
+    assert_eq!(
+        builder.push(0, &image([255, 0, 0]), || {
+            probes.set(probes.get() + 1);
+            probes.get() == 3
+        }),
+        Err(FormatError::Codec)
+    );
+    assert_eq!(builder.completed_planes(), 0);
+    assert!(builder.wants(0));
+    assert!(!builder.wants(63));
+    builder.push(0, &image([255, 0, 0]), || false).unwrap();
+    builder.push(1, &image([0, 0, 255]), || false).unwrap();
+    let pair = builder.finish().unwrap();
+    assert_eq!(pair.plan.planes(), &[0, 1]);
+    assert_eq!(
+        bundle(pair, &vec![0; 16 * 1024 + 1]),
+        Err(FormatError::Budget)
+    );
+}

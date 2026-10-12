@@ -61,11 +61,11 @@ async function verifySealed(after=false) {
         decode(chunk){super.decode(chunk);maxQueue=Math.max(maxQueue,this.decodeQueueSize);if(this.decodeQueueSize>2)throw Error('unbounded queue');}
       }
       window.VideoDecoder=Tracked;
-      let blocks=0,frames=0,retries=0,reps=0,syntheticContainer=null,encoderFrames=0;const repeatedVariants=new Set();
+      let blocks=0,frames=0,retries=0,reps=0,syntheticContainer=null,encoderFrames=0;const repeatedVariants=new Set(); const dpbHistogram={}; const recordDpb=r=>{const key=[r.coded_width,r.coded_height,r.reference_frames,r.bidirectional_frames>0].join("x");dpbHistogram[key]=(dpbHistogram[key]||0)+1;};
       if(privateMode) {
         for(let i=0;i<count;i++) {
           const bytes=new Uint8Array(await (await fetch('/fixture/'+i)).arrayBuffer());
-          let result;try {result=await invoke(bytes);} catch(e) {return {blocks,frames,failure:String(e),privateMode:true,actualRustWasm:true};}blocks++;frames+=result.frames;retries+=Number(result.software_retry);
+          let result;try {result=await invoke(bytes);} catch(e) {return {blocks,frames,failure:String(e),privateMode:true,actualRustWasm:true};}recordDpb(result);blocks++;frames+=result.frames;retries+=Number(result.software_retry);
           if(result.frames===5&&[10,11].includes(variants[i])&&!repeatedVariants.has(variants[i])){await invoke(bytes);repeatedVariants.add(variants[i]);reps++;}
           result.image=''; // private pixels never cross the browser-tool boundary.
         }
@@ -89,7 +89,7 @@ async function verifySealed(after=false) {
         syntheticContainer=Array.from(bytes);const first=await invoke(bytes,2);if(first.frames!==5||first.width!==32||first.height!==32)throw Error('synthetic decode count');
         const raw=Uint8Array.from(atob(first.image.split(',')[1]),c=>c.charCodeAt(0));const generatedHash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',raw))].map(v=>v.toString(16).padStart(2,'0')).join('');if(first.content_sha256!==generatedHash||first.encoded_bytes!==raw.length)throw Error('generated JPEG integrity metadata mismatch');
         const image=new Image();image.src=first.image;await image.decode();context.drawImage(image,0,0);const pixel=context.getImageData(16,16,1,1).data;if(pixel[2]<200||pixel[0]>40||pixel[1]>40)throw Error('selected colored plane mismatch');
-        blocks=1;frames=5;retries=Number(first.software_retry);
+        recordDpb(first);blocks=1;frames=5;retries=Number(first.software_retry);
         const reject=async fn=>{let rejected=false;try{await fn();}catch{rejected=true;}if(!rejected)throw Error('fault accepted');};
         window.VideoDecoder=undefined;await reject(()=>invoke(bytes));window.VideoDecoder=Tracked;
         class Unsupported extends Tracked {static async isConfigSupported(){return {supported:false};}}window.VideoDecoder=Unsupported;await reject(()=>invoke(bytes));
@@ -108,7 +108,7 @@ async function verifySealed(after=false) {
       // Encoder-created frames are separate from decoder outputs.
       if(privateMode&&closed!==outputs)throw Error('VideoFrame leak');
       if(!privateMode&&closed!==outputs+encoderFrames)throw Error('VideoFrame leak');
-      return {blocks,frames,retries,repeatedFiveFrameRepresentatives:reps,repeatedFiveFrameVariants:[...repeatedVariants].sort(),decoderOutputs:outputs,closedFrames:closed,maxDecodeQueue:maxQueue,pageErrors:0,actualRustWasm:true,privateMode,syntheticContainer,userAgent:navigator.userAgent};
+      return {blocks,frames,retries,repeatedFiveFrameRepresentatives:reps,repeatedFiveFrameVariants:[...repeatedVariants].sort(),dpbHistogram,decoderOutputs:outputs,closedFrames:closed,maxDecodeQueue:maxQueue,pageErrors:0,actualRustWasm:true,privateMode,syntheticContainer,userAgent:navigator.userAgent};
     },{count:fixtures.length,privateMode:!!privateRoot,variants:fixtures.map(f=>f.variant),authored:!!authoredFixture});
     const sealedIntegrity=privateRoot?await verifySealed(true):null;
     if(errors.length)throw Error('uncaught page errors');

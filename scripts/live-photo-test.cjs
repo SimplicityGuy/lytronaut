@@ -26,16 +26,19 @@ const server = http.createServer((req, res) => {
     const errors = []; page.on('pageerror', () => errors.push('uncaught browser error'));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     const result = await page.evaluate(async () => {
-      const module = await import('/lytronaut_client.js'); await module.default();
+      const module = await import('/lytronaut_client.js'); const wasm = await module.default(); const initialWasmBytes = wasm.memory.buffer.byteLength;
       const bytes = new Uint8Array(await (await fetch('/synthetic')).arrayBuffer());
       const identifier = 'A8A8A8A8-1111-4444-8888-121212121212';
       const invoke = (source, selected, signal = new AbortController().signal) => module.export_archived_live_photo(source, selected, identifier, signal);
       const reject = async operation => { let failed = false; try { await operation(); } catch { failed = true; } if (!failed) throw Error('unsupported export accepted'); };
-      let outputs = 0, closed = 0, queue = 0;
+      let outputs = 0, closed = 0, queue = 0, decoderCreated = 0, decoderClosed = 0, maxImageDataBytes = 0, authoredFrames = 0;
+      const getPixels = CanvasRenderingContext2D.prototype.getImageData;
+      CanvasRenderingContext2D.prototype.getImageData = function(x,y,width,height,...rest) { maxImageDataBytes = Math.max(maxImageDataBytes, width * height * 4); return getPixels.call(this,x,y,width,height,...rest); };
       const Native = VideoDecoder, close = VideoFrame.prototype.close;
       VideoFrame.prototype.close = function () { closed++; return close.call(this); };
       class Tracked extends Native {
-        constructor(init) { super({ ...init, output: frame => { outputs++; init.output(frame); } }); }
+        constructor(init) { super({ ...init, output: frame => { outputs++; init.output(frame); } }); decoderCreated++; this.closedByHarness=false; }
+        close() { if(!this.closedByHarness) { decoderClosed++; this.closedByHarness=true; } return super.close(); }
         decode(chunk) { super.decode(chunk); queue = Math.max(queue, this.decodeQueueSize); if (queue > 2) throw Error('unbounded decoder queue'); }
       }
       window.VideoDecoder = Tracked;
@@ -72,8 +75,41 @@ const server = http.createServer((req, res) => {
       class Cancel extends Tracked { decode(chunk) { super.decode(chunk); cancel.abort(); } }
       const cancel = new AbortController(); window.VideoDecoder = Cancel; await reject(() => invoke(bytes, 0, cancel.signal));
       window.VideoDecoder = Tracked; await invoke(bytes, 4);
-      if (closed !== outputs) throw Error('decoder frame leak');
-      return { actualRustWasm: true, completePair: true, selectedStillCorrect: true, softwareRetry: true, cancellation: true, unsupportedFallback: true, maxDecodeQueue: queue, decodedFrames: outputs, closedFrames: closed, zip: Array.from(zip) };
+      // Test tooling only: independently authored maximum-geometry flat colors.
+      // The production path never depends on VideoEncoder or this fixture writer.
+      const largeCanvas = document.createElement('canvas'); largeCanvas.width = 2048; largeCanvas.height = 1024;
+      const context = largeCanvas.getContext('2d'), chunks = []; let encoderFailed = false;
+      const encoder = new VideoEncoder({ output: chunk => { const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data); chunks.push(data); }, error: () => encoderFailed = true });
+      try {
+        encoder.configure({ codec: 'avc1.420032', width: 2048, height: 1024, framerate: 1, latencyMode: 'realtime', hardwareAcceleration: 'prefer-software', avc: { format: 'annexb' } });
+        for (let i = 0; i < 5; i++) {
+          context.fillStyle = ['red', 'green', 'blue', 'yellow', 'white'][i]; context.fillRect(0, 0, 2048, 1024);
+          const frame = new VideoFrame(largeCanvas, { timestamp: i * 1000 });
+          try { encoder.encode(frame, { keyFrame: true }); authoredFrames++; } finally { frame.close(); }
+        }
+        await encoder.flush();
+      } finally { encoder.close(); largeCanvas.width = 0; largeCanvas.height = 0; }
+      if (encoderFailed || chunks.length !== 5) throw Error('maximum-geometry synthetic fixture failed');
+      const stream = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length + 6, 0)); let position = 0;
+      for (const chunk of chunks) { stream.set([0, 0, 0, 1, 9, 0xf0], position); position += 6; stream.set(chunk, position); position += chunk.length; }
+      chunks.length = 0;
+      const sha = async data => 'sha1-' + [...new Uint8Array(await crypto.subtle.digest('SHA-1', data))].map(v => v.toString(16).padStart(2, '0')).join('');
+      const directory = new TextEncoder().encode(JSON.stringify({ version: { major: 1, minor: 0 }, picture: { accelerationArray: [{ type: 'com.lytro.acceleration.refocusStack', vendorContent: { blockOfImages: { representation: 'h264', blockOfImagesRef: await sha(stream), metadataArray: [0,3,-2,1,2].map(lambda => ({ width: 2048, height: 1024, lambda })) } } }] } }));
+      const parts = [new Uint8Array([137,76,70,80,13,10,26,10,0,0,0,1,0,0,0,0])]; let total = 16;
+      for (const [isDirectory, data] of [[true, directory], [false, stream]]) {
+        const header = new Uint8Array(96); header.set([137,76,70,isDirectory?77:67,13,10,26,10]); new DataView(header.buffer).setUint32(12, data.length); header.set(new TextEncoder().encode(await sha(data)), 16);
+        parts.push(header, data); total += 96 + data.length; const padding = (16 - total % 16) % 16; parts.push(new Uint8Array(padding)); total += padding;
+      }
+      const large = new Uint8Array(total); position = 0; for (const part of parts) { large.set(part, position); position += part.length; }
+      const metadata = JSON.parse(await module.decode_archived_refocus(large, 0, new AbortController().signal())); metadata.image = '';
+      const largeZip = await invoke(large, 0);
+      if (largeZip.length > 18 * 1024 * 1024 || largeZip.length < 8 * 1024 * 1024) throw Error('maximum-geometry resource budget');
+      const largeResources = { width: metadata.width, height: metadata.height, codedWidth: metadata.coded_width, codedHeight: metadata.coded_height, referenceFrames: metadata.reference_frames, bidirectionalFrames: metadata.bidirectional_frames, sourceBytes: large.length, bundleBytes: largeZip.length };
+      if (largeResources.width !== 2048 || largeResources.height !== 1024) throw Error('maximum visible geometry');
+      if (decoderCreated !== decoderClosed) throw Error('decoder leak');
+      if (maxImageDataBytes > 128 * 1024) throw Error('full-frame platform pixel copy');
+      if (closed !== outputs + authoredFrames) throw Error('decoder frame leak');
+      return { largeResources, initialWasmBytes, finalWasmHighWaterBytes:wasm.memory.buffer.byteLength, maxImageDataBytes, decoderCreated, decoderClosed, actualRustWasm: true, completePair: true, selectedStillCorrect: true, softwareRetry: true, cancellation: true, unsupportedFallback: true, maxDecodeQueue: queue, decodedFrames: outputs, closedFrames: closed, authoredFrames, zip: Array.from(zip) };
     });
     if (errors.length) throw Error('uncaught page error');
     if (process.env.LYTRONAUT_LIVE_PHOTO_OUT) fs.writeFileSync(process.env.LYTRONAUT_LIVE_PHOTO_OUT, Buffer.from(result.zip), { mode: 0o600 });

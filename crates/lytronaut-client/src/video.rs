@@ -27,10 +27,20 @@ impl Drop for Admission {
         ACTIVE.set(false);
     }
 }
-struct Frame(VideoFrame);
+struct Frame {
+    inner: VideoFrame,
+    closed: Cell<bool>,
+}
+impl Frame {
+    fn release(&self) {
+        if !self.closed.replace(true) {
+            self.inner.close();
+        }
+    }
+}
 impl Drop for Frame {
     fn drop(&mut self) {
-        self.0.close();
+        self.release();
     }
 }
 struct Canvas(web_sys::HtmlCanvasElement);
@@ -54,6 +64,10 @@ impl Drop for Decoder {
 #[derive(serde::Serialize)]
 pub struct Decoded {
     pub frames: usize,
+    pub reference_frames: u32,
+    pub coded_width: u32,
+    pub coded_height: u32,
+    pub bidirectional_frames: usize,
     pub software_retry: bool,
     pub width: u32,
     pub height: u32,
@@ -130,6 +144,7 @@ async fn attempt(
 ) -> Result<String> {
     cancelled(signal)?;
     let timeout = if export.is_some() { 30_000.0 } else { 10_000.0 };
+    let queue_limit = if export.is_some() { 1 } else { 2 };
     let sequence = &parsed.sequence;
     let config = VideoDecoderConfig::new(&sequence.codec);
     config.set_coded_width(sequence.coded_width);
@@ -169,8 +184,11 @@ async fn attempt(
     let seq = sequence.clone();
     let export_signal = signal.clone();
     let output = Closure::wrap(Box::new(move |frame: VideoFrame| {
-        let frame = Frame(frame); // RAII closes success, malformed output, drawing/context failures.
-        let f = &frame.0;
+        let frame = Frame {
+            inner: frame,
+            closed: Cell::new(false),
+        };
+        let f = &frame.inner;
         let result = (|| -> Result<()> {
             let rect = f.visible_rect().ok_or("missing visible geometry")?;
             let index = f.timestamp() / 1000.0;
@@ -264,21 +282,36 @@ async fn attempt(
                         builder.set_still(&raw).map_err(|_| "key JPEG mismatch")?;
                     }
                     if builder.wants(index) {
-                        let pixels = context
-                            .get_image_data(
-                                0.0,
-                                0.0,
-                                f64::from(f.display_width()),
-                                f64::from(f.display_height()),
-                            )
-                            .map_err(|_| "frame pixels unavailable")?;
+                        let width = f.display_width();
+                        let height = f.display_height();
+                        let mut rgba = Vec::new();
+                        rgba.try_reserve_exact((width * height * 4) as usize)
+                            .map_err(|_| "frame pixel budget")?;
+                        // The platform ImageData copy stays <=128 KiB rather than
+                        // retaining a second full 8 MiB image beside Rust pixels.
+                        for row in (0..height).step_by(16) {
+                            if export_signal.aborted() {
+                                return Err("cancelled");
+                            }
+                            let pixels = context
+                                .get_image_data(
+                                    0.0,
+                                    f64::from(row),
+                                    f64::from(width),
+                                    f64::from((height - row).min(16)),
+                                )
+                                .map_err(|_| "frame pixels unavailable")?;
+                            rgba.extend(pixels.data().0);
+                        }
                         let image = lytronaut_format::DecodedJpeg {
-                            geometry: lytronaut_format::Geometry {
-                                width: f.display_width(),
-                                height: f.display_height(),
-                            },
-                            rgba: pixels.data().0,
+                            geometry: lytronaut_format::Geometry { width, height },
+                            rgba,
                         };
+                        // Release platform pixel owners before the Rust PCM encoder allocates
+                        // its scratch/picture buffers. The selected data URL remains bounded.
+                        canvas.0.set_width(0);
+                        canvas.0.set_height(0);
+                        frame.release();
                         builder
                             .push(index, &image, || export_signal.aborted())
                             .map_err(|_| "focus movie encoding failed")?;
@@ -315,7 +348,7 @@ async fn attempt(
         .map_err(|_| "configure failed")?;
     let started = js_sys::Date::now();
     for (index, unit) in parsed.units.iter().enumerate() {
-        while decoder.codec.decode_queue_size() >= 2 {
+        while decoder.codec.decode_queue_size() >= queue_limit {
             cancelled(signal)?;
             if state.borrow().error {
                 return Err("decode failed");
@@ -460,6 +493,10 @@ pub async fn decode_container(
     let content_sha256 = format!("{:x}", Sha256::digest(&encoded));
     Ok(Decoded {
         frames: parsed.units.len(),
+        reference_frames: parsed.sequence.reference_frames,
+        coded_width: parsed.sequence.coded_width,
+        coded_height: parsed.sequence.coded_height,
+        bidirectional_frames: parsed.units.iter().filter(|u| u.bidirectional).count(),
         software_retry,
         width: first.geometry.width,
         height: first.geometry.height,

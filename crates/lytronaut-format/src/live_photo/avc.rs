@@ -126,6 +126,12 @@ pub(super) fn frame(
         return Err(E::Extent);
     }
     let mut bits = Bits::default();
+    // PCM macroblocks contain 384 aligned pixel bytes plus <=2 header bytes.
+    // Reserve once rather than retaining a power-of-two growth allocation.
+    let raw_bound = w.div_ceil(16) as usize * h.div_ceil(16) as usize * 386 + 64;
+    bits.bytes
+        .try_reserve_exact(raw_bound)
+        .map_err(|_| E::Budget)?;
     bits.ue(0);
     bits.ue(2);
     bits.ue(0);

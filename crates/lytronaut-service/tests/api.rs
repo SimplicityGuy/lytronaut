@@ -1474,6 +1474,51 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
             404
         );
     }
+    let cancel_request =
+        json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":1,"orientation":1})
+            .to_string();
+    let response = s
+        .request("POST", "/exports", &mutation, cancel_request.as_bytes())
+        .await;
+    assert_eq!(response.0, 200);
+    let cancel_id = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let early = s
+        .request(
+            "GET",
+            &format!("/exports/{cancel_id}/download"),
+            &cookie,
+            b"",
+        )
+        .await;
+    if early.0 == 200 {
+        assert_eq!(
+            live_zip_entries(&early.2).len(),
+            3,
+            "completion race still publishes a complete pair"
+        );
+    } else {
+        assert_eq!(early.0, 404, "incomplete resources are unavailable");
+    }
+    assert_eq!(
+        s.request("DELETE", &format!("/exports/{cancel_id}"), &mutation, b"")
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        s.request(
+            "GET",
+            &format!("/exports/{cancel_id}/download"),
+            &cookie,
+            b""
+        )
+        .await
+        .0,
+        404
+    );
     let request =
         json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":63,"orientation":1})
             .to_string();

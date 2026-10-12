@@ -22,18 +22,27 @@ impl Drop for ObjectUrl {
         let _ = web_sys::Url::revoke_object_url(&self.0);
     }
 }
-struct LiveAbort(Rc<RefCell<Option<AbortController>>>);
+struct LiveAbort {
+    slot: Rc<RefCell<Option<AbortController>>>,
+    controller: AbortController,
+}
 impl Drop for LiveAbort {
     fn drop(&mut self) {
-        if let Some(abort) = self.0.borrow_mut().take() {
-            abort.abort();
+        let mut slot = self.slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|current| js_sys::Object::is(current.as_ref(), self.controller.as_ref()))
+        {
+            slot.take();
         }
+        drop(slot);
+        self.controller.abort();
     }
 }
 struct BusyGuard(RwSignal<bool>);
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        self.0.set(false);
+        let _ = self.0.try_set(false);
     }
 }
 struct Lease {
@@ -602,6 +611,7 @@ impl Ui {
         }
         self.export_busy.set(true);
         let _busy = BusyGuard(self.export_busy);
+        let stage_generation = *self.stage_generation.borrow();
         if self.video_lambdas.get_untracked().is_empty() {
             let displayed=self.displayed_derivative.get_untracked().ok_or("Select a verified stored focus plane first; ordinary still export remains available")?;
             let request = ExportRequest::LivePhoto {
@@ -620,6 +630,9 @@ impl Ui {
                     Some(serde_json::to_value(request).map_err(|_| "Invalid Live Photo request")?),
                 )
                 .await?;
+            if self.status.is_disposed() || *self.stage_generation.borrow() != stage_generation {
+                return Err("Cancelled".into());
+            }
             return self.watch_export(report).await;
         }
         self.export_job.set(None);
@@ -645,7 +658,10 @@ impl Ui {
         .map_err(|_| "Invalid key selection")?;
         let abort = AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
         *self.live_photo_abort.borrow_mut() = Some(abort.clone());
-        let _cleanup = LiveAbort(self.live_photo_abort.clone());
+        let _cleanup = LiveAbort {
+            slot: self.live_photo_abort.clone(),
+            controller: abort.clone(),
+        };
         let _lease = self.net.lease(64 * 1024 * 1024, &abort).await?;
         self.status
             .set("Verifying archived pixels and generating the complete Live Photo pair…".into());
@@ -692,10 +708,18 @@ impl Ui {
             .as_string()
             .ok_or("Invalid random export identifier")?;
         let status = self.status;
-        let result=crate::video::export_container(&bytes,selected,&uuid,&abort.signal(),move |done,total|status.set(format!("Live Photo: {done} of {total} verified focus planes encoded · generated animation · no audio"))).await;
+        let progress_abort = abort.clone();
+        let result=crate::video::export_container(&bytes,selected,&uuid,&abort.signal(),move |done,total| {
+            if !cancelled(&progress_abort) {
+                let _ = status.try_set(format!("Live Photo: {done} of {total} verified focus planes encoded · generated animation · no audio"));
+            }
+        }).await;
         drop(bytes);
         let zip=result.map_err(|error|if cancelled(&abort){"Cancelled".into()}else{format!("{error}. Use verified JPEG/static still export or a browser with working AVC decoding")})?;
-        if cancelled(&abort) {
+        if cancelled(&abort)
+            || self.status.is_disposed()
+            || *self.stage_generation.borrow() != stage_generation
+        {
             return Err("Cancelled".into());
         }
         let parts = Array::new();
@@ -724,7 +748,10 @@ impl Ui {
         }
         anchor.click();
         pause(250).await;
-        self.status.set("Complete Live Photo ZIP downloaded. Extract and import its JPEG and MOV together. Generated focus animation; originals unchanged.".into());
+        if cancelled(&abort) || *self.stage_generation.borrow() != stage_generation {
+            return Err("Cancelled".into());
+        }
+        let _ = self.status.try_set("Complete Live Photo ZIP downloaded. Extract and import its JPEG and MOV together. Generated focus animation; originals unchanged.".into());
         Ok(())
     }
     async fn restore_bundle(&self, file: File) -> Result<()> {
@@ -1670,6 +1697,7 @@ fn launch(ui: Ui, task: impl std::future::Future<Output = Result<()>> + 'static)
     spawn_local(async move {
         if let Err(e) = task.await
             && e != "Cancelled"
+            && !ui.status.is_disposed()
         {
             ui.fail(e);
         }

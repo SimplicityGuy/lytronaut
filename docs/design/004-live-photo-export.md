@@ -60,10 +60,42 @@ The macOS test-only `scripts/verify-live-photo.swift` checks decoded frame color
 selected still, duration, geometry, no audio, pairing and timed metadata, plus
 rejection of an intentionally mismatched pairing identifier. It uses resource
 loaders without opening a Photos library. `scripts/live-photo-test.cjs` exercises
-the actual Rust-WASM path with the existing public synthetic AVC fixture,
-including cancellation, unsupported codecs, actual software retry and complete
-pair download. These programs still require execution against the final build;
+the actual Rust-WASM path with the existing public synthetic AVC fixture and a
+test-only independently generated 2048×1024 all-key color fixture, including
+cancellation, unsupported codecs, actual software retry and complete pair
+download. It records WASM memory high water, declared references/coded geometry,
+maximum strip-copy bytes and decoder/frame closure. These programs still require execution against the final build;
 their presence alone is not compatibility evidence.
+
+## Resource verification still pending
+
+Export admits one queued compressed chunk; ordinary viewing retains its existing
+two-chunk upper limit. Pixels are copied in at most 16-row strips, bounding each
+platform ImageData and Rust temporary to 128 KiB. The canvas backing and current
+VideoFrame are released before the Rust PCM encoder allocates its scratch and
+picture buffers. Movie assembly and ZIP packaging reuse one allocation; source
+bytes are dropped before the final Uint8Array/Blob download copies. Browser
+garbage collection and codec internals are not controlled by Rust.
+
+For the largest 2048×1024 geometry with three retained frames, allocated PCM
+scratch is at most 3.016 MiB, escaped picture scratch 4.524 MiB and movie assembly
+13.602 MiB. A conservative known-live encoding estimate is 41.142 MiB with the
+full 8 MiB source plus RGBA, selected JPEG and bounded data URL. A declared
+one-reference decoder plus one queued picture may add 16 MiB if each coded picture
+occupies RGBA storage. During strip extraction, the canvas/current frame overlap
+and pre-final movie instead give approximately 61.312 MiB including that
+conservative reference/queue allowance. These estimates do not prove an opaque
+browser process stays within 64 MiB. B-picture reorder, additional references,
+padding, conversion, garbage collection and final ZIP/Uint8Array/Blob copy phases
+need actual source-bound measurements.
+
+The prior private aggregate decoder proof contains 109 streams and 654 frames,
+but no SPS reference/geometry histogram. The updated decoder harness records
+only aggregate coded geometry/reference/B-picture counts. Classification of
+those verified streams requires the coordinated read-only sealed-copy run;
+no additional stream rejection has been introduced on estimates alone.
+Standalone Preview feedback confirms visual appearance only. Apple Photos
+native pair import and visible motion remain a separate pending gate.
 
 ## Primary evidence
 
