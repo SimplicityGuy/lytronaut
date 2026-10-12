@@ -49,6 +49,22 @@ streaming, and completion publication. A failed, cancelled, or interrupted job
 cannot offer a half-pair. Deployment-level exact Host/Origin and mutation intent
 protection applies; this feature introduces no accounts or login setup.
 
+Archived AVC export runs locally in the browser, with cancellation on navigation
+or unmount, bounded progress, two queued decoder chunks and one decoded plane at
+a time. It offers only the complete ZIP and revokes its temporary download URL.
+It does not claim a durable server job or resume after the tab closes.
+
+The independently authored synthetic native example is
+`cargo run -p lytronaut-format --example live_photo -- /tmp/task-specific-output`.
+The macOS test-only `scripts/verify-live-photo.swift` checks decoded frame colors,
+selected still, duration, geometry, no audio, pairing and timed metadata, plus
+rejection of an intentionally mismatched pairing identifier. It uses resource
+loaders without opening a Photos library. `scripts/live-photo-test.cjs` exercises
+the actual Rust-WASM path with the existing public synthetic AVC fixture,
+including cancellation, unsupported codecs, actual software retry and complete
+pair download. These programs still require execution against the final build;
+their presence alone is not compatibility evidence.
+
 ## Primary evidence
 
 - [Apple capture and save resource model](https://developer.apple.com/documentation/avfoundation/capturing-and-saving-live-photos)

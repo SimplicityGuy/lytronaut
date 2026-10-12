@@ -22,6 +22,8 @@ fn image(rgb: [u8; 3]) -> DecodedJpeg {
 fn selected_key_order_dimensions_identifier_cancel_and_complete_pair() {
     let plan = Plan::new(geometry(), &[0.0, 3.0, -2.0], 0).unwrap();
     assert_eq!(plan.planes(), vec![2, 0, 1]);
+    assert_eq!(plan.geometry(), geometry());
+    assert_eq!(plan.selected(), 0);
     assert_eq!(plan.key_seconds(), 1.0);
     assert!(Builder::new(plan.clone(), "bad identifier").is_err());
     let mut b = Builder::new(plan.clone(), ID).unwrap();
@@ -49,6 +51,30 @@ fn selected_key_order_dimensions_identifier_cancel_and_complete_pair() {
         assert!(zip.windows(name.len()).any(|v| v == name));
     }
     assert_eq!(&zip[zip.len() - 22..zip.len() - 18], b"PK\x05\x06");
+}
+#[test]
+fn cropped_even_pixels_and_invalid_rgba_are_bounded() {
+    let geometry = Geometry {
+        width: 30,
+        height: 18,
+    };
+    let plan = Plan::new(geometry, &[-1.0, 1.0], 1).unwrap();
+    let mut builder = Builder::new(plan, ID).unwrap();
+    let mut image = DecodedJpeg {
+        geometry,
+        rgba: vec![0; 30 * 18 * 4 - 1],
+    };
+    assert_eq!(builder.push(0, &image, || false), Err(FormatError::Extent));
+    image.rgba = (0..30 * 18).flat_map(|_| [64, 128, 192, 255]).collect();
+    builder.push(0, &image, || false).unwrap();
+    builder.push(1, &image, || false).unwrap();
+    let pair = builder.finish().unwrap();
+    assert_eq!(
+        lytronaut_format::jpeg_geometry(&pair.jpeg, Default::default()).unwrap(),
+        geometry
+    );
+    assert!(pair.movie.len() < lytronaut_format::live_photo::MOVIE_CAP);
+    assert_eq!(pair.plan.key_seconds(), 1.5);
 }
 #[test]
 fn hostile_plan_and_incomplete_resources_fail_before_publication() {
