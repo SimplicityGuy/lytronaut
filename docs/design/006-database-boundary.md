@@ -113,10 +113,12 @@ trusted schema or that exact schema minus the newly introduced order table, whic
 startup reconstructs from legacy SQLite rowids. Portable PostgreSQL bundles remain
 assigned to lytronaut-1ga; this checkpoint does not claim that capability complete.
 
-PostgreSQL generated catalog identity allocation preflights a restored signed64
-maximum under writer admission and then uses at most 100 collision-checked positive
-candidates, avoiding an overflowing nextval that aborts the transaction. SQLite
-keeps its native rowid allocation. Existing maximum-valued identities are retained.
+PostgreSQL generated catalog identity allocation follows the retained table maximum
+under writer admission: max+1 with a floor of 1, or at most 100 collision-checked
+positive candidates at signed64 MAX. This also survives a sequence exhausted by
+rollback or an ignored conflict without a retained MAX row, avoiding an overflowing
+nextval that aborts the transaction. SQLite keeps its native rowid allocation.
+Existing maximum-valued identities are retained.
 New job ordinal exhaustion is a distinct ordering concern assigned to the portable
 restore design: a random identifier cannot silently satisfy monotonic order.
 

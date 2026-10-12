@@ -67,11 +67,11 @@ impl Catalog {
     pub async fn begin_write(&self) -> Result<Transaction<'static, Any>, sqlx::Error> {
         self.database.begin_write().await
     }
-    pub(crate) async fn catalog_id_fallback(
+    pub(crate) async fn catalog_insert_id(
         &self,
         tx: &mut Transaction<'_, Any>,
     ) -> Result<Option<i64>, sqlx::Error> {
-        self.database.catalog_id_fallback(tx).await
+        self.database.catalog_insert_id(tx).await
     }
     /// A consistent read transaction for portable catalog snapshots. Never execute
     /// input archive SQL or source Desktop schema statements through this connection.

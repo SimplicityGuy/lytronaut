@@ -583,10 +583,10 @@ pub async fn import_desktop(
     let stored_identity = identity
         .as_ref()
         .map(|value| catalog.encode_source_key(value));
-    // Avoid PostgreSQL nextval overflow before executing any potentially failing
-    // statement. Existing max-valued identities remain intact; SQLite allocates
-    // its native bounded random rowid when its largest rowid is signed64 MAX.
-    if let Some(id) = catalog.catalog_id_fallback(&mut tx).await? {
+    // PostgreSQL follows retained-table rowid allocation under writer admission,
+    // avoiding nontransactional sequence drift/exhaustion. SQLite keeps its native
+    // algorithm, including bounded positive allocation at signed64 MAX.
+    if let Some(id) = catalog.catalog_insert_id(&mut tx).await? {
         sqlx::query("INSERT INTO catalog_versions(id,fingerprint,source_job,library_uuid,state,reason) VALUES($1,$2,$3,$4,'preserved_only',$5) ON CONFLICT(fingerprint) DO NOTHING")
             .bind(id).bind(&fingerprint).bind(job).bind(&stored_identity).bind(reason).execute(&mut *tx).await?;
     } else {
