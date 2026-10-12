@@ -190,7 +190,7 @@ and must not be used as completion evidence.
 
 | Phase | Counted owners and overlap | Unmeasured or partial attribution |
 | --- | --- | --- |
-| UI fetch | Growing Rust source Vec, temporary Rust chunk and JS response chunk; old/new Vec storage may overlap during growth | Stream/network queues; manifest allocations retained during export; allocator growth overlap |
+| UI fetch | Growing Rust source Vec, temporary Rust chunk and original JS response backing (plus a copied backing for constructor fallback); old/new Vec storage may overlap during growth | Stream/network queues; manifest allocations retained during export; allocator growth overlap |
 | Parse | Source **capacity**, owned processed JSON and plane/section tables | serde map nodes/allocator overhead; UI manifest allocation |
 | Feed | Source, owned lambdas/range tables, JS Uint8Array input and EncodedVideoChunk backing; processed JSON and plane/section tables already dropped | UI manifest allocation; released JS objects awaiting GC; opaque decoder pool |
 | Selected JPEG | Rust data URL String, temporary Rust atob String, raw JPEG Vec **capacity**, then paired JPEG allocation | JS data URL/atob strings (conservative UTF-16 estimates differ from physical storage); canvas/frame backing |
@@ -210,8 +210,14 @@ The opt-in `test-harness` feature propagates from client to format. Explicit
 `harness_capacity_start()` enables a fixed 1024-event buffer;
 `harness_capacity_take()` disables recording before serializing numeric records.
 No observer or these exports exists in default production builds. Field meanings:
-`fetch_before_extend` = destination capacity / Rust chunk capacity / JS chunk
-length; `fetch_after_extend` = resulting capacity / zero / JS chunk length;
+`fetch_before_extend` = destination capacity / Rust chunk capacity / original JS
+backing bytes / copied JS backing bytes; `fetch_after_extend` = resulting capacity
+/ zero / original backing bytes / copied backing bytes. Same-realm native byte
+views are reused; cross-realm/custom values retain the existing constructor
+conversion. Copied backing is zero when the exact input object is reused; original
+backing zero means unavailable attribution (custom arrays have no buffer), not
+zero ownership. View length is not assumed to equal backing length. These paired
+snapshots still do not measure old/new allocation overlap inside Vec growth;
 `wasm_boundary_source` = Rust capacity / length (external JS input separate);
 `ui_source_begin` = fetched capacity / length; `ui_source_end` = fetched capacity; `selected_jpeg` = data URL / atob Rust String /
 raw Vec capacities; `pixel_strip` = RGBA / Rust strip capacities / ImageData byte
@@ -235,13 +241,19 @@ owner result artifact with the same feature program/source identity. The baselin
 are bounded and checked for matching feature/source/program identity. It performs
 no independent pair verification during collection. Each trace labels its declared synthetic geometry, observed source length and
 existing 8 MiB source admission cap. It is not a maximum-geometry or metadata-heap
-proof. This three-case source wiring awaits runtime validation. Historical `2cedaa4` CI run `38226127927` passed all three checks and collected
+proof. Historical `2cedaa4` CI run `38226127927` passed all three checks and collected
 36 events across 13 stages from a 32×32 UI fixture with a 992-byte source and no
 overflow. That partial trace predates the early metadata-drop change.
 The metadata-drop source `15150c1` then passed CI `38227514154`, including its
-small mounted-UI trace. The three-case wiring still awaits runtime validation;
-maximum-geometry/private traces and the full counted application budget proof
-remain pending.
+small mounted-UI trace. The three-case `f995ced` source then passed all five CI/container checks
+(CI `38229335947`, containers `38229335945`); the independently verified checkout tree was
+`e23dacbc68ebbe4640fc9fa33d6724bb3c462d1b`. Preserved remote evidence reports
+120/242/382 events for small/large/padded, sources 992/32,208/33,408 bytes,
+13 stages and zero drops in each case, with eight decoders closed, 40 frames closed
+and three downloads per case. Concurrent thumbnail/detail fetches are included;
+these events are not exclusively export fetches. The new reader fast path still
+awaits runtime verification. Private traces, parse/string/copy attribution and
+the full counted application budget proof remain pending.
 
 Current export metadata admission inherits format defaults (2 MiB JSON,
 100,000 nodes, 1,024 sections), whereas viewing specifies 256 KiB JSON,
@@ -294,3 +306,19 @@ were read correctly; the ZIP passed an independent `unzip -t` check. These are
 format-spike results, not a substitute for final native/WASM/API/UI validation or
 an isolated Photos-library import with visible working motion. No iOS device
 verification is claimed.
+
+The feature-only shared-reader tests run before owner observation collection on
+public same-realm offset views, isolated same-origin cross-realm offset views and
+custom arrays. They preserve absent/incorrect Content-Length behavior and assert
+oversize header/chunk rejection, stream interruption and actual aborted-signal
+mapping. The fast path and these new tests still await runtime evidence; reader
+cleanup behavior and source/metadata admission are unchanged.
+
+Pinned Rust 1.99.0 source audit is recorded in the external receipt
+`lytronaut-9fw-rust199-capacity-source.json` with compiler identity and exact source
+digests. This reader's Vec extension reserves, copies and deallocates the chunk;
+it does not steal its buffer. Growth stores `max(2*old_capacity, required, 8)`,
+yielding capacity below twice the admitted limit when the limit is at least eight
+bytes. Count old/new storage conservatively during growth. This implementation
+reasoning is not a public Vec API guarantee; actual WASM capacities and allocator
+overhead still require evidence, and JS backing size is not view length.

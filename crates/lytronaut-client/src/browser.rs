@@ -307,6 +307,27 @@ async fn read_cancel(response: Response, limit: usize, abort: &AbortController) 
         result
     }
 }
+#[cfg(feature = "test-harness")]
+fn response_backing_bytes(value: &JsValue) -> usize {
+    Reflect::get(value, &"buffer".into())
+        .ok()
+        .and_then(|buffer| Reflect::get(&buffer, &"byteLength".into()).ok())
+        .and_then(|length| length.as_f64())
+        .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0 && *n <= f64::from(u32::MAX))
+        .map_or(0, |n| n as usize)
+}
+/// Public synthetic response tests only; absent from default production artifacts.
+#[cfg(feature = "test-harness")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn harness_read_response(
+    response: Response,
+    limit: u32,
+    abort: AbortController,
+) -> std::result::Result<Vec<u8>, JsValue> {
+    read_cancel(response, limit as usize, &abort)
+        .await
+        .map_err(|error| JsValue::from_str(&error))
+}
 async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
     if response
         .headers()
@@ -338,29 +359,41 @@ async fn read(response: Response, limit: usize) -> Result<Vec<u8>> {
         {
             break;
         }
-        let part = Uint8Array::new(
-            &Reflect::get(&part, &"value".into()).map_err(|_| "Invalid response stream")?,
-        );
+        let value = Reflect::get(&part, &"value".into()).map_err(|_| "Invalid response stream")?;
+        // Reuse native same-realm byte views; retain constructor conversion for
+        // cross-realm/custom chunks accepted by the existing reader.
+        let part = value
+            .clone()
+            .dyn_into::<Uint8Array>()
+            .unwrap_or_else(|_| Uint8Array::new(&value));
         if bytes.len().saturating_add(part.length() as usize) > limit {
             let _ = JsFuture::from(reader.cancel()).await;
             return Err("Response exceeds resource budget".into());
         }
         let chunk = part.to_vec();
         #[cfg(feature = "test-harness")]
+        let original_backing = response_backing_bytes(&value);
+        #[cfg(feature = "test-harness")]
+        let copied_backing = if js_sys::Object::is(part.as_ref(), &value) {
+            0
+        } else {
+            part.buffer().byte_length() as usize
+        };
+        #[cfg(feature = "test-harness")]
         lytronaut_format::capacity_observations::record(
             "fetch_before_extend",
             [
                 bytes.capacity(),
                 chunk.capacity(),
-                part.length() as usize,
-                0,
+                original_backing,
+                copied_backing,
             ],
         );
         bytes.extend(chunk);
         #[cfg(feature = "test-harness")]
         lytronaut_format::capacity_observations::record(
             "fetch_after_extend",
-            [bytes.capacity(), 0, part.length() as usize, 0],
+            [bytes.capacity(), 0, original_backing, copied_backing],
         );
     }
     Ok(bytes)

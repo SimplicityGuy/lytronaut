@@ -6,6 +6,9 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
     // Same URL as assets/index.html: reuse the already initialized module.
     window.__ownerModule = await import('/client/lytronaut_client.js');
     if (['harness_dispose','harness_remount','harness_capacity_start','harness_capacity_take'].some(name=>typeof window.__ownerModule[name]!=='function')) throw Error('test-harness artifact required');
+  });
+  const responseReaderProof=shape==='small'?await require('./response-read-test.cjs')(page):null;
+  await page.evaluate(()=>{
     window.__owner = {created:0, closed:0, outputs:0, framesClosed:0, downloads:0, aborts:0};
     window.__ownerNative = {decoder:VideoDecoder, fetch:window.fetch.bind(window), timer:window.setTimeout.bind(window), anchor:HTMLAnchorElement.prototype.click};
     const close = VideoFrame.prototype.close, abort = AbortController.prototype.abort;
@@ -182,5 +185,5 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   await page.evaluate(()=>window.__ownerModule.harness_dispose());await released();
   const counts=await page.evaluate(()=>window.__owner);
   assert.equal(counts.downloads,3,'complete export works after every actual owner disposal');
-  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,...capacities},...counts};
+  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,responseReaderProof,partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,...capacities},...counts};
 };
