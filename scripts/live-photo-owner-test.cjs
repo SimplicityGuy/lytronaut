@@ -205,7 +205,8 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   assert.equal(capacities.dropped,0);
   assert(Number.isSafeInteger(capacities.observer_storage_bytes)&&capacities.observer_storage_bytes>0&&capacities.observer_storage_bytes<=256*1024);
   assert(Array.isArray(capacities.observations)&&capacities.observations.length>0&&capacities.observations.length<=1024);
-  const stages=new Set(['fetch_category','fetch_before_extend','fetch_after_extend','ui_source_begin','ui_source_end','jpeg_platform_result','selected_jpeg','pixel_strip','pcm_input','pcm_escape','segments','paired_jpeg','assembly','package','download_array','download_array_live']);
+  const retainedStages=['retained_snapshot','retained_layout_strings','retained_layout_lists','retained_layout_detail','retained_layout_metadata','retained_layout_options','retained_layout_ui','retained_stage','retained_thumbs','retained_lists','retained_detail','retained_focus','retained_controls','retained_counts'];
+  const stages=new Set([...retainedStages,'fetch_category','fetch_before_extend','fetch_after_extend','ui_source_begin','ui_source_end','jpeg_platform_result','selected_jpeg','pixel_strip','pcm_input','pcm_escape','segments','paired_jpeg','assembly','package','download_array','download_array_live']);
   for(const observation of capacities.observations) {
     keys(observation,['stage','bytes']);
     assert(stages.has(observation.stage),'only fixed UI capacity stages are allowed');
@@ -213,6 +214,35 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
     for(const bytes of observation.bytes)assert(Number.isSafeInteger(bytes)&&bytes>=0&&bytes<=128*1024*1024,'bounded numeric capacity only');
   }
   for(const stage of stages)assert(capacities.observations.some(o=>o.stage===stage),`required partial UI stage: ${stage}`);
+  const retainedSnapshots=[];
+  for(const observation of capacities.observations) {
+    if(observation.stage==='retained_snapshot')retainedSnapshots.push([]);
+    if(observation.stage.startsWith('retained_')) {
+      assert(retainedSnapshots.length>0,'inventory rows belong to a synchronous snapshot');
+      retainedSnapshots[retainedSnapshots.length-1].push(observation);
+    }
+  }
+  assert.equal(retainedSnapshots.length,2,'entry and complete-download inventories');
+  for(const [phase,snapshot] of retainedSnapshots.entries()) {
+    assert.deepEqual(snapshot.map(row=>row.stage),retainedStages,'fixed snapshot field order');
+    assert.deepEqual(snapshot[0].bytes,[phase,0,0,0]);
+    const strings=snapshot.find(row=>row.stage==='retained_layout_strings').bytes;
+    assert.equal(strings[0],4,'actual wasm32 pointer width');
+    assert.equal(strings[1],3*strings[0],'pinned target String header receipt');
+    assert.equal(strings[2],3*strings[0],'pinned target Vec header receipt');
+    for(const row of snapshot.filter(row=>row.stage.startsWith('retained_layout_'))) {
+      assert(row.bytes[0]>0,'actual target type size is recorded');
+    }
+    const stage=snapshot.find(row=>row.stage==='retained_stage').bytes;
+    assert.equal(stage[3],1,'one actual stage String owner');
+    assert(stage[1]>0&&stage[2]<=2*1024*1024,'actual capacity and admitted ASCII stage length are distinct');
+    // Stage is a native ASCII dataURL. Capacity remains distinct from length.
+    assert(stage[1]>=stage[2],'capacity covers recorded UTF16 units for ASCII stage');
+    const counts=snapshot.find(row=>row.stage==='retained_counts').bytes;
+    assert(counts[0]>=0&&counts[0]<=24&&counts[1]===24,'current synthetic capture-page and actual completed thumbnail owners');
+    const thumbs=snapshot.find(row=>row.stage==='retained_thumbs').bytes;
+    assert.equal(thumbs[3],2*counts[0],'each map key and value is counted separately');
+  }
   for(let index=0;index<capacities.observations.length;index++) {
     const observation=capacities.observations[index];
     if(observation.stage==='fetch_category') {
@@ -260,5 +290,5 @@ module.exports = async ({page, click, delay, shape, expectedGeometry}) => {
   await page.evaluate(()=>window.__ownerModule.harness_dispose());await released();
   const counts=await page.evaluate(()=>window.__owner);
   assert.equal(counts.downloads,3,'complete export works after every actual owner disposal');
-  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,responseReaderProof,partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,platform,...capacities},...counts};
+  return {actualMountedOwnerDisposal:true,lateFetch:true,queuedCodecCallbacks:true,lateFlush:true,downloadTimerDisposal:true,remountRecovery:true,responseReaderProof,partialRetainedInventory:{snapshotCount:retainedSnapshots.length,complete:true,totalMemoryProof:false,unobserved:["tachys-cached-strings","btree-nodes","signal-infrastructure","dom-storage","physical-blob-sharing","gpu-resources","temporary-future-owners"],targetLayout:retainedSnapshots[0].filter(row=>row.stage.startsWith("retained_layout_"))},partialCapacityTrace:{path:"mounted-ui",shape,geometry,sourceLengthBytes:sources[0].bytes[1],sourceAdmissionBytes:8*1024*1024,maximumGeometryProof:false,totalMemoryProof:false,platform,...capacities},...counts};
 };

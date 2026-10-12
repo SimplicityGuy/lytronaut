@@ -3,6 +3,8 @@
 mod browser;
 pub mod gpu;
 pub mod model;
+#[cfg(feature = "test-harness")]
+mod retained_observations;
 #[cfg(target_arch = "wasm32")]
 pub mod video;
 #[cfg(target_arch = "wasm32")]

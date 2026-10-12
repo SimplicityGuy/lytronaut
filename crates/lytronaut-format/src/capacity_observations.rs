@@ -51,6 +51,15 @@ pub fn record(stage: &'static str, bytes: [usize; 4]) {
         }
     });
 }
+/// Arithmetic overflow in a partial observer is incomplete evidence, never zero.
+pub fn invalidate() {
+    BUFFER.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.enabled {
+            b.dropped = b.dropped.saturating_add(1);
+        }
+    });
+}
 /// Stop before allocating the report. Overflow explicitly invalidates completeness.
 pub fn take() -> Report {
     BUFFER.with(|b| {

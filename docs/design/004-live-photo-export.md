@@ -415,3 +415,58 @@ drops, eight closed decoders/40 closed frames/three downloads each. The large
 case included eleven concurrent 128×128 canvas observations alongside the
 2048×1024 selected export; matching observations remain partial logical capacity
 evidence, not full counted-memory proof.
+
+### Feature-only retained UI inventory (source candidate)
+
+The `test-harness` build borrows the actual mounted `Ui` synchronously at browser
+Live Photo export entry and after complete-download status. The hook has no await,
+map/DTO clone, registry, reactive subscription, or production-build API. The client
+feature also enables the contracts' test-only numeric `OpaqueId` and
+`ContentDigest` capacity accessors. No contents, identifiers or URLs are reported.
+
+`retained_snapshot` is `[phase,0,0,0]`, with phase 0 at entry and 1 at completion.
+The following rows always have the same order: five `retained_layout_*` rows,
+`retained_layout_ui`, then `retained_stage`, `retained_thumbs`, `retained_lists`,
+`retained_detail`, `retained_focus`, `retained_controls`, and `retained_counts`.
+The layout rows report actual target `size_of` values (pointer/String/Vec/BTreeMap;
+library/album/capture/file DTOs; detail/focus/derivative/export DTOs;
+JSON/plane/processed/section types; optional detail/optional focus/reference/error).
+`retained_layout_ui` is the size of one `Ui` handle bundle, not a count of all
+`Ui` clones or signal allocations. `retained_counts` is
+`[thumbnail_entries,capture_items,0,0]`.
+
+The six owner-group rows use `[known_inline_and_vec_slot_bytes,
+nested_owned_heap_capacity_bytes,string_utf16_units,string_owner_count]`.
+Each signal value's inline header is counted once. A `Vec` includes all its
+capacity slots, including unused slots; nested fields only add their own heap
+capacities. Different selected/list/detail DTOs count as different owners even
+when their contents match. The thumbnail map reports its header and each key/value
+String heap capacity; its BTree nodes and inline key/value slots are **unobserved**.
+`retained_detail` also includes preserved files and the export-job DTO;
+`retained_focus` includes both focus DTOs and video lambdas. Controls include
+status, GPU status, video label, search, sort and import-job strings. All additions
+and capacity multiplications are checked; overflow invalidates the existing
+observer's `complete` flag rather than wrapping or silently providing zero.
+
+UTF16 units describe signal-owned strings, not actual DOM string allocations.
+These observations exclude Tachys cached attribute/text strings, BTree nodes,
+signal infrastructure, render/control closures, GPU resources, temporary async
+future owners, DOM storage, allocation rounding and physical Blob sharing.
+Tachys 0.2.19 `html/attribute/value.rs` lines 388–433 separately establish that a
+String attribute retains a String (`SHA256
+63ef671fa4e98cfc14ca97bd2aeca39e2eed6d9165a566e88d58943d59ff3a97`).
+Those owners must not be treated as zero or folded into observed Rust capacities.
+Existing JS Blob observations give logical sizes, not physical sharing. The fixed
+1024-event observer and its bounded reports retain their earlier overhead caveats.
+
+The existing `just live-photo-owner-test` recipe runs the scoped native command
+`cargo test --locked -p lytronaut-client --features test-harness retained_observations::tests`
+before the single feature WASM build. Five native feature tests (execution/count
+pending) cover reserved capacity greater than length, distinct owners
+with equal contents, empty options with reserved empty vectors, UTF16 accounting,
+private-wrapper capacity access and arithmetic overflow. The existing three UI
+cases require both complete snapshots and numeric target-layout receipts; they
+add no geometry/codec workload. This source candidate has not run yet and provides
+**partial retained evidence only**, never total 32MiB/64MiB acceptance. The sidebar
+list accumulation and parsed-JSON phase bounds identified in the historical
+`0f2fba4` audit remain unresolved; no admissions or navigation changed here.

@@ -37,6 +37,10 @@ impl From<WireVersion> for u16 {
 #[serde(try_from = "String", into = "String")]
 pub struct OpaqueId(String);
 impl OpaqueId {
+    #[cfg(feature = "test-harness")]
+    pub fn harness_capacity(&self) -> usize {
+        self.0.capacity()
+    }
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -280,6 +284,12 @@ impl AssetManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ContentDigest(String);
+impl ContentDigest {
+    #[cfg(feature = "test-harness")]
+    pub fn harness_capacity(&self) -> usize {
+        self.0.capacity()
+    }
+}
 impl TryFrom<String> for ContentDigest {
     type Error = ContractError;
     fn try_from(value: String) -> Result<Self, Self::Error> {

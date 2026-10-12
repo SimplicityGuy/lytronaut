@@ -473,6 +473,55 @@ struct Ui {
     live_photo_abort: Rc<RefCell<Option<AbortController>>>,
 }
 impl Ui {
+    /// Partial retained inventory of the real mounted state, with no signal clones.
+    #[cfg(feature = "test-harness")]
+    fn record_retained(&self, phase: usize) {
+        use crate::retained_observations::{Inventory, record_layout};
+        use lytronaut_format::capacity_observations::record;
+        record("retained_snapshot", [phase, 0, 0, 0]);
+        record_layout();
+        record("retained_layout_ui", [std::mem::size_of::<Ui>(), 0, 0, 0]);
+        let mut stage = Inventory::default();
+        self.stage.with_untracked(|value| stage.value(value));
+        stage.emit("retained_stage");
+        let mut thumbs = Inventory::default();
+        self.thumbs.with_untracked(|value| thumbs.value(value));
+        thumbs.emit("retained_thumbs");
+        let mut lists = Inventory::default();
+        self.libraries.with_untracked(|value| lists.value(value));
+        self.library.with_untracked(|value| lists.value(value));
+        self.albums.with_untracked(|value| lists.value(value));
+        self.album.with_untracked(|value| lists.value(value));
+        self.captures.with_untracked(|value| lists.value(value));
+        lists.emit("retained_lists");
+        let mut detail = Inventory::default();
+        self.detail.with_untracked(|value| detail.value(value));
+        self.files.with_untracked(|value| detail.value(value));
+        self.export_job.with_untracked(|value| detail.value(value));
+        detail.emit("retained_detail");
+        let mut focus = Inventory::default();
+        self.focus_stack.with_untracked(|value| focus.value(value));
+        self.displayed_derivative
+            .with_untracked(|value| focus.value(value));
+        self.video_lambdas
+            .with_untracked(|value| focus.value(value));
+        focus.emit("retained_focus");
+        let mut controls = Inventory::default();
+        self.status.with_untracked(|value| controls.value(value));
+        self.gpu_status
+            .with_untracked(|value| controls.value(value));
+        self.video_label
+            .with_untracked(|value| controls.value(value));
+        self.search.with_untracked(|value| controls.value(value));
+        self.sort.with_untracked(|value| controls.value(value));
+        self.job.with_untracked(|value| controls.value(value));
+        controls.emit("retained_controls");
+        self.thumbs.with_untracked(|thumbs| {
+            self.captures.with_untracked(|captures| {
+                record("retained_counts", [thumbs.len(), captures.len(), 0, 0]);
+            });
+        });
+    }
     fn new() -> Self {
         Self {
             net: Net::default(),
@@ -670,6 +719,8 @@ impl Ui {
         if self.export_busy.get_untracked() {
             return Ok(());
         }
+        #[cfg(feature = "test-harness")]
+        self.record_retained(0);
         self.export_busy.set(true);
         let _busy = BusyGuard(self.export_busy);
         let stage_generation = *self.stage_generation.borrow();
@@ -840,6 +891,8 @@ impl Ui {
             return Err("Cancelled".into());
         }
         let _ = self.status.try_set("Complete Live Photo ZIP downloaded. Extract and import its JPEG and MOV together. Generated focus animation; originals unchanged.".into());
+        #[cfg(feature = "test-harness")]
+        self.record_retained(1);
         Ok(())
     }
     async fn restore_bundle(&self, file: File) -> Result<()> {
