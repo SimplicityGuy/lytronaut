@@ -1,0 +1,110 @@
+{
+  "implementation_commit": "67545924a8e42477e2eb02d628d53fbe5ea4362e",
+  "implementation_tree": "4274b3cb993baca8091402c3dc8477c2d44895d2",
+  "native_tests": 82,
+  "canonical_check": "passed",
+  "private_roundtrip": {
+    "albums": 3,
+    "auth_and_pending_jobs_excluded": true,
+    "captures": 109,
+    "logical_files": 728,
+    "memberships": 109,
+    "original_bytes": 2001830074,
+    "source_hashes_and_mtimes_unchanged": true,
+    "status": "passed",
+    "typed_records_and_associations_exact": true,
+    "unique_blobs": 638
+  },
+  "provenance": {
+    "implementation_commit": "67545924a8e42477e2eb02d628d53fbe5ea4362e",
+    "implementation_tree": "4274b3cb993baca8091402c3dc8477c2d44895d2",
+    "native_profile": "release",
+    "wasm_profile": "release",
+    "reference": "Apple M1 Pro; 32 GiB; macOS 26.6.2; Chrome 154.0.8037.98",
+    "artifacts": {
+      "lytronaut-service": "b1d34861c4bb4e2c63bcfab71e67ec44ee641b2bd5cee312cd3bf1cc808f667e",
+      "private_export": "31ce18d5ed34578eea8fc2cd3445de67403c6a1c2751607ca029d2601c5ff086",
+      "synthetic_jpeg": "5a0f4ce4c7b5588b7fd58fa2e9f4018f9523d33956b59377d1cd4ab78d956594",
+      "lytronaut_client.raw.wasm": "83cd16309af87a9958fff815b2edc5c847fc357d15dd6a03c55ad109ea1f4638",
+      "dist/lytronaut_client_bg.wasm": "fa323978e8858529c6c7cae498a329b9f489571843fb90aed58da425372e0d64",
+      "dist/lytronaut_client.js": "3f25d9794131c1613b4bab33f9672861fc6f0a6caf848c5006335ea3496b3b0b"
+    }
+  },
+  "browser": {
+    "mode": "synthetic",
+    "revision": "67545924a8e42477e2eb02d628d53fbe5ea4362e",
+    "artifactProfiles": "native release; wasm release",
+    "performanceGateEnabled": true,
+    "startupMs": 288,
+    "focusProof": {
+      "stacks": 1,
+      "planes": 3,
+      "maxSourceBytes": 14560,
+      "p95NativeHttpDecodeMs": 7.5
+    },
+    "focusUiLoadContendedTimes": {
+      "samples": 24,
+      "pendingGridAtStart": 4,
+      "p50InputToDecodedFrameReadyMs": 81.80000007152557,
+      "p95InputToDecodedFrameReadyMs": 83.39999997615814,
+      "maxInputToDecodedFrameReadyMs": 83.60000002384186
+    },
+    "focusUiTimes": {
+      "samples": 24,
+      "pendingGridAtStart": 0,
+      "p50InputToDecodedFrameReadyMs": 77.80000007152557,
+      "p95InputToDecodedFrameReadyMs": 83.60000002384186,
+      "maxInputToDecodedFrameReadyMs": 85.89999997615814
+    },
+    "faultSuite": true,
+    "keyboardNavigation": true,
+    "contrast": {
+      "text": 15.465817170572732,
+      "control": 4.046600406095304
+    },
+    "preZoomURLsReleasedExceptCurrentStage": true,
+    "captures": 30,
+    "albums": 3,
+    "orderedMemberships": [
+      10,
+      10,
+      10
+    ],
+    "assets429": 0,
+    "blobURLsReleased": true,
+    "absentGPUAndCodecInjected": true,
+    "pageErrors": 0,
+    "reducedMotion": true,
+    "forcedColors": true,
+    "AXTree": true,
+    "responsive": true,
+    "zoom": {
+      "inner": 720,
+      "outer": 756,
+      "dpr": 2
+    },
+    "browser": "Chrome/154.0.8037.98",
+    "screenReader": "AX inspection only; VoiceOver not manually certified"
+  },
+  "prior_timing_failures": [
+    {
+      "status": "failed",
+      "checkpoint": "focus-ui-benchmark",
+      "native_profile": "release",
+      "wasm_profile": "release",
+      "implementation_commit": "67545924a8e42477e2eb02d628d53fbe5ea4362e",
+      "reason": "existing focus p95 <=100ms assertion failed during simultaneous private full archive/hash/restore; export checkpoints were not reached",
+      "session": 77852
+    },
+    {
+      "status": "failed",
+      "checkpoint": "focus-ui-benchmark",
+      "native_profile": "release",
+      "wasm_profile": "release",
+      "implementation_commit": "67545924a8e42477e2eb02d628d53fbe5ea4362e",
+      "reason": "existing focus p95 <=100ms assertion failed after private process terminal but before private scratch cleanup; other shared builds were active; export checkpoints not reached",
+      "session": 66080
+    }
+  ],
+  "coverage": "No 95% coverage assertion; final acceptance bead owns native and actual WASM instrumentation."
+}
