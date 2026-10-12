@@ -1,7 +1,7 @@
 # Export and lossless restore validation
 
 Implementation commit: `67545924a8e42477e2eb02d628d53fbe5ea4362e`, tree
-`4274b3cb993baca8091402c3dc8477c2d44895d2`. The later evidence and test-report
+`4274b3cb993baca8091402c3dc8477c2d44895d2`. The first evidence and test-report
 commit leaves all application source objects unchanged. The [aggregate evidence](assets/lytronaut-u8i-export.json)
 records exact release program artifact hashes, reference hardware and results.
 Shared Cargo builds were serialized; native service, private harness, synthetic
@@ -45,6 +45,24 @@ and WASM release profiles. Two earlier release runs stopped at the timing gate
 before reaching export checks; one overlapped private hashing/copying, the other
 preceded scratch cleanup. Those failures are retained separately. An intervening
 timing-disabled functional run passed but is not performance acceptance evidence.
+
+Before submission, the current GPU integration branch was merged at
+`6747441c89983be9a5b801143b1c5dfbc0c35d47` (tree
+`f56e98f1502b14448af71332f4347b6b1c58fffc`). The service, bundle, storage, decoder
+and contract source objects remain identical to the private roundtrip revision.
+The combined Rust/WASM client and 298-package license inventory were rebuilt
+and frozen. Actual WebGPU regression passed exact pixels for EXIF1–8 and scaling,
+automatic acquisition/device/pipeline/loss fallbacks, explicit device cleanup,
+stable WASM memory, and the complete flattened export/recipe/archive/restore and
+existing functional browser assertions with zero errors or asset429 responses.
+
+Combined CPU fallback timing acceptance did not pass: two release runs reported
+grid/warm p95 150.1/150.7 ms and 104.7/134.0 ms. These failures and the exact
+combined program hashes are retained in the aggregate evidence. The combined GPU
+functional run disables the CPU timing assertion explicitly; it cannot count as
+CPU performance acceptance. GPU post-frame callbacks also do not establish the
+16.7 ms physical submit-to-present gate. The final integration acceptance must
+resolve these timing gates using isolated release native and release WASM runs.
 
 This bead does not certify 95% native or actual WASM line coverage, calibrated
 synthesis, imported adjustment replay, browser video export, Live Photo or manual

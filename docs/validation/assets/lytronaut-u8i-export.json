@@ -106,5 +106,274 @@
       "session": 66080
     }
   ],
-  "coverage": "No 95% coverage assertion; final acceptance bead owns native and actual WASM instrumentation."
+  "coverage": "No 95% coverage assertion; final acceptance bead owns native and actual WASM instrumentation.",
+  "combined_regression": {
+    "implementation_commit": "6747441c89983be9a5b801143b1c5dfbc0c35d47",
+    "implementation_tree": "f56e98f1502b14448af71332f4347b6b1c58fffc",
+    "provenance": {
+      "implementation_commit": "6747441c89983be9a5b801143b1c5dfbc0c35d47",
+      "implementation_tree": "f56e98f1502b14448af71332f4347b6b1c58fffc",
+      "native_profile": "release",
+      "wasm_profile": "release",
+      "reference": "Apple M1 Pro; 32 GiB; macOS 26.6.2; Chrome 154.0.8037.98",
+      "artifacts": {
+        "lytronaut-service": "b1d34861c4bb4e2c63bcfab71e67ec44ee641b2bd5cee312cd3bf1cc808f667e",
+        "private_export": "31ce18d5ed34578eea8fc2cd3445de67403c6a1c2751607ca029d2601c5ff086",
+        "synthetic_jpeg": "5a0f4ce4c7b5588b7fd58fa2e9f4018f9523d33956b59377d1cd4ab78d956594",
+        "lytronaut_client.raw.wasm": "f64496c9de2f160bb141652d3a7143ab67cc78dc5647fda56b06d16db04ba700",
+        "dist/lytronaut_client_bg.wasm": "0564e35b3d5b3c93b9ffb335c6e3bf7e7882310e5a1bd0099ba6ec3b66a9051b",
+        "dist/lytronaut_client.js": "fec7faa9f7f35053a3614c9fd60028a688204e17107a89185503fd5187c79c21"
+      }
+    },
+    "gpu_and_export_functional_browser": {
+      "mode": "synthetic",
+      "revision": "6747441c89983be9a5b801143b1c5dfbc0c35d47",
+      "artifactProfiles": "native release; wasm release",
+      "performanceGateEnabled": false,
+      "startupMs": 262,
+      "gpuProof": {
+        "hardware": {
+          "info": {
+            "vendor": "apple",
+            "architecture": "metal-3",
+            "device": ""
+          },
+          "maxTextureDimension2D": 16384
+        },
+        "transforms": [
+          {
+            "orientation": 1,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 360,
+            "height": 240,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          },
+          {
+            "orientation": 2,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 360,
+            "height": 240,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          },
+          {
+            "orientation": 3,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 360,
+            "height": 240,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          },
+          {
+            "orientation": 4,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 360,
+            "height": 240,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          },
+          {
+            "orientation": 5,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 240,
+            "height": 360,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          },
+          {
+            "orientation": 6,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 240,
+            "height": 360,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          },
+          {
+            "orientation": 7,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 240,
+            "height": 360,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          },
+          {
+            "orientation": 8,
+            "maximum": 0,
+            "rmse": 0,
+            "width": 240,
+            "height": 360,
+            "cpuBytes": 55205376,
+            "gpuBytes": 1728016
+          }
+        ],
+        "scaling": {
+          "maximum": 0,
+          "rmse": 0,
+          "width": 170,
+          "height": 256,
+          "cpuBytes": 55205376,
+          "gpuBytes": 1213456
+        },
+        "timings": {
+          "samples": 30,
+          "p50SubmitToPostFrameCallbackMs": 178.5,
+          "p95SubmitToPostFrameCallbackMs": 223.5,
+          "maxMs": 260.60000002384186,
+          "linearMemoryBytesAtStart": 1966080,
+          "linearMemoryBytesAtEnd": 1966080,
+          "physicalPresentationMeasured": false
+        },
+        "lossFallbackMs": 145,
+        "oversizeFallbackMs": 6,
+        "faults": [
+          {
+            "fault": "missing-api",
+            "fallbackMs": 32.800000071525574,
+            "reloadThroughFallbackMs": 367,
+            "devices": {
+              "created": 0,
+              "destroyed": 0
+            }
+          },
+          {
+            "fault": "adapter",
+            "fallbackMs": 105.10000002384186,
+            "reloadThroughFallbackMs": 464,
+            "devices": {
+              "created": 0,
+              "destroyed": 0
+            }
+          },
+          {
+            "fault": "device",
+            "fallbackMs": 28.899999976158142,
+            "reloadThroughFallbackMs": 477,
+            "devices": {
+              "created": 0,
+              "destroyed": 0
+            }
+          },
+          {
+            "fault": "pipeline",
+            "fallbackMs": 74.90000009536743,
+            "reloadThroughFallbackMs": 396,
+            "devices": {
+              "created": 1,
+              "destroyed": 1
+            }
+          },
+          {
+            "fault": "late-device",
+            "fallbackMs": 758.5999999046326,
+            "reloadThroughFallbackMs": 2580,
+            "devices": {
+              "created": 1,
+              "destroyed": 1
+            }
+          }
+        ],
+        "released": {
+          "created": 1,
+          "destroyed": 1
+        },
+        "finalDevices": {
+          "created": 7,
+          "destroyed": 6
+        },
+        "repeatedSwitches": 12,
+        "physicalPresentation": "unmeasured; post-frame callback does not certify scanout",
+        "target": "16.7ms compositor submit-to-present unverified"
+      },
+      "preZoomGPUDevices": {
+        "created": 7,
+        "destroyed": 7
+      },
+      "focusProof": {
+        "stacks": 1,
+        "planes": 3,
+        "maxSourceBytes": 14560,
+        "p95NativeHttpDecodeMs": 3.299999952316284
+      },
+      "focusUiLoadContendedTimes": {
+        "samples": 24,
+        "pendingGridAtStart": 5,
+        "p50InputToDecodedFrameReadyMs": 119.5,
+        "p95InputToDecodedFrameReadyMs": 149.5,
+        "maxInputToDecodedFrameReadyMs": 151.69999992847443
+      },
+      "focusUiTimes": {
+        "samples": 24,
+        "pendingGridAtStart": 0,
+        "p50InputToDecodedFrameReadyMs": 120.10000002384186,
+        "p95InputToDecodedFrameReadyMs": 135.10000002384186,
+        "maxInputToDecodedFrameReadyMs": 150
+      },
+      "faultSuite": true,
+      "keyboardNavigation": true,
+      "contrast": {
+        "text": 15.465817170572732,
+        "control": 4.046600406095304
+      },
+      "preZoomURLsReleasedExceptCurrentStage": true,
+      "captures": 30,
+      "albums": 3,
+      "orderedMemberships": [
+        10,
+        10,
+        10
+      ],
+      "assets429": 0,
+      "blobURLsReleased": true,
+      "absentGPUAndCodecInjected": false,
+      "pageErrors": 0,
+      "reducedMotion": true,
+      "forcedColors": true,
+      "AXTree": true,
+      "responsive": true,
+      "zoom": {
+        "inner": 720,
+        "outer": 756,
+        "dpr": 2
+      },
+      "browser": "Chrome/154.0.8037.98",
+      "screenReader": "AX inspection only; VoiceOver not manually certified"
+    },
+    "cpu_timing_failures": [
+      {
+        "status": "failed",
+        "checkpoint": "focus-ui-benchmark",
+        "native_profile": "release",
+        "wasm_profile": "release",
+        "implementation_commit": "6747441c89983be9a5b801143b1c5dfbc0c35d47",
+        "reason": "unchanged focus p95 <=100ms gate failed in combined GPU/export CPU fallback branch; export checkpoints not reached",
+        "session": 10452,
+        "grid_p95_ms": 150.10000002384186,
+        "warm_p95_ms": 150.70000004768372,
+        "grid_p50_ms": 150,
+        "warm_p50_ms": 149.9
+      },
+      {
+        "status": "failed",
+        "checkpoint": "focus-ui-benchmark",
+        "native_profile": "release",
+        "wasm_profile": "release",
+        "implementation_commit": "6747441c89983be9a5b801143b1c5dfbc0c35d47",
+        "reason": "unchanged focus p95 <=100ms gate failed in combined GPU/export CPU fallback branch; export checkpoints not reached",
+        "session": 37312,
+        "grid_p95_ms": 104.70000004768372,
+        "warm_p95_ms": 134.0,
+        "grid_p50_ms": 66.7,
+        "warm_p50_ms": 66.6
+      }
+    ],
+    "combined_performance_acceptance": "Not passed; final acceptance bead must enforce isolated release CPU 100ms and compositor evidence."
+  }
 }

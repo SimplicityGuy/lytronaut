@@ -113,7 +113,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&[...document.querySelectorAll('.capture img')].every(i=>i.complete&&i.naturalWidth>0),{timeout:120000});
   const focusUiTimes=await measureFocusUi();
   if(privateMode)console.log(JSON.stringify({focusProof,focusUiLoadContendedTimes,focusUiTimes}));
-  if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusUiTimes.p95InputToDecodedFrameReadyMs<=100&&focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs<=100,JSON.stringify({focusUiLoadContendedTimes,focusUiTimes}));
+  if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusUiTimes.p95InputToDecodedFrameReadyMs<=100&&focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs<=100,JSON.stringify({focusProof,focusUiLoadContendedTimes,focusUiTimes}));
   let gpuProof=null;if(gpuMode){checkpoint='GPU';
    const tracePath=path.join(root,'gpu-trace.json');
    if(process.env.LYTRONAUT_GPU_TRACE==='1')await page.tracing.start({path:tracePath,categories:['blink.user_timing','devtools.timeline','cc','benchmark','viz','gpu','disabled-by-default-devtools.timeline.frame'],screenshots:true});
