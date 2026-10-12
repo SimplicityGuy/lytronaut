@@ -1395,6 +1395,34 @@ async fn unverifiable_ready_result_fails_closed_and_is_never_auto_deleted(pg: bo
     env.finish().await;
 }
 
+/// A transient database read failure in the progress monitor, occurring only
+/// after the restore has succeeded and published, is not a cancellation: the
+/// job must end ready and keep its result. Only a durably recorded cancel
+/// may discard a finished restore.
+async fn monitor_read_error_after_success_never_discards_result(pg: bool) {
+    let env = Env::new(pg).await;
+    let (_, id) = env.upload(archive(BULK_ROWS / 10).await).await;
+    let id = id.unwrap();
+    super::test_seam::arm_monitor_read_failure_after_success(&id);
+    let state = env.wait_terminal(&id).await;
+    assert!(
+        super::test_seam::fired(&id),
+        "seam must have fired after success"
+    );
+    assert_eq!(
+        state,
+        JobState::Succeeded,
+        "a read error is not a cancellation"
+    );
+    env.assert_ready(&id).await;
+    assert!(env.restart().await);
+    env.assert_ready(&id).await;
+    // A durably recorded DELETE still discards it.
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
 macro_rules! matrix {
     ($($scenario:ident => $sqlite:ident, $postgres:ident;)*) => {$(
         #[tokio::test]
@@ -1423,6 +1451,7 @@ matrix! {
     unjournaled_restore_paths_retain_quota => sqlite_unjournaled_paths, postgres_unjournaled_paths;
     whole_store_failures_still_refuse_startup => sqlite_whole_store_failures, postgres_whole_store_failures;
     unverifiable_ready_result_fails_closed_and_is_never_auto_deleted => sqlite_unverifiable_ready_result, postgres_unverifiable_ready_result;
+    monitor_read_error_after_success_never_discards_result => sqlite_monitor_read_error_after_success, postgres_monitor_read_error_after_success;
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]

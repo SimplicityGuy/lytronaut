@@ -548,7 +548,15 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
     let monitor = tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            match report(&poll_a, &poll_id).await {
+            #[cfg(test)]
+            let observed = if test_seam::monitor_read_fails(&poll_id) {
+                Err(Failure::invalid())
+            } else {
+                report(&poll_a, &poll_id).await
+            };
+            #[cfg(not(test))]
+            let observed = report(&poll_a, &poll_id).await;
+            match observed {
                 Ok(r) => {
                     if matches!(
                         r.state,
@@ -671,26 +679,26 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
         .map_err(storage)?
     }
     .await;
+    #[cfg(test)]
+    test_seam::after_work(&id, result.is_ok()).await;
     monitor.abort();
     let _ = monitor.await;
-    let cancelling = report(&a, &id)
-        .await
-        .is_ok_and(|r| matches!(r.state, JobState::Cancelling | JobState::Cancelled));
-    let (state, error, recipe) = if cancelling || cancelled.load(Ordering::Acquire) {
-        ("cancelled", None, None)
-    } else {
-        match result {
-            Ok(recipe) => ("succeeded", None, recipe),
-            Err(f) => (
-                "failed",
-                Some(if f.1 == ErrorCode::UnsupportedFormat {
-                    "unsupported"
-                } else {
-                    "failed"
-                }),
-                None,
-            ),
-        }
+    // The monitor's flag only stops work early; it is also raised by a failed
+    // state read, so it never decides the outcome. Only a cancellation durably
+    // recorded in the database discards work: the final UPDATE below turns
+    // 'cancelling' into 'cancelled' atomically, and a job already cancelled or
+    // failed elsewhere is not overwritten and is reconciled from that state.
+    let (state, error, recipe) = match result {
+        Ok(recipe) => ("succeeded", None, recipe),
+        Err(f) => (
+            "failed",
+            Some(if f.1 == ErrorCode::UnsupportedFormat {
+                "unsupported"
+            } else {
+                "failed"
+            }),
+            None,
+        ),
     };
     let n = bytes.load(Ordering::Relaxed) as i64;
     let stored = if state == "succeeded" {
@@ -1199,6 +1207,53 @@ mod tests {
         drop(a);
         c.pool().close().await;
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+/// Test-only seam (compiled out otherwise): make the monitor's state read fail
+/// for one armed job, starting only once its work has finished successfully.
+#[cfg(test)]
+pub(super) mod test_seam {
+    use std::{collections::HashMap, sync::Mutex};
+    #[derive(Clone, Copy, PartialEq)]
+    enum Arm {
+        AfterSuccess,
+        Failing,
+        Fired,
+    }
+    static ARMED: Mutex<Option<HashMap<String, Arm>>> = Mutex::new(None);
+    fn with<T>(f: impl FnOnce(&mut HashMap<String, Arm>) -> T) -> T {
+        f(ARMED.lock().unwrap().get_or_insert_with(HashMap::new))
+    }
+    pub(crate) fn arm_monitor_read_failure_after_success(id: &str) {
+        with(|armed| armed.insert(id.to_owned(), Arm::AfterSuccess));
+    }
+    pub(crate) fn fired(id: &str) -> bool {
+        with(|armed| armed.get(id) == Some(&Arm::Fired))
+    }
+    pub(super) fn monitor_read_fails(id: &str) -> bool {
+        with(|armed| match armed.get(id) {
+            Some(Arm::Failing) => {
+                armed.insert(id.to_owned(), Arm::Fired);
+                true
+            }
+            Some(Arm::Fired) => true,
+            _ => false,
+        })
+    }
+    /// Once work succeeded, switch the armed job's monitor reads to failing and
+    /// wait until the monitor has observed at least one failed read.
+    pub(super) async fn after_work(id: &str, succeeded: bool) {
+        let armed = with(|armed| {
+            let hit = succeeded && armed.get(id) == Some(&Arm::AfterSuccess);
+            if hit {
+                armed.insert(id.to_owned(), Arm::Failing);
+            }
+            hit
+        });
+        while armed && !fired(id) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
 }
 

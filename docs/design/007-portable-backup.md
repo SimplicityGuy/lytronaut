@@ -161,7 +161,11 @@ The worker's final status UPDATE can fail ambiguously (committed, but reported a
 an error). The worker therefore re-reads the durable job state and acts only on it:
 a committed success keeps its published result, a durable failure or cancellation
 triggers owned cleanup, and any other state leaves ownership, files and quota to
-startup reconciliation. Recovery keeps an already recorded cancellation or failure
+startup reconciliation. The worker's progress monitor may stop work early when it
+cannot read the job state, but that never decides the outcome: only a cancellation
+recorded in the database (applied atomically by the final UPDATE) discards a
+finished restore, and an unreadable state after success leaves the result, files
+and quota for reconciliation. Recovery keeps an already recorded cancellation or failure
 reason and marks only never-finished jobs `interrupted`.
 
 A restore namespace is created fresh and exclusively owned by one journaled job, so
@@ -194,8 +198,8 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   published with and without a committed success), unjournaled restore paths,
   live writes during a restore import, an exactly-at-limit source cell, per-job
   blocked cleanup that still starts the service, an unverifiable ready result
-  that fails closed and is never auto-deleted, and whole-store failures that
-  still refuse startup. Every case checks unrelated SQL/filesystem sentinels and
+  that fails closed and is never auto-deleted, a monitor read error after success
+  that keeps the result, and whole-store failures that still refuse startup. Every case checks unrelated SQL/filesystem sentinels and
   the live library.
 
 Not covered by an engine test: a database connection lost during cleanup, and
