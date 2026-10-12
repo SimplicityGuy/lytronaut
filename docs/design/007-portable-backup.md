@@ -154,3 +154,9 @@ is never deleted based on its filename; quota remains until ownership is resolve
 Successful upload crashes before restore journal creation are recoverable through
 this earlier ownership record. Initial mkdir/marker crash cuts retain the record
 and quota rather than guessing that an unmarked directory is safe to remove.
+
+Recursive removal is not atomic. If interruption removes the ownership marker
+before all directory contents, a subsequent recovery deliberately fails closed:
+it retains the durable record, remaining files and reservation. It never resumes
+deletion by inferring ownership from the directory name. This conservative state
+requires ownership resolution; automatic resumable deletion is not claimed.

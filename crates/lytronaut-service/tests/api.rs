@@ -149,7 +149,7 @@ impl Server {
                 metadata_bytes: 64 * 1024,
                 files: 32,
                 free_floor: 0,
-                reserved_bytes: 256 * 1024 * 1024,
+                reserved_bytes: 2 * 1024 * 1024 * 1024,
                 ..Default::default()
             },
         )
@@ -994,9 +994,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
             .0,
         204
     );
-    let catalog = Catalog::open_application_database(&s.root.join("catalog.db"))
-        .await
-        .unwrap();
+    let catalog = s.catalog.as_ref().unwrap().clone();
     let pending = s
         .store
         .as_ref()
@@ -1079,7 +1077,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         "catalog_sources",
         "api_ids",
     ] {
-        let query = format!("SELECT * FROM {table} ORDER BY rowid");
+        let query = format!("SELECT * FROM {table} ORDER BY 1");
         let original = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .fetch_all(catalog.pool())
             .await
@@ -1090,19 +1088,38 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
             .unwrap();
         assert_eq!(original.len(), restored_rows.len());
     }
-    for query in [
-        "SELECT hex(original) FROM catalog_records ORDER BY version,kind,ordinal",
-        "SELECT quote(uuid)||quote(name)||quote(caption)||quote(rating)||quote(flag_status) FROM catalog_pictures ORDER BY version,uuid",
-        "SELECT quote(uuid)||quote(name)||quote(sort_order) FROM catalog_albums ORDER BY version,uuid",
-        "SELECT quote(album_uuid)||quote(picture_uuid)||quote(picture_index) FROM catalog_memberships ORDER BY version,album_uuid,picture_index",
-        "SELECT quote(id)||quote(kind)||quote(source_key) FROM api_ids ORDER BY id",
+    // Compare independently selected logical bytes; PostgreSQL's hex source
+    // keys and bytea text are derived storage representations, not source values.
+    for (sqlite, postgres) in [
+        (
+            "SELECT lower(hex(original)) FROM catalog_records ORDER BY version,kind,ordinal",
+            "SELECT encode(original,'hex') FROM catalog_records ORDER BY version,kind,ordinal",
+        ),
+        (
+            "SELECT lower(hex(CAST(uuid AS BLOB)))||':'||lower(hex(CAST(name AS BLOB)))||':'||lower(hex(CAST(caption AS BLOB)))||':'||rating||':'||flag_status FROM catalog_pictures ORDER BY version,uuid",
+            "SELECT uuid||':'||encode(name,'hex')||':'||encode(caption,'hex')||':'||rating::text||':'||flag_status::text FROM catalog_pictures ORDER BY version,uuid",
+        ),
+        (
+            "SELECT lower(hex(CAST(uuid AS BLOB)))||':'||lower(hex(CAST(name AS BLOB)))||':'||sort_order FROM catalog_albums ORDER BY version,uuid",
+            "SELECT uuid||':'||encode(name,'hex')||':'||sort_order::text FROM catalog_albums ORDER BY version,uuid",
+        ),
+        (
+            "SELECT lower(hex(CAST(album_uuid AS BLOB)))||':'||lower(hex(CAST(picture_uuid AS BLOB)))||':'||picture_index FROM catalog_memberships ORDER BY version,album_uuid,picture_index",
+            "SELECT album_uuid||':'||picture_uuid||':'||picture_index::text FROM catalog_memberships ORDER BY version,album_uuid,picture_index",
+        ),
+        (
+            "SELECT lower(hex(CAST(id AS BLOB)))||':'||lower(hex(CAST(kind AS BLOB)))||':'||lower(hex(CAST(source_key AS BLOB))) FROM api_ids ORDER BY id",
+            "SELECT encode(convert_to(id,'UTF8'),'hex')||':'||encode(convert_to(kind,'UTF8'),'hex')||':'||source_key FROM api_ids ORDER BY id",
+        ),
     ] {
-        let original: Vec<String> = sqlx::query_scalar(query)
+        let original: Vec<String> = sqlx::query_scalar(catalog.dialect(sqlite, postgres))
             .fetch_all(catalog.pool())
             .await
             .unwrap();
-        let restored_values: Vec<String> =
-            sqlx::query_scalar(query).fetch_all(c.pool()).await.unwrap();
+        let restored_values: Vec<String> = sqlx::query_scalar(sqlite)
+            .fetch_all(c.pool())
+            .await
+            .unwrap();
         assert_eq!(original, restored_values);
     }
     let rows = sqlx::query("SELECT digest,length,path FROM intake_sources ORDER BY path")

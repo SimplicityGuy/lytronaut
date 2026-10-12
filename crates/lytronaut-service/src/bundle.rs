@@ -819,3 +819,7 @@ mod portable_admission_tests {
         assert!(matches!(archive_limit(&overflow), Err(E::Quota)));
     }
 }
+
+#[cfg(test)]
+#[path = "portable_bundle_tests.rs"]
+mod portable_bundle_tests;

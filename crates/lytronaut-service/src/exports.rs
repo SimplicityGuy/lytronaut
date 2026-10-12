@@ -870,6 +870,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interrupted_directory_cleanup_after_marker_unlink_retains_quota() {
+        let dir = std::env::temp_dir().join(random_id().unwrap());
+        crate::local::private_directory(&dir).unwrap();
+        let catalog = Catalog::open_application_database(&dir.join("app.db"))
+            .await
+            .unwrap();
+        let store = Store::open(
+            catalog.clone(),
+            &dir.join("originals"),
+            &dir.join("staging"),
+            lytronaut_storage::Limits {
+                free_floor: 0,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let api = Api::open(catalog.clone(), store.clone()).await.unwrap();
+        let id = create(&api, "restore", 4096).await.unwrap();
+        let directory = crate::transient_owner::Owner::directory(&root(&store), &id);
+        fs::write(directory.join("upload"), b"remaining owned upload").unwrap();
+        // Independent crash cut during recursive removal: marker has already
+        // vanished, but other contents and the durable ownership intent remain.
+        fs::remove_file(directory.join("owner")).unwrap();
+        assert!(migrate(&catalog, &store).await.is_err());
+        assert!(remove_owned(&api, &id).await.is_err());
+        assert_eq!(
+            fs::read(directory.join("upload")).unwrap(),
+            b"remaining owned upload"
+        );
+        assert!(
+            crate::transient_owner::Owner::load(&root(&store), &id)
+                .unwrap()
+                .is_some()
+        );
+        let reserved: i64 = sqlx::query_scalar("SELECT reserved FROM export_jobs WHERE id=$1")
+            .bind(&id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(reserved, 4096);
+        drop(api);
+        catalog.pool().close().await;
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn uploaded_owned_file_recovers_before_restore_journal_exists() {
         let dir = std::env::temp_dir().join(random_id().unwrap());
         crate::local::private_directory(&dir).unwrap();
