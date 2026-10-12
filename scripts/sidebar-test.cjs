@@ -8,11 +8,11 @@ module.exports=async({browser,origin})=>{
   const libraries=Array.from({length:30},(_,index)=>({...source,id:index===0?source.id:`public-sidebar-library-${index+1}`,albums:30}));
   const albums=Array.from({length:30},(_,index)=>({id:`public-sidebar-album-${index+1}`,name:`Public album ${index+1}`,name_truncated:false,sort_order:index,captures:30}));
   const page=await browser.newPage();page.setDefaultTimeout(30000);
-  let held=null,holdKind=null,failKind=null,handlerFailure=false,heldReplies=0,captureItems=[];
+  let held=null,holdKind=null,failKind=null,handlerFailure=false,heldReplies=0,heldCancelled=0,heldCompleted=0,captureItems=[];
   let phase='setup',observedHeld=null;
   page.on('requestfinished',request=>{if(observedHeld?.request===request)observedHeld.finished=true;});
-  page.on('requestfailed',request=>{if(observedHeld?.request===request){observedHeld.failed=true;observedHeld.aborted=request.failure()?.errorText==='net::ERR_ABORTED';}});
-  page.on('response',response=>{if(observedHeld?.request===response.request())observedHeld.response=true;});
+  page.on('requestfailed',request=>{if(observedHeld?.request===request){observedHeld.failed=true;observedHeld.aborted=request.failure()?.errorText==='net::ERR_ABORTED';observedHeld.settle({kind:'failed'});}});
+  page.on('response',response=>{if(observedHeld?.request===response.request()){observedHeld.response=true;observedHeld.settle({kind:'response',response});}});
   const reply=async(request,payload)=>{try{await request.respond({status:200,contentType:'application/json',body:JSON.stringify(payload)});}catch{handlerFailure=true;if(observedHeld?.request===request)observedHeld.replyFailed=true;}};
   const slice=(items,offset)=>({version:1,items:items.slice(offset,offset+24),offset,next_offset:offset+24<items.length?offset+24:null});
   const intercept=request=>{
@@ -33,7 +33,12 @@ module.exports=async({browser,origin})=>{
       }
       if(kind){
         if(failKind===kind&&Number(url.searchParams.get('offset')||0)===24){failKind=null;await request.respond({status:503,contentType:'application/json',body:JSON.stringify({version:1,code:'storage_unavailable',retryable:true})});return;}
-        if(holdKind===kind&&Number(url.searchParams.get('offset')||0)===24){held={request,payload};observedHeld={request,finished:false,failed:false,aborted:false,response:false,replyFailed:false};holdKind=null;return;}
+        if(holdKind===kind&&Number(url.searchParams.get('offset')||0)===24){
+          // Install the exact-request outcome fence before any UI cancellation.
+          let settle;const outcome=new Promise(resolve=>settle=resolve);
+          observedHeld={request,finished:false,failed:false,aborted:false,response:false,replyFailed:false,settle,outcome};
+          held={request,payload,lifecycle:observedHeld};holdKind=null;return;
+        }
         await reply(request,payload);return;
       }
       await request.continue();
@@ -89,13 +94,24 @@ module.exports=async({browser,origin})=>{
         await page.evaluate(()=>{window.__sidebarSelectionFence?.observer.disconnect();delete window.__sidebarSelectionFence;});
       }
     };
-    const release=async()=>{
-      phase+='-release';const old=held;held=null;
-      const response=page.waitForResponse(response=>response.url()===old.request.url());
-      await reply(old.request,old.payload);
-      const completed=await response;
-      assert((await completed.buffer()).length<=256*1024,'bounded held response completed');
+    const release=async(expected='aborted')=>{
+      phase+='-release';const old=held;held=null;assert(old);
+      let timer;
+      const deadline=new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('held sidebar outcome timeout')),page.getDefaultTimeout()));
+      const settlement=(async()=>{await reply(old.request,old.payload);return old.lifecycle.outcome;})();
+      const outcome=await Promise.race([settlement,deadline]).finally(()=>clearTimeout(timer));
+      if(expected==='aborted'){
+        assert.equal(outcome.kind,'failed','obsolete sidebar request must actually fail');
+        assert.equal(old.lifecycle.aborted,true,'obsolete request must specifically settle net::ERR_ABORTED');
+        assert.equal(old.lifecycle.response,false,'cancelled obsolete request cannot produce HTTP response');
+        assert.equal(old.lifecycle.finished,false);heldCancelled++;
+      }else{
+        assert.equal(expected,'completed');assert.equal(outcome.kind,'response');
+        assert.equal(outcome.response.status(),200);assert((await outcome.response.buffer()).length<=256*1024,'bounded current response completed');
+        assert.equal(old.lifecycle.failed,false);assert.equal(old.lifecycle.aborted,false);heldCompleted++;
+      }
       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      if(expected==='completed')assert.equal(old.lifecycle.finished,true,'current response body actually completed');
       heldReplies++;
     };
     // Select an album/capture, then page both sidebars without changing the viewer.
@@ -144,10 +160,15 @@ module.exports=async({browser,origin})=>{
     holdKind='albums';await click('#album-next');
     for(let i=0;i<150&&!held;i++)await new Promise(resolve=>setTimeout(resolve,20));assert(held);
     const prior=await selected();
-    await selectComplete(()=>page.evaluate(()=>document.querySelectorAll('.capture')[2].click()),2);
+    await selectComplete(async()=>{
+      await page.evaluate(()=>document.querySelectorAll('.capture')[2].click());
+      // The current album reserves the existing control working lease. Settle
+      // it before waiting for the new capture's control response, without abort.
+      await release('completed');
+    },2);
     assert.notEqual((await selected()).capture,prior.capture);
     const duringCapture=await selected();assert(duringCapture.capture!=='No capture selected');
-    await release();await waitPage('album',2,6);
+    await waitPage('album',2,6);
     assert.equal((await selected()).capture,duringCapture.capture);
     await click('#album-prev');await waitPage('album',1,24);
     phase='library-during-album';
@@ -175,11 +196,12 @@ module.exports=async({browser,origin})=>{
       await click(`#${kind}-next`);await waitPage(kind,2,6);
       await click(`#${kind}-prev`);await waitPage(kind,1,24);
     }
+    assert.equal(heldCancelled,3);assert.equal(heldCompleted,1);assert.equal(heldReplies,4);
     assert.equal(handlerFailure,false);assert.deepEqual(pageErrors,[]);
-    return {publicSynthetic:true,libraryItems:30,albumItems:30,pageLimit:24,absoluteLibraryNumbers:true,selectedCapturePreserved:true,offPageSelectionPreserved:true,lateSidebarResponsesRejected:heldReplies-1,captureOperationsDoNotInvalidateSidebar:true,newLibraryResetsAlbum:true,failedPageRecovery:true};
+    return {publicSynthetic:true,libraryItems:30,albumItems:30,pageLimit:24,absoluteLibraryNumbers:true,selectedCapturePreserved:true,offPageSelectionPreserved:true,obsoleteSidebarRequestsCancelled:heldCancelled,currentSidebarResponseCompleted:heldCompleted,captureOperationsDoNotInvalidateSidebar:true,newLibraryResetsAlbum:true,failedPageRecovery:true};
   }catch(error){
     const state=await page.evaluate(()=>({libraryRows:document.querySelectorAll('.library-item').length,albumRows:document.querySelectorAll('.album-item').length,captureRows:document.querySelectorAll('.capture').length,stageReady:document.querySelector('.stage img')?.complete===true&&document.querySelector('.stage img')?.naturalWidth>0})).catch(()=>null);
-    console.error(JSON.stringify({sidebarPhaseDiagnostic:true,phase,heldObserved:observedHeld!==null,heldFinished:observedHeld?.finished===true,heldFailed:observedHeld?.failed===true,heldAborted:observedHeld?.aborted===true,heldResponse:observedHeld?.response===true,heldReplyFailed:observedHeld?.replyFailed===true,handlerFailure,heldReplies,state}));
+    console.error(JSON.stringify({sidebarPhaseDiagnostic:true,phase,heldObserved:observedHeld!==null,heldFinished:observedHeld?.finished===true,heldFailed:observedHeld?.failed===true,heldAborted:observedHeld?.aborted===true,heldResponse:observedHeld?.response===true,heldReplyFailed:observedHeld?.replyFailed===true,handlerFailure,heldReplies,heldCancelled,heldCompleted,state}));
     throw error;
   }finally{
     if(held)await held.request.abort().catch(()=>{});
