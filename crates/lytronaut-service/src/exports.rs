@@ -225,6 +225,19 @@ async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()
             .await
             .map_err(storage)?;
     }
+    if journal.is_none() {
+        // Without a journal no restore result or pending store is provably ours.
+        // Releasing quota while such a path remains would leak its bytes, and
+        // deleting it could destroy unrelated data: fail closed, retain quota.
+        let pending = format!("{id}.pending-");
+        for entry in fs::read_dir(&directory).map_err(storage)? {
+            let name = entry.map_err(storage)?.file_name();
+            let name = name.to_string_lossy();
+            if name == format!("{id}.restored") || name.starts_with(&pending) {
+                return Err(Failure::invalid());
+            }
+        }
+    }
     let transient = crate::transient_owner::Owner::load(&directory, id).map_err(storage)?;
     if let Some(owner) = transient.as_ref() {
         owner.cleanup(&directory).map_err(storage)?;
@@ -248,8 +261,8 @@ async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()
         .map_err(storage)?
         .sync_all()
         .map_err(storage)?;
-    // No journal means no new restore-created SQL namespace or directory. Do not
-    // remove any pre-existing result directory; it may be an unrelated sentinel.
+    // No journal means no restore-created SQL namespace or directory remains
+    // (checked above); only then is the reservation released.
     let mut tx = catalog.begin_write().await?;
     sqlx::query("UPDATE export_jobs SET retained=0,reserved=0 WHERE id=$1")
         .bind(id)
@@ -305,7 +318,9 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
                 .transition(&directory, crate::restore_journal::Phase::JobSucceeded)
                 .map_err(storage)?;
         } else {
-            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE 'failed' END,error='interrupted' WHERE id=$1")
+            // Keep an already recorded cancellation/failure reason; only a job
+            // that never durably finished is marked interrupted.
+            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE 'failed' END,error=CASE WHEN state IN ('cancelled','failed') THEN error ELSE 'interrupted' END WHERE id=$1")
                 .bind(id).execute(catalog.pool()).await?;
             cleanup_result(catalog, store, id).await?;
         }
@@ -600,11 +615,14 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
         eprintln!("Lytronaut export status could not be persisted; owned recovery is required");
         // Best effort status transition; never erase ownership/quota when the
         // database is unreachable or a final UPDATE failed after publication.
+        // The error may also be ambiguous (the commit landed but the client saw
+        // a failure), so the decision below re-reads the durable state.
         let _ = sqlx::query("UPDATE export_jobs SET state='failed',error='interrupted' WHERE id=$1 AND state IN ('queued','running','cancelling')")
             .bind(&id).execute(a.0.catalog.pool()).await;
-        let _ = remove_owned(&a, &id).await;
-        return;
     }
+    // Act only on the durably observed state: keep a committed success, remove
+    // owned output only for a durable failure/cancellation, and otherwise leave
+    // ownership, files and quota to startup reconciliation.
     match report(&a, &id).await {
         Ok(report) if report.state == JobState::Succeeded => {
             let _guard = RECONCILE.lock().await;
@@ -619,10 +637,10 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                 );
             }
         }
-        Ok(_) => {
+        Ok(report) if matches!(report.state, JobState::Failed | JobState::Cancelled) => {
             let _ = remove_owned(&a, &id).await;
         }
-        Err(_) => {
+        Ok(_) | Err(_) => {
             eprintln!("Lytronaut export reconciliation is pending database recovery");
         }
     }

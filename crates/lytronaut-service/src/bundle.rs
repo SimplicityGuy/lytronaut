@@ -707,6 +707,8 @@ pub async fn restore_owned(
     directory(&store)?;
     let catalog = if let Some(namespace) = journal.namespace() {
         namespace.create(active).await?;
+        // Test-only crash cut (no-op otherwise): namespace exists, journal Prepared.
+        crate::restore_journal::fault("namespace-created")?;
         let catalog = active
             .open_restore_namespace(namespace)
             .await
@@ -753,8 +755,10 @@ pub async fn restore_owned(
     File::open(&pending)?.sync_all()?;
     check(cancel)?;
     journal.transition(root, Phase::FilesReady)?;
+    crate::restore_journal::fault("files-ready")?;
     publish(&pending, &journal.result(root))?;
     journal.transition(root, Phase::FilesPublished)?;
+    crate::restore_journal::fault("files-published")?;
     Ok(result)
 }
 

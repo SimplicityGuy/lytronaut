@@ -772,6 +772,8 @@ async fn denied_cleanup_retains_ownership_and_quota_until_retry(pg: bool) {
     deny(&mut env, &journal, false).await;
     assert!(env.restart().await);
     assert_eq!(env.job(&id).await.0, "cancelled");
+    // Recovery never rewrites a recorded cancellation as an interruption.
+    assert_eq!(env.job(&id).await.1, None);
     env.assert_released(&id).await;
     env.finish().await;
 }
@@ -885,7 +887,8 @@ async fn failing_final_update_never_reports_ready(pg: bool) {
     env.assert_released(&id).await;
     remove_update_fault(&mut env, "deny_ready").await;
     // (b) Every state transition fails, including the fallback. The job can
-    // never become ready; restart then records the interruption.
+    // never become ready; with no durable terminal state the worker retains
+    // ownership, files and quota, and restart records the interruption.
     install_update_fault(
         &mut env,
         "deny_transition",
@@ -907,6 +910,11 @@ async fn failing_final_update_never_reports_ready(pg: bool) {
         report(&env.api, &id).await.unwrap().state,
         JobState::Succeeded
     );
+    assert!(
+        env.job(&id).await.2 > 0,
+        "quota retained without a durable outcome"
+    );
+    assert!(Journal::load(&env.root(), &id).unwrap().is_some());
     remove_update_fault(&mut env, "deny_transition").await;
     assert!(env.restart().await);
     let (state, error, _, _) = env.job(&id).await;
@@ -963,7 +971,13 @@ async fn journal_fault_matrix_recovers_or_retains(pg: bool) {
     let env = Env::new(pg).await;
     let input = env.fx.root.join("fault.bundle");
     fs::write(&input, archive(0).await).unwrap();
-    for point in ["prepared", "mkdir", "marker", "rename"] {
+    let mut points = vec!["prepared", "mkdir", "marker", "rename"];
+    if pg {
+        // Between CREATE SCHEMA+marker commit and the SchemaOwned journal phase.
+        points.push("namespace-created");
+    }
+    points.extend(["files-ready", "files-published"]);
+    for point in points {
         let id = create(&env.api, "restore", 4096).await.unwrap();
         crate::restore_journal::inject_fault(point);
         let result = bundle::restore_owned(
@@ -996,10 +1010,53 @@ async fn journal_fault_matrix_recovers_or_retains(pg: bool) {
             );
             fs::remove_dir(journal.pending(&env.root())).unwrap();
         }
+        if point == "files-published" {
+            // Published, but the job never durably succeeded: not ready.
+            assert!(journal.result(&env.root()).exists());
+        }
+        if let Some(namespace) = journal.namespace()
+            && point == "namespace-created"
+        {
+            assert_eq!(journal.phase(), Phase::Prepared);
+            assert!(
+                restore_schemas(env.catalog())
+                    .await
+                    .contains(&namespace.schema().to_owned())
+            );
+        }
         assert!(env.restart().await, "fault {point} must reconcile");
         assert_eq!(env.job(&id).await.0, "failed");
         env.assert_released(&id).await;
     }
+    // Crash right after publication when the success commit DID land: restart
+    // verifies the published result and its namespace and keeps it ready.
+    let id = create(&env.api, "restore", 4096).await.unwrap();
+    crate::restore_journal::inject_fault("files-published");
+    assert!(
+        bundle::restore_owned(
+            &input,
+            env.catalog(),
+            bundle::RestoreOwner {
+                root: &env.root(),
+                job: &id,
+                reserved: 4096,
+            },
+            env.store.limits(),
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .await
+        .is_err()
+    );
+    sqlx::query("UPDATE export_jobs SET state='succeeded',reserved=0,retained=1 WHERE id=$1")
+        .bind(&id)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    assert!(env.restart().await);
+    env.assert_ready(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
     env.finish().await;
 }
 
@@ -1112,6 +1169,89 @@ async fn live_writes_proceed_during_restore_import(pg: bool) {
     env.finish().await;
 }
 
+/// PostgreSQL only: the success commit lands but the worker's final UPDATE
+/// reports an error (ambiguous outcome). A statement-level trigger makes every
+/// export_jobs UPDATE fail once the job is durably succeeded, which is exactly
+/// what the worker observes. The published result must never be deleted.
+async fn ambiguous_final_update_keeps_published_success(mut env: Env) {
+    let (_, id) = env.upload(archive(BULK_ROWS / 4).await).await;
+    let id = id.unwrap();
+    env.wait_restoring(&id).await;
+    let (admin, schema) = env.fx.pg.as_mut().unwrap();
+    for statement in [
+        format!(
+            "CREATE FUNCTION \"{schema}\".ambiguous() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF EXISTS(SELECT 1 FROM \"{schema}\".export_jobs WHERE id='{id}' AND state='succeeded') THEN RAISE EXCEPTION 'synthetic ambiguous commit'; END IF; RETURN NULL; END$$"
+        ),
+        format!(
+            "CREATE TRIGGER ambiguous BEFORE UPDATE ON \"{schema}\".export_jobs FOR EACH STATEMENT EXECUTE FUNCTION \"{schema}\".ambiguous()"
+        ),
+        // The durable outcome the worker's own commit would have produced.
+        format!("UPDATE \"{schema}\".export_jobs SET state='succeeded' WHERE id='{id}'"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&mut *admin)
+            .await
+            .unwrap();
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while env.api.0.exports_inflight.load(Ordering::Acquire) != 0 {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let journal = Journal::load(&env.root(), &id).unwrap().unwrap();
+    assert!(
+        journal.result(&env.root()).exists(),
+        "a committed success must keep its published result"
+    );
+    let (admin, schema) = env.fx.pg.as_mut().unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP FUNCTION \"{schema}\".ambiguous() CASCADE"
+    )))
+    .execute(&mut *admin)
+    .await
+    .unwrap();
+    assert!(env.restart().await);
+    env.assert_ready(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL service"]
+async fn postgres_ambiguous_final_update() {
+    ambiguous_final_update_keeps_published_success(Env::new(true).await).await;
+}
+
+/// Without a journal, a restore-named result or pending store is not provably
+/// owned: cleanup fails closed, leaves it untouched and keeps the reservation
+/// (no quota released while bytes remain on disk), until it is gone.
+async fn unjournaled_restore_paths_retain_quota(pg: bool) {
+    let env = Env::new(pg).await;
+    for name in ["restored", &format!("pending-{}", random_hex(64))] {
+        let id = create(&env.api, "restore", 4096).await.unwrap();
+        sqlx::query("UPDATE export_jobs SET state='failed',error='failed' WHERE id=$1")
+            .bind(&id)
+            .execute(env.catalog().pool())
+            .await
+            .unwrap();
+        let path = env.root().join(format!("{id}.{name}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("unrelated"), b"not ours").unwrap();
+        assert!(!env.restart().await, "unprovable {name} must fail closed");
+        assert_eq!(
+            env.job(&id).await.2,
+            4096,
+            "quota retained while {name} remains"
+        );
+        assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"not ours");
+        assert_eq!(env.job(&id).await.1.as_deref(), Some("failed"));
+        fs::remove_dir_all(&path).unwrap();
+        assert!(env.restart().await);
+        env.assert_released(&id).await;
+    }
+    env.finish().await;
+}
+
 macro_rules! matrix {
     ($($scenario:ident => $sqlite:ident, $postgres:ident;)*) => {$(
         #[tokio::test]
@@ -1137,6 +1277,7 @@ matrix! {
     journal_fault_matrix_recovers_or_retains => sqlite_journal_fault_matrix, postgres_journal_fault_matrix;
     near_limit_source_cell_round_trips_and_over_limit_fails_cleanly => sqlite_near_limit_source, postgres_near_limit_source;
     live_writes_proceed_during_restore_import => sqlite_live_writes_during_import, postgres_live_writes_during_import;
+    unjournaled_restore_paths_retain_quota => sqlite_unjournaled_paths, postgres_unjournaled_paths;
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]

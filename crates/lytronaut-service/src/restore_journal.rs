@@ -331,7 +331,8 @@ thread_local! {
 pub(crate) fn inject_fault(point: &'static str) {
     JOURNAL_FAULT.with(|fault| fault.set(Some(point)));
 }
-fn fault(point: &str) -> Result<(), E> {
+/// Test-only crash cut; compiled to a no-op outside `cfg(test)`.
+pub(crate) fn fault(point: &str) -> Result<(), E> {
     #[cfg(test)]
     if JOURNAL_FAULT.with(|fault| {
         if fault.get() == Some(point) {
