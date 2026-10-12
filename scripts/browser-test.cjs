@@ -60,6 +60,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await page.waitForFunction(()=>document.querySelectorAll('.capture').length===24,{timeout:120000});
   }
   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&document.querySelectorAll('.capture').length>0,{timeout:120000});
+  await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
   assert(await page.$eval('.stage img',e=>e.complete&&e.naturalWidth>0));
   if(gpuLifetimeMode){
    checkpoint='gpu-acquisition-lifetime';await page.close();
