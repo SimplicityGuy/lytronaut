@@ -6,7 +6,7 @@ const pp=require('./browser/node_modules/puppeteer-core');
 const sealed=process.env.LYTRONAUT_PRIVATE_SEALED_ROOT,dist=path.resolve(process.env.LYTRONAUT_CLIENT||'dist');
 const expected=109,sourceCap=8*1024*1024,started=performance.now(),snapshot=new Map();let sources=[],fixtures=[],browser,server,checkpoint='admission';
 const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'lytronaut-private-live-photo-'));fs.chmodSync(scratch,0o700);
-const report={denominator:expected,complete:false,photosGuiAcceptancePending:true,wholeBrowserMemoryAcceptancePending:true,privateResourcesSaved:false};
+const report={denominator:expected,complete:false,photosGuiAcceptancePending:true,countedApplicationMemoryAcceptancePending:true,opaqueBrowserMemoryMeasured:false,privateResourcesSaved:false};
 async function integrity(after=false){
   let checked=0,failed=0;
   for(const name of new Set(sources)){

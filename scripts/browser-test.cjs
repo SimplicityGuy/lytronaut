@@ -67,7 +67,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    assert.deepEqual(errors,[],'actual owner cleanup and late futures cannot panic');
    const clientDir=process.env.LYTRONAUT_CLIENT;
    const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
-   const report={...proof,revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',browser:await browser.version(),artifactFeature:'test-harness',productionArtifact:false,applicationWasmSha256:hash(path.join(clientDir,'application.wasm')),generatedWasmSha256:hash(path.join(clientDir,'lytronaut_client_bg.wasm')),photosGuiAcceptancePending:true,wholeBrowserMemoryAcceptancePending:true};
+   const report={...proof,revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',browser:await browser.version(),artifactFeature:'test-harness',productionArtifact:false,applicationWasmSha256:hash(path.join(clientDir,'application.wasm')),generatedWasmSha256:hash(path.join(clientDir,'lytronaut_client_bg.wasm')),photosGuiAcceptancePending:true,countedApplicationMemoryAcceptancePending:true,opaqueBrowserMemoryMeasured:false};
    fs.writeFileSync(path.join(root,'owner-results.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
    console.log(JSON.stringify(report));return;
   }

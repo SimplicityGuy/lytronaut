@@ -96,7 +96,9 @@ timer, then remounts the same app and checks recovery. CI preserves its syntheti
 aggregate, source archive, raw WASM and generated glue in a bounded 128 MiB evidence
 archive. Feature identity and hashes are distinct from production artifacts. This
 source addition still requires actual browser validation; pagehide is not owner
-disposal, and neither test proves whole-browser memory or Photos GUI recognition.
+disposal. These tests do not prove the counted application allocation budget or
+Photos GUI recognition. Optional whole-browser observations are separate; opaque
+codec/driver memory and RSS are not a whole-process acceptance limit.
 
 Private fixture verification uses separate explicit commands:
 
@@ -126,7 +128,9 @@ generated movie frames and checks the selected key against independently decoded
 source pixels. Aggregate RGB loss statistics describe JPEG/chroma conversion;
 they impose no invented lossless threshold. Elapsed corpus/export totals and
 min/max attempt times are aggregate measurements. SPS geometry/reference/B-frame
-aggregates remain separate from whole-browser peak memory.
+aggregates support the geometry model; they do not establish the required counted
+application allocation budget. Optional whole-browser peak observations remain
+separate from that budget.
 
 The independent reader accepts a single bounded ICC_PROFILE APP2 only after RGB
 display-profile header/tag-extent checks and complete byte equality with an ICC
