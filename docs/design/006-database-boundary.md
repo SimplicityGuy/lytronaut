@@ -242,11 +242,14 @@ contains the exact trusted bootstrap SQL. For a local bootstrap, use a generated
 password instead of reusing the workflow's disposable bootstrap value. The
 recipe is explicit opt-in and runs serially with exact result-count assertions:
 
-- Six actual PostgreSQL storage unit contracts (including actual SQLite oracles).
+- Seven actual PostgreSQL storage unit contracts (including actual SQLite oracles).
 - One actual Desktop intake/adaptation/originals/conflict/reopen contract.
-- Five existing HTTP scenarios: browse/search/detail/assets/originals and restart,
+- Six HTTP scenarios: browse/search/detail/assets/originals and restart,
   unsupported input/cancellation, ZIP publication, concurrent publication polling,
-  and PNG/JPEG export/cancellation/restart.
+  PNG/JPEG export/cancellation/restart, and the lossless portable bundle
+  backup/restore/tamper/conflict/interruption scenario (owned-schema restore).
+- Three portable backup round trips with a PostgreSQL side: SQLite→PostgreSQL,
+  PostgreSQL→SQLite and PostgreSQL→PostgreSQL (SQLite→SQLite runs by default).
 
 The HTTP fixture selects PostgreSQL only with the explicit
 `LYTRONAUT_TEST_BACKEND=postgres` set by this recipe. The ordinary test recipe

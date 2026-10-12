@@ -100,5 +100,5 @@ jobs:
           echo "Actual PostgreSQL server_version_num: $actual"
           printf 'LYTRONAUT_TEST_POSTGRES_URL=%s\n' "$url" >> "$GITHUB_ENV"
       - run: mise exec -- just setup
-      - name: Actual PostgreSQL storage, Desktop and HTTP parity (12 tests)
+      - name: Actual PostgreSQL storage, Desktop, HTTP and portable backup parity (17 tests)
         run: mise exec -- just postgres-test

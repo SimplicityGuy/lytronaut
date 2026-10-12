@@ -1438,12 +1438,60 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         .unwrap()
         .to_owned();
     assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
-    assert!(
-        s.root
-            .join("staging.exports")
-            .join(format!("{id}.restored/store/catalog.db"))
-            .is_file()
+    // The restore lands on the deployment-selected backend: a private SQLite
+    // file, or an exact nonce-owned PostgreSQL schema named by restore.json.
+    let restored_store = s
+        .root
+        .join("staging.exports")
+        .join(format!("{id}.restored/store"));
+    let descriptor: Value =
+        serde_json::from_slice(&fs::read(restored_store.join("restore.json")).unwrap()).unwrap();
+    let restored_schema = if s.postgres.is_some() {
+        assert_eq!(descriptor["backend"], "postgres");
+        assert!(!restored_store.join("catalog.db").exists());
+        let schema = descriptor["schema"].as_str().unwrap().to_owned();
+        assert!(schema.starts_with("lytronaut_restore_"));
+        Some(schema)
+    } else {
+        assert_eq!(descriptor["backend"], "sqlite");
+        assert!(restored_store.join("catalog.db").is_file());
+        None
+    };
+    let restored_config = match &restored_schema {
+        Some(schema) => s.database.clone().with_schema(schema).unwrap(),
+        None => DatabaseConfig::Sqlite(restored_store.join("catalog.db")),
+    };
+    let restored = Catalog::open(restored_config).await.unwrap();
+    for query in [
+        "SELECT count(*) FROM catalog_records",
+        "SELECT count(*) FROM catalog_pictures",
+        "SELECT count(*) FROM intake_sources",
+    ] {
+        let original: i64 = sqlx::query_scalar(query)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        let copied: i64 = sqlx::query_scalar(query)
+            .fetch_one(restored.pool())
+            .await
+            .unwrap();
+        assert!(original > 0);
+        assert_eq!(original, copied);
+    }
+    let originals = catalog.dialect(
+        "SELECT lower(hex(original)) FROM catalog_records ORDER BY version,kind,ordinal",
+        "SELECT encode(original,'hex') FROM catalog_records ORDER BY version,kind,ordinal",
     );
+    let expected: Vec<String> = sqlx::query_scalar(originals)
+        .fetch_all(catalog.pool())
+        .await
+        .unwrap();
+    let copied: Vec<String> = sqlx::query_scalar(originals)
+        .fetch_all(restored.pool())
+        .await
+        .unwrap();
+    assert_eq!(expected, copied);
+    restored.pool().close().await;
     // Removing a completed restore deletes only its owned copy and releases retained quota.
     let owned = s
         .root
@@ -1460,9 +1508,18 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         "restore"
     );
     assert!(!owned.exists());
+    if let Some(schema) = &restored_schema {
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname=$1")
+                .bind(schema)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0, "DELETE must drop the owned restore schema");
+    }
     assert_eq!(fs::read(&unrelated).unwrap(), b"keep unrelated bytes");
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT retained FROM export_jobs WHERE id=?")
+        sqlx::query_scalar::<_, i64>("SELECT retained FROM export_jobs WHERE id=$1")
             .bind(&id)
             .fetch_one(catalog.pool())
             .await
@@ -1477,7 +1534,14 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     let stalled=tokio::task::spawn_blocking(move||{let mut socket=TcpStream::connect(("127.0.0.1",port)).unwrap();let head=format!("POST /restores HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared}\r\n{stalled_headers}\r\n");socket.write_all(head.as_bytes()).unwrap();socket.write_all(&prefix).unwrap();socket}).await.unwrap();
     let mut uploading = None;
     for _ in 0..100 {
-        uploading=sqlx::query_scalar::<_,String>("SELECT id FROM export_jobs WHERE kind='restore' AND state='queued' ORDER BY rowid DESC LIMIT 1").fetch_optional(catalog.pool()).await.unwrap();
+        let queued = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM export_jobs WHERE kind='restore' AND state='queued'",
+        )
+        .fetch_all(catalog.pool())
+        .await
+        .unwrap();
+        assert!(queued.len() <= 1, "only the stalled upload may be queued");
+        uploading = queued.into_iter().next();
         if uploading.is_some() {
             break;
         }
@@ -1511,12 +1575,19 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     let declared = before.len();
     let response=tokio::task::spawn_blocking(move||{let mut socket=TcpStream::connect(("127.0.0.1",port)).unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();let head=format!("POST /restores HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared}\r\n{headers}\r\n");socket.write_all(head.as_bytes()).unwrap();socket.write_all(&payload).unwrap();socket.shutdown(std::net::Shutdown::Write).unwrap();let mut reply=Vec::new();let _=socket.read_to_end(&mut reply);reply}).await.unwrap();
     assert!(!response.starts_with(b"HTTP/1.1 200"));
+    let mut recorded = false;
     for _ in 0..100 {
         let failed:i64=sqlx::query_scalar("SELECT count(*) FROM export_jobs WHERE kind='restore' AND state='failed' AND error='upload'").fetch_one(catalog.pool()).await.unwrap();
         if failed > 0 {
-            return;
+            recorded = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("interrupted restore upload must record a durable failed job");
+    assert!(
+        recorded,
+        "interrupted restore upload must record a durable failed job"
+    );
+    // Close so a PostgreSQL run drops its disposable schema and re-checks the sentinel.
+    s.close().await;
 }
