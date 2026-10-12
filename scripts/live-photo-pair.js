@@ -33,6 +33,24 @@
     range(bytes,pos,22);check(pos+22===bytes.length&&v.getUint32(pos,true)===0x06054b50&&v.getUint16(pos+8,true)===3&&v.getUint16(pos+10,true)===3&&v.getUint32(pos+12,true)===pos-central&&v.getUint32(pos+16,true)===central&&v.getUint16(pos+20,true)===0);
     check(entries[0].data.length<=16*1024*1024&&entries[2].data.length<=16*1024);return entries.map(e=>e.data);
   };
+  const publicJpegMetadata = async jpeg => {
+    // Explicit public-fixture diagnostic only. Never emit arbitrary byte strings,
+    // pairing IDs, pixels or JPEG hashes. The private harness never enables it.
+    let pos=2,segments=0;
+    while(pos+4<=jpeg.length&&segments++<128){
+      if(jpeg[pos]!==255||jpeg[pos+1]===218)break;
+      const marker=jpeg[pos+1],size=view(range(jpeg,pos+2,2)).getUint16(0);check(size>=2);
+      const data=range(jpeg,pos+4,size-2);
+      if(marker>=226&&marker<=239&&marker!==238){
+        const signature=data.length>=14&&text(data.subarray(0,12))==='ICC_PROFILE\0';
+        const profile=signature?data.subarray(14):new Uint8Array(),v=view(profile);
+        const known=(offset,allowed)=>{if(offset+4>profile.length)return 'absent';const value=String.fromCharCode(...profile.subarray(offset,offset+4));return allowed.includes(value)?value:'other';};
+        const digest=signature?[...new Uint8Array(await bounded(crypto.subtle.digest('SHA-256',profile)))].map(b=>b.toString(16).padStart(2,'0')).join(''):null;
+        console.log(JSON.stringify({publicJpegMetadata:true,marker,segmentBytes:data.length,iccSignature:signature,sequence:signature?data[12]:null,segmentCount:signature?data[13]:null,profileBytes:profile.length,declaredProfileBytes:profile.length>=4?v.getUint32(0):null,profileMagic:known(36,['acsp']),colorSpace:known(16,['RGB ']),connectionSpace:known(20,['XYZ ','Lab ']),profileClass:known(12,['mntr','scnr','prtr','spac']),profileTags:profile.length>=132?v.getUint32(128):null,profileSha256:digest}));
+      }
+      pos+=size+2;
+    }
+  };
   const jpegIdentity = jpeg => {enter('jpeg');
     check(jpeg.length<=2*1024*1024+256&&jpeg[0]===255&&jpeg[1]===216);let pos=2,identity=null;
     while(pos<jpeg.length) {
@@ -95,8 +113,8 @@
       for(let i=0;i<x.length;i++)if(i%4!==3){const d=Math.abs(x[i]-y[i]);sum+=d;squared+=d*d;max=Math.max(max,d);count++;}}
     return {absoluteSum:sum,squaredSum:squared,samples:count,maxDifference:max};
   };
-  window.verifyLivePhotoPair = async (zip,{identifier,referenceImage,expectedBlue=false}={}) => {
-    const [movie,jpeg,json]=unzip(zip),p=JSON.parse(text(json)),info=movieInfo(movie);const jpegId=jpegIdentity(jpeg);enter('pair');check(info.identity===identifier&&jpegId===identifier&&p.width===info.width&&p.height===info.height&&p.orientation===1&&p.duration_seconds===3&&p.audio==='none'&&p.motion==='generated_focus_animation'&&p.camera_recorded_temporal_motion===false&&p.calibrated_synthesis===false&&p.originals==='unchanged');
+  window.verifyLivePhotoPair = async (zip,{identifier,referenceImage,expectedBlue=false,publicDiagnostics=false}={}) => {
+    const [movie,jpeg,json]=unzip(zip),p=JSON.parse(text(json)),info=movieInfo(movie);if(publicDiagnostics)await publicJpegMetadata(jpeg);const jpegId=jpegIdentity(jpeg);enter('pair');check(info.identity===identifier&&jpegId===identifier&&p.width===info.width&&p.height===info.height&&p.orientation===1&&p.duration_seconds===3&&p.audio==='none'&&p.motion==='generated_focus_animation'&&p.camera_recorded_temporal_motion===false&&p.calibrated_synthesis===false&&p.originals==='unchanged');
     check(Object.keys(p).sort().join(',')===['version','motion','duration_seconds','key_seconds','selected_stored_plane','sweep_stored_planes','source_variant','width','height','orientation','audio','originals','camera_recorded_temporal_motion','calibrated_synthesis','imported_adjustments','color'].sort().join(',')&&p.version===1&&p.source_variant==='verified_archived_avc_planes'&&p.imported_adjustments==='preserved_only_not_replayed'&&p.color==='source profile unknown; platform-decoded RGB; sRGB transfer, BT.709 primaries, BT.601 limited-range YCbCr; JPEG/chroma quantization are lossy');
     check(p.sweep_stored_planes.length===info.samples.length&&new Set(p.sweep_stored_planes).size===info.samples.length&&Math.abs(info.keySeconds-p.key_seconds)<1e-6);
     const key=p.sweep_stored_planes.indexOf(p.selected_stored_plane);check(key>=0&&Math.abs(info.keySeconds-key*3/info.samples.length)<1e-6);

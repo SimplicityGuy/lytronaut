@@ -46,7 +46,7 @@ const server = http.createServer((req, res) => {
       window.VideoDecoder = Tracked;
       const zip = await invoke(bytes, 0);
       const sourceKey = JSON.parse(await module.decode_archived_refocus(bytes, 0, new AbortController().signal));
-      const pairProof = await window.verifyLivePhotoPair(zip,{identifier,referenceImage:sourceKey.image});sourceKey.image='';
+      const pairProof = await window.verifyLivePhotoPair(zip,{identifier,referenceImage:sourceKey.image,publicDiagnostics:true});sourceKey.image='';
       await reject(()=>window.verifyLivePhotoPair(zip,{identifier:'00000000-0000-4000-8000-000000000000'}));
       await reject(()=>window.verifyLivePhotoPair(zip.subarray(0,zip.length-1),{identifier}));
       const damaged=zip.slice();damaged[50]^=1;await reject(()=>window.verifyLivePhotoPair(damaged,{identifier}));
