@@ -64,30 +64,43 @@ async function trial(index,bitrate){
     const retryCatalog=await catalog(path.join(scratch,'retry'),retryBytes);
     const click=async text=>page.waitForFunction(text=>{const button=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===text&&!b.disabled);if(!button)return false;button.click();return true;},{polling:50},text);
     const importCatalog=async directory=>{
+      Object.assign(report,{importKind:directory===stressCatalog?'stress':'retry',importPhase:'upload',completedLibraryFound:false,catalogState:'unobserved',targetCapturePresent:false,sourcePresent:false,digestMatch:false,sizeMatch:false});
       const previous=await page.evaluate(()=>sessionStorage.getItem('lytronaut-import'));
       await (await page.$('#directory')).uploadFile(directory);
+      report.importPhase='commit';
       await page.waitForFunction(async previous=>{const id=sessionStorage.getItem('lytronaut-import');return id&&id!==previous&&!document.querySelector('#directory').disabled&&(await window.__stressJson('/imports/'+id)).phase==='catalog_complete';},{timeout:120000},previous);
+      report.importPhase='library';
       const selected=await page.evaluate(async()=>{
         const progress=await window.__stressJson('/imports/'+sessionStorage.getItem('lytronaut-import'));
         const libraries=await window.__stressJson('/libraries?limit=24&offset=0');
         const index=libraries.items.findIndex(item=>item.id===progress.library);
-        if(index<0)throw Error('completed import library required');
-        return {index,library:progress.library};
+        return {index,library:progress.library,catalogState:index<0?'unobserved':libraries.items[index].state};
       });
+      report.completedLibraryFound=selected.index>=0;
+      assert(['ready','quarantined','preserved_only','unobserved'].includes(selected.catalogState));report.catalogState=selected.catalogState;
+      assert(report.completedLibraryFound,'completed import library required');
+      report.importPhase='select';
       await click('Library '+(selected.index+1));
       await page.waitForFunction(index=>[...document.querySelectorAll('.rail-item')].some(button=>button.textContent==='Library '+(index+1)&&button.getAttribute('aria-pressed')==='true'),{},selected.index);
       await click('All captures');await page.select('#sort','name');
       const expectedDigest=directory===stressCatalog?stressDigest:crypto.createHash('sha256').update(retryBytes).digest('hex');
+      report.importPhase='source';
       const verified=await page.evaluate(async({library,expectedDigest})=>{
         const captures=await window.__stressJson('/libraries/'+library+'/captures?sort=name&limit=24&offset=0');
-        const target=captures.items.find(item=>item.name==='Synthetic 001');if(!target)throw Error('fresh target required');
-        const detail=await window.__stressJson('/captures/'+target.id);const file=detail.originals.find(item=>item.role==='refocus_stack');if(!file)throw Error('fresh source required');
+        const target=captures.items.find(item=>item.name==='Synthetic 001');
+        if(!target)return {targetCapturePresent:false,sourcePresent:false,digestMatch:false,sizeMatch:false};
+        const detail=await window.__stressJson('/captures/'+target.id);const file=detail.originals.find(item=>item.role==='refocus_stack');
+        if(!file)return {targetCapturePresent:true,sourcePresent:false,digestMatch:false,sizeMatch:false};
         const manifest=await window.__stressJson('/assets/'+file.id+'/manifest');
-        return manifest.content_sha256===expectedDigest&&manifest.encoded_bytes===file.encoded_bytes;
-      },{library:selected.library,expectedDigest});assert.equal(verified,true,'fresh imported target source identity');
+        return {targetCapturePresent:true,sourcePresent:true,digestMatch:manifest.content_sha256===expectedDigest,sizeMatch:manifest.encoded_bytes===file.encoded_bytes};
+      },{library:selected.library,expectedDigest});
+      Object.assign(report,verified);assert(verified.targetCapturePresent,'fresh target required');assert(verified.sourcePresent,'fresh source required');
+      assert.equal(verified.digestMatch&&verified.sizeMatch,true,'fresh imported target source identity');
+      report.importPhase='target';
       await page.waitForFunction(()=>document.querySelectorAll('.capture').length===24&&[...document.querySelectorAll('.capture')].some(b=>b.querySelector('span')?.textContent==='Synthetic 001'));
       await page.evaluate(()=>[...document.querySelectorAll('.capture')].find(b=>b.querySelector('span')?.textContent==='Synthetic 001').click());
       await page.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 001'&&[...document.querySelectorAll('.capture')].some(b=>b.getAttribute('aria-pressed')==='true'&&b.querySelector('span')?.textContent==='Synthetic 001')&&document.querySelector('#focus').disabled&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img').naturalWidth>0);
+      report.importPhase='complete';
       return true;
     };
     phase='validation_failure';
@@ -96,7 +109,7 @@ async function trial(index,bitrate){
     assert(!requestFailed&&!pageFailed,'bounded public browser has no harness errors');
     report.accepted=authored.keyChunks===1&&authored.deltaChunks===4&&proof.crossed&&proof.viewerFallback&&proof.directRejected&&proof.cancelled&&proof.retryViewer&&proof.retryExport&&proof.complete;
     report.outcome=report.accepted?'proven_rejection':authored.keyChunks!==1||authored.deltaChunks!==4?'predictive_encoding_unproven':'jpeg_rejection_unproven';
-  }catch(error){if(error.experiment)Object.assign(report,error.experiment);report.outcome=phase;}
+  }catch(error){if(error.experiment)Object.assign(report,error.experiment);report.outcome=phase;report.errorKind=report.importPhase&&report.importPhase!=='complete'?'import_failure':'validation_failure';}
   finally{
     stopped=true;
     try{if(browser){try{await bounded(browser.close(),10000);}catch{cleanupFailed=true;const child=browser.process();if(child)await stopProcess(child,'SIGKILL',5000);}}}
