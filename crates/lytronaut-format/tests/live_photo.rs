@@ -136,7 +136,34 @@ fn selected_key_order_dimensions_identifier_cancel_and_complete_pair() {
             .windows(b"com.apple.quicktime.still-image-time".len())
             .any(|v| v == b"com.apple.quicktime.still-image-time")
     );
-    let zip = bundle(pair, b"{\"motion\":\"generated_focus_animation\"}").unwrap();
+    // Storage remains in archived order; track chunk offsets select lambda order.
+    let mut chunks = vec![];
+    let mut offset = 28;
+    for _ in 0..3 {
+        chunks.push(offset as u32);
+        let n = u32::from_be_bytes(pair.movie[offset..offset + 4].try_into().unwrap()) as usize;
+        assert_eq!(pair.movie[offset + 4], 0x65);
+        offset += 4 + n;
+    }
+    let stco = pair.movie.windows(4).position(|v| v == b"stco").unwrap();
+    assert_eq!(
+        u32::from_be_bytes(pair.movie[stco + 8..stco + 12].try_into().unwrap()),
+        3
+    );
+    let offsets: Vec<_> = pair.movie[stco + 12..stco + 24]
+        .chunks_exact(4)
+        .map(|v| u32::from_be_bytes(v.try_into().unwrap()))
+        .collect();
+    assert_eq!(offsets, [chunks[2], chunks[0], chunks[1]]);
+    let allocation = pair.movie.as_ptr();
+    let mut provenance = br#"{"motion":"generated_focus_animation"}"#.to_vec();
+    provenance.resize(16 * 1024, b' ');
+    let zip = bundle(pair, &provenance).unwrap();
+    assert_eq!(
+        zip.as_ptr(),
+        allocation,
+        "final movie allocation includes ZIP slack"
+    );
     assert!(zip.starts_with(b"PK\x03\x04"));
     for name in [b"focus.MOV".as_slice(), b"focus.JPG", b"provenance.json"] {
         assert!(zip.windows(name.len()).any(|v| v == name));

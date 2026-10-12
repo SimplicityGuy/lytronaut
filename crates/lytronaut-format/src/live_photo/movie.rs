@@ -137,22 +137,26 @@ fn track(track: Track<'_>) -> Vec<u8> {
     atom(b"trak", [tkhd, edts, mdia].concat())
 }
 use crate::{FormatError as E, Result};
-/// One bounded allocation holds the entire movie. Encoded pictures are not cloned.
+/// Own bounded encoded pictures without growing a second movie allocation while
+/// the platform decoder is alive. Final assembly consumes these segments.
 pub(super) struct Movie {
-    bytes: Vec<u8>,
-    samples: Vec<(usize, u32, u32)>,
+    length: usize,
+    samples: Vec<Sample>,
     width: u32,
     height: u32,
     sps: Vec<u8>,
     pps: Vec<u8>,
 }
+struct Sample {
+    index: usize,
+    offset: u32,
+    bytes: Vec<u8>,
+}
 impl Movie {
     pub(super) fn new(width: u32, height: u32) -> Self {
-        let mut bytes = atom(b"ftyp", [b"qt  ".to_vec(), u(0), b"qt  ".to_vec()].concat());
-        bytes.extend([0, 0, 0, 0, b'm', b'd', b'a', b't']);
         let (sps, pps) = super::avc::configuration(width, height);
         Self {
-            bytes,
+            length: 28, // ftyp plus mdat header, identical to final assembly.
             samples: Vec::new(),
             width,
             height,
@@ -161,22 +165,33 @@ impl Movie {
         }
     }
     pub(super) fn push(&mut self, index: usize, sample: Vec<u8>) -> Result<()> {
-        if self.bytes.len() + sample.len() + 4 + 8192 > super::MOVIE_CAP {
+        let length = self
+            .length
+            .checked_add(sample.len())
+            .and_then(|n| n.checked_add(4))
+            .ok_or(E::Budget)?;
+        if length > super::MOVIE_CAP - 8192 {
             return Err(E::Budget);
         }
-        if self.samples.iter().any(|v| v.0 == index) {
+        if self.samples.iter().any(|v| v.index == index) {
             return Err(E::Duplicate);
         }
-        self.bytes
-            .try_reserve_exact(sample.len() + 4)
-            .map_err(|_| E::Budget)?;
-        self.samples
-            .push((index, self.bytes.len() as u32, (sample.len() + 4) as u32));
-        self.bytes.extend(u(sample.len() as u32));
-        self.bytes.extend(sample);
+        self.samples.try_reserve(1).map_err(|_| E::Budget)?;
+        self.samples.push(Sample {
+            index,
+            offset: self.length as u32,
+            bytes: sample,
+        });
+        self.length = length;
         Ok(())
     }
-    pub(super) fn finish(mut self, order: &[usize], selected: usize, id: &str) -> Result<Vec<u8>> {
+    pub(super) fn finish(
+        self,
+        order: &[usize],
+        selected: usize,
+        id: &str,
+        jpeg_bytes: usize,
+    ) -> Result<Vec<u8>> {
         if self.samples.len() != order.len() {
             return Err(E::Metadata);
         }
@@ -186,21 +201,17 @@ impl Movie {
             let sample = self
                 .samples
                 .iter()
-                .find(|v| v.0 == *index)
+                .find(|v| v.index == *index)
                 .ok_or(E::Metadata)?;
-            offsets.push(sample.1);
-            sizes.push(sample.2);
+            offsets.push(sample.offset);
+            sizes.push((sample.bytes.len() + 4) as u32);
         }
         let key = order
             .iter()
             .position(|i| *i == selected)
             .ok_or(E::Metadata)? as u32;
         let scale = order.len() as u32 * 1000;
-        let metadata_offset = self.bytes.len() as u32;
-        self.bytes.try_reserve_exact(9).map_err(|_| E::Budget)?;
-        self.bytes.extend(atom(&1u32.to_be_bytes(), vec![255]));
-        let mdat_size = (self.bytes.len() - 20) as u32;
-        self.bytes[20..24].copy_from_slice(&mdat_size.to_be_bytes());
+        let metadata_offset = self.length as u32;
         let avcc = atom(
             b"avcC",
             [
@@ -300,13 +311,63 @@ impl Movie {
             .concat(),
         );
         let moov = atom(b"moov", [mvhd, video, metadata, meta].concat());
-        if self.bytes.len() + moov.len() > super::MOVIE_CAP {
+        let movie_size = self.length + 9 + moov.len();
+        if movie_size > super::MOVIE_CAP {
             return Err(E::Budget);
         }
-        self.bytes
-            .try_reserve_exact(moov.len())
-            .map_err(|_| E::Budget)?;
-        self.bytes.extend(moov);
-        Ok(self.bytes)
+        // Reserve final ZIP slack now, after decoder cleanup. Packaging reuses
+        // this allocation; no MOV/ZIP growth overlaps live codec buffers.
+        let capacity = movie_size
+            .checked_add(jpeg_bytes)
+            .and_then(|n| n.checked_add(super::PROVENANCE_CAP + super::ZIP_OVERHEAD))
+            .ok_or(E::Budget)?
+            .min(super::BUNDLE_CAP);
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(capacity).map_err(|_| E::Budget)?;
+        bytes.extend(atom(
+            b"ftyp",
+            [b"qt  ".to_vec(), u(0), b"qt  ".to_vec()].concat(),
+        ));
+        bytes.extend(u((self.length + 9 - 20) as u32));
+        bytes.extend(b"mdat");
+        for sample in self.samples {
+            bytes.extend(u(sample.bytes.len() as u32));
+            bytes.extend(sample.bytes);
+        }
+        bytes.extend(atom(&1u32.to_be_bytes(), vec![255]));
+        bytes.extend(moov);
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn segments_move_without_copy_and_reject_without_advancing() {
+        let mut movie = Movie::new(32, 32);
+        let sample = vec![0x65; 1000];
+        let allocation = sample.as_ptr();
+        movie.push(0, sample).unwrap();
+        assert_eq!(movie.samples[0].bytes.as_ptr(), allocation);
+        assert_eq!(movie.length, 1032);
+        assert_eq!(movie.push(0, vec![0x65]), Err(E::Duplicate));
+        assert_eq!(movie.length, 1032);
+        assert_eq!(movie.samples.len(), 1);
+        assert_eq!(
+            movie.push(1, vec![0; super::super::MOVIE_CAP]),
+            Err(E::Budget)
+        );
+        assert_eq!(movie.length, 1032);
+        assert_eq!(movie.samples.len(), 1);
+        let remaining = super::super::MOVIE_CAP - 8192 - movie.length - 4;
+        movie.push(1, vec![0x65; remaining]).unwrap();
+        assert_eq!(movie.length, super::super::MOVIE_CAP - 8192);
+        assert_eq!(movie.push(2, vec![0x65]), Err(E::Budget));
+        assert_eq!(movie.samples.len(), 2);
+        let bytes = movie
+            .finish(&[1, 0], 0, "A8A8A8A8-1111-4444-8888-121212121212", 0)
+            .unwrap();
+        assert!(bytes.len() <= super::super::MOVIE_CAP);
     }
 }

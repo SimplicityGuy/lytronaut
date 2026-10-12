@@ -387,6 +387,9 @@ async fn attempt(
         }
         s.image.take().ok_or("selected frame missing")?
     };
+    // Release codec/DPB ownership before independently decoding the key JPEG.
+    // Movie packaging happens only after this proof returns to the caller.
+    drop(decoder);
     // Verify the generated JPEG through a separate actual browser image decode;
     // a broken/lost canvas cannot publish a claimed derivative geometry.
     let image = web_sys::HtmlImageElement::new().map_err(|_| "output image unavailable")?;

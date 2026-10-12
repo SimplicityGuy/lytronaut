@@ -3,7 +3,8 @@
 const assert = require('node:assert/strict');
 module.exports = async ({page, click, delay}) => {
   await page.evaluate(async () => {
-    window.__ownerModule = await import('/lytronaut_client.js');
+    // Same URL as assets/index.html: reuse the already initialized module.
+    window.__ownerModule = await import('/client/lytronaut_client.js');
     if (typeof window.__ownerModule.harness_dispose !== 'function' || typeof window.__ownerModule.harness_remount !== 'function') throw Error('test-harness artifact required');
     window.__owner = {created:0, closed:0, outputs:0, framesClosed:0, downloads:0, aborts:0};
     window.__ownerNative = {decoder:VideoDecoder, fetch:window.fetch, timer:window.setTimeout, anchor:HTMLAnchorElement.prototype.click};

@@ -123,18 +123,32 @@ Export admits one queued compressed chunk; ordinary viewing retains its existing
 two-chunk upper limit. Pixels are copied in at most 16-row strips, bounding each
 platform ImageData and Rust temporary to 128 KiB. The canvas backing and current
 VideoFrame are released before the Rust PCM encoder allocates its scratch and
-picture buffers. Movie assembly and ZIP packaging reuse one allocation; source
+picture buffers. Encoded pictures are moved into bounded owned segments without
+cloning or growing a contiguous movie during decoding. The decoder is dropped
+before the independent selected-JPEG decode. After that proof, final movie
+assembly reserves ZIP slack once and packaging reuses the allocation; source
 bytes are dropped before the final Uint8Array/Blob download copies. Browser
 garbage collection and codec internals are not controlled by Rust.
+ZIP slack includes the 16 KiB provenance cap plus exactly 316 bytes of local and
+central headers, duplicated fixed entry names and the end record. Both assembly
+and packaging use that shared bound; a final 18 MiB ZIP is allowed and one byte
+over is rejected before mutation.
 
 For the largest 2048×1024 geometry with three retained frames, allocated PCM
-scratch is at most 3.016 MiB, escaped picture scratch 4.524 MiB and movie assembly
-13.602 MiB. A conservative known-live encoding estimate is 41.142 MiB with the
-full 8 MiB source plus RGBA, selected JPEG and bounded data URL. A declared
-one-reference decoder plus one queued picture may add 16 MiB if each coded picture
-occupies RGBA storage. During strip extraction, the canvas/current frame overlap
-and pre-final movie instead give approximately 61.312 MiB including that
-conservative reference/queue allowance. These estimates do not prove an opaque
+scratch is at most 3.016 MiB and escaped picture scratch 4.524 MiB. The three
+pictures plus conservative tables occupy at most 13.579 MiB; the selected browser
+JPEG is bounded to about 1.5 MiB by its 2 MiB base64 data URL. Before this source
+optimization, contiguous movie growth could overlap old/new allocations, giving
+46.657 MiB of known live encoding allocations. Owned segments instead give
+approximately 36.087 MiB, including the full 8 MiB source, RGBA, selected JPEG and
+Rust data URL. Strip extraction still has about 44.798 MiB of known allocations;
+a conservative one-reference decoder plus one queued coded RGBA picture may add
+16 MiB. Final assembly overlaps retained segments and the preallocated movie/ZIP
+buffer at about 38.167 MiB, after decoder cleanup. Final ZIP-to-Uint8Array or
+Uint8Array-to-Blob copies can overlap about 30.191 MiB. These source estimates
+exclude allocator overhead, JS string/backing retention and opaque platform
+buffers, and the optimized source still requires runtime verification.
+These estimates do not prove an opaque
 browser process stays within 64 MiB. B-picture reorder, additional references,
 padding, conversion, garbage collection and final ZIP/Uint8Array/Blob copy phases
 need actual source-bound measurements.

@@ -7,6 +7,9 @@ mod movie;
 use crate::{DecodedJpeg, FormatError as E, Geometry, Limits, Result};
 pub const MOVIE_CAP: usize = 16 * 1024 * 1024;
 pub const BUNDLE_CAP: usize = MOVIE_CAP + 2 * 1024 * 1024;
+const PROVENANCE_CAP: usize = 16 * 1024;
+// Three local headers (30), central headers (46), names in both, and EOCD (22).
+const ZIP_OVERHEAD: usize = 3 * (30 + 46) + 2 * (9 + 9 + 15) + 22;
 /// Deterministic ascending-lambda sweep, preserving endpoints and selected key.
 #[derive(Debug, Clone)]
 pub struct Plan {
@@ -170,9 +173,9 @@ impl Builder {
     }
     pub fn finish(self) -> Result<Pair> {
         let jpeg = self.jpeg.ok_or(E::Metadata)?;
-        let movie = self
-            .movie
-            .finish(&self.plan.planes, self.plan.selected, &self.id)?;
+        let movie =
+            self.movie
+                .finish(&self.plan.planes, self.plan.selected, &self.id, jpeg.len())?;
         Ok(Pair {
             jpeg,
             movie,
@@ -278,7 +281,7 @@ fn local(name: &str, size: usize, crc: u32) -> Vec<u8> {
 /// One complete ZIP resource pair. Container metadata uses no private source IDs.
 /// MOV allocation is reused in place; no second whole-movie buffer is created.
 pub fn bundle(pair: Pair, provenance: &[u8]) -> Result<Vec<u8>> {
-    if provenance.len() > 16 * 1024 {
+    if provenance.len() > PROVENANCE_CAP {
         return Err(E::Budget);
     }
     let Pair {
@@ -289,8 +292,15 @@ pub fn bundle(pair: Pair, provenance: &[u8]) -> Result<Vec<u8>> {
     let movie_size = bytes.len();
     let movie_crc = crc(&bytes);
     let header = local("focus.MOV", movie_size, movie_crc);
-    let needed = header.len() + jpeg.len() + provenance.len() + 1024;
-    if movie_size + needed > BUNDLE_CAP {
+    let needed = jpeg
+        .len()
+        .checked_add(provenance.len())
+        .and_then(|n| n.checked_add(ZIP_OVERHEAD))
+        .ok_or(E::Budget)?;
+    if movie_size
+        .checked_add(needed)
+        .is_none_or(|n| n > BUNDLE_CAP)
+    {
         return Err(E::Budget);
     }
     bytes.try_reserve_exact(needed).map_err(|_| E::Budget)?;
@@ -333,4 +343,44 @@ pub fn bundle(pair: Pair, provenance: &[u8]) -> Result<Vec<u8>> {
     bytes.extend((central as u32).to_le_bytes());
     bytes.extend(0u16.to_le_bytes());
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod bundle_limits {
+    use super::*;
+    // Zero-filled resources exercise package allocation admission only; they are
+    // deliberately not photographic fixtures or a Live Photo recognition proof.
+    fn boundary_pair(extra: usize) -> Pair {
+        let mut movie = Vec::with_capacity(BUNDLE_CAP);
+        movie.resize(MOVIE_CAP, 0);
+        Pair {
+            movie,
+            jpeg: vec![0; BUNDLE_CAP - MOVIE_CAP - PROVENANCE_CAP - ZIP_OVERHEAD + extra],
+            plan: Plan::new(
+                Geometry {
+                    width: 32,
+                    height: 32,
+                },
+                &[-1.0, 1.0],
+                0,
+            )
+            .unwrap(),
+        }
+    }
+    #[test]
+    fn exact_zip_cap_and_maximum_provenance_keep_the_reserved_allocation() {
+        let pair = boundary_pair(0);
+        let allocation = pair.movie.as_ptr();
+        let zip = bundle(pair, &vec![0; PROVENANCE_CAP]).unwrap();
+        assert_eq!(zip.len(), BUNDLE_CAP);
+        assert_eq!(zip.as_ptr(), allocation);
+        assert_eq!(
+            bundle(boundary_pair(1), &vec![0; PROVENANCE_CAP]),
+            Err(E::Budget)
+        );
+        assert_eq!(
+            bundle(boundary_pair(0), &vec![0; PROVENANCE_CAP + 1]),
+            Err(E::Budget)
+        );
+    }
 }
