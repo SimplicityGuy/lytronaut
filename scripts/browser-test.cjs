@@ -62,6 +62,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   if(process.env.LYTRONAUT_OWNER_TEST==='1') {
    assert(!privateMode&&!gpuMode,'owner harness is public synthetic only');
    checkpoint='live-photo-actual-owner';
+   await page.evaluate(()=>{if(typeof window.__nativeVideoDecoder!=='function')throw Error('actual decoder required for owner harness');window.VideoDecoder=window.__nativeVideoDecoder;});
    const proof=await require('./live-photo-owner-test.cjs')({page,click,delay});
    assert.deepEqual(errors,[],'actual owner cleanup and late futures cannot panic');
    const clientDir=process.env.LYTRONAUT_CLIENT;
