@@ -1,0 +1,27 @@
+{
+  "applicationRevision": "4950b8a4b9001c22eeb77f7d44b7d682104025dd",
+  "platform": "linux/amd64",
+  "buildStatus": "cancelled, not validated",
+  "exitCode": 130,
+  "reason": "Observed host free space below required 2 GiB floor; coordinator-directed scoped recovery before retry.",
+  "observations": {
+    "hostFreeBeforeCancellation": "202 MiB",
+    "hostFreeAfterCancellation": "1.7 GiB",
+    "guestAvailableKiB": 69581200,
+    "ownedBuilderMemoryCurrentBytesAfterCancellation": 3226955776,
+    "ownedBuilderMemoryMax": "unbounded",
+    "ownedBuilderSwapCurrentBytes": 0,
+    "hostSwapUsedMiB": 14211.06
+  },
+  "cause": "unproven; guest filesystem not exhausted",
+  "cleanup": "Only uniquely owned cancelled amd64 builder removed after no compiler/build operations remained; validated arm64 image and artifacts retained.",
+  "retry": {
+    "status": "started; not yet validated",
+    "verifiedHostFree": "11 GiB",
+    "verifiedGuestAvailableKiB": 76066132,
+    "ownedBuilderMemoryMaxBytes": 3221225472,
+    "ownedBuilderSwapMaxBytes": 0,
+    "ownedBuilderCPUs": 2,
+    "productDockerfileChanged": false
+  }
+}

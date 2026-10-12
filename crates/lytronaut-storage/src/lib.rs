@@ -22,6 +22,12 @@ impl Catalog {
             .max_connections(4)
             .connect_with(options)
             .await?;
+        // Only application databases enter this path. Remove obsolete credential state
+        // transactionally; immutable imported databases and originals are never opened here.
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql("PRAGMA secure_delete=ON; DROP TABLE IF EXISTS auth_sessions; DROP TABLE IF EXISTS auth_attempts; DROP TABLE IF EXISTS auth_account;")
+            .execute(&mut *tx).await?;
+        tx.commit().await?;
         Ok(Self { pool })
     }
     pub fn pool(&self) -> &SqlitePool {

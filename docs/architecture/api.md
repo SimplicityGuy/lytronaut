@@ -1,18 +1,14 @@
 # Authenticated catalog and asset API
 
 Compose `uploads::routes(store).merge(api.routes())` before the final
-`router_with_routes` / `router_with_client_assets` authentication boundary.
+`router_with_routes` / `router_with_client_assets` Host/Origin boundary.
 `Api::open(catalog, store)` runs additive API/catalog migrations and recovers
 completed intakes. The browser application is a later bead; these routes expose
 Rust DTOs in `lytronaut-contracts` for its WASM client.
 
-All product requests require the session cookie and configured Host. Mutations
-also require the exact configured Origin and `X-Lytronaut-Csrf` from
-`GET /auth/session`. Login/setup retain their intent-header exceptions described
-in [authentication.md](authentication.md). Legacy `public=1` grants no access.
-Errors are fixed `ApiError` JSON, without underlying exception messages. Every
-response inherits no-store, nosniff and no-referrer. No CORS or server-side local
-filesystem import endpoint exists.
+All product requests require the configured Host. Mutations also require the exact
+configured Origin and `X-Lytronaut-Intent: mutation`. There are no session cookies
+or authentication endpoints. See [deployment access](authentication.md).
 
 ## Intake and semantic readiness
 
@@ -145,14 +141,13 @@ file/byte/capture/album/membership/item-error counts. Failures are fixed redacte
 JSON; no paths, names, source UUIDs, individual hashes or credentials are printed.
 
 Public tests use independent schema-23 records and encoder-generated JPEG pixels.
-They exercise real loopback setup/login/CSRF, directory and ZIP streaming,
-readiness, ordered pagination/search, authorized manifests/chunks/originals,
+They exercise real loopback credentialless Host/Origin intent checks, directory and ZIP streaming,
+readiness, ordered pagination/search, direct manifests/chunks/originals,
 malformed previews, missing companions, empty originals, unknown schemas,
 restart/retry/cancellation and response bounds. Body tests check final-frame/EOF/
 drop permit lifetime and concurrent offset independence. Local private validation
 uses `cargo run -p lytronaut-service --example private_api -- <retained-scratch>`;
-it reuses the existing catalog/originals, saves validation-only auth state in
-private mode-0600 files, and prints aggregate counts only. No private captures,
+it reuses the existing catalog/originals and prints aggregate counts only. No private captures,
 source values, manifests or credentials belong in Git or public CI.
 
 ## Discrete JPEG focus derivatives
@@ -166,8 +161,8 @@ admitted. LFE 10 without a verified JPEG stack remains static with disabled focu
 H.264 stays separately gated.
 
 `GET /assets/{file-id}/focus/{plane-index}/{exif-code}` produces a newly encoded
-lossy JPEG of exactly that stored plane. It requires authentication under the
-same whole-router origin/CSRF policy as existing asset routes. It returns
+lossy JPEG of exactly that stored plane. It uses the
+same whole-router Host/Origin policy as existing asset routes. It returns
 `X-Lytronaut-Derivative` containing typed `FocusDerivative` JSON: V1,
 `jpeg_focus_plane`, opaque file ID, plane index/lambda, source/output dimensions,
 explicit EXIF 1–8, encoded length, SHA256 of the **generated** bytes, unknown color
@@ -233,10 +228,8 @@ H.264, exact typed native records, stable application IDs, albums, order, events
 and metadata survive. Original databases are opaque blobs and remain byte-exact;
 the generated application snapshot uses SQLite VACUUM and retains semantic values.
 A consistent snapshot is taken before selecting its blob inventory, so concurrent
-new intake cannot create a catalog/blob mismatch. Credentials, sessions, rate
-limits, export jobs and unfinished intake jobs are deleted from the generated
-snapshot, then secure deletion/VACUUM removes residual authentication pages.
-Authentication removal in ADR 002 is integrated by the deployment-auth bead.
+new intake cannot create a catalog/blob mismatch. Export jobs and unfinished intake jobs are deleted from the generated snapshot.
+Application catalogs and current bundles contain no authentication state.
 
 `POST /restores` streams a private bundle with a bounded Content-Length into an
 owned upload file, then validates/restores it as a durable cancellable job.
@@ -244,7 +237,9 @@ Checks include V1 magic, sizes/counts, duplicate blobs, exact SHA256s, no traili
 bytes, exact trusted current application schema (no views/triggers/virtual or
 unexpected/generated tables), read-only/query-only/trusted_schema=OFF SQLite,
 2 MiB cache, 20-million-VM-instruction/10-second deadline, integrity and foreign
-keys, empty authentication/transient jobs and exact source/blob inventories.
+keys, empty transient jobs and exact source/blob inventories. Legacy backups must
+match the exact known schema before obsolete authentication tables are removed
+from the isolated restore copy.
 Recomputed checksums do not bypass schema and association checks.
 
 Restore exclusively creates `staging.exports/{job-id}.restored/store` beside the

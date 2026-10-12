@@ -1,5 +1,5 @@
-//! Real HTTP streaming/authentication tests using only independent synthetic input.
-use lytronaut_service::{AppState, SecurityConfig, auth::AuthStore, router_with_routes, uploads};
+//! Real HTTP streaming/request-boundary tests using only independent synthetic input.
+use lytronaut_service::{AppState, SecurityConfig, router_with_routes, uploads};
 use lytronaut_storage::{Catalog, Limits, Store};
 use serde_json::{Value, json};
 use std::{
@@ -32,9 +32,6 @@ impl Server {
         let catalog = Catalog::open_application_database(&root.join("catalog.db"))
             .await
             .unwrap();
-        let auth = AuthStore::open(catalog.pool().clone(), Some(&"a".repeat(64)))
-            .await
-            .unwrap();
         let store = Store::open(
             catalog.clone(),
             &root.join("originals"),
@@ -55,7 +52,6 @@ impl Server {
         let app = router_with_routes(
             AppState {
                 catalog,
-                auth,
                 security: SecurityConfig::new("http://127.0.0.1:3000").unwrap(),
             },
             uploads::routes(store.clone()),
@@ -115,61 +111,13 @@ impl Server {
         .await
         .unwrap()
     }
-    async fn session(&self) -> (String, String) {
-        let setup=json!({"bootstrap":"a".repeat(64),"username":"synthetic","password":"synthetic password for uploads"}).to_string();
-        assert_eq!(
-            self.request(
-                "POST",
-                "/auth/setup",
-                "Origin: http://127.0.0.1:3000\r\nX-Lytronaut-Intent: setup\r\n",
-                setup.as_bytes(),
-                false
-            )
-            .await
-            .0,
-            204
-        );
-        let login =
-            json!({"username":"synthetic","password":"synthetic password for uploads"}).to_string();
-        let reply = self
-            .request(
-                "POST",
-                "/auth/login",
-                "Origin: http://127.0.0.1:3000\r\nX-Lytronaut-Intent: login\r\n",
-                login.as_bytes(),
-                false,
-            )
-            .await;
-        assert_eq!(reply.0, 204);
-        let cookie = reply
-            .1
-            .lines()
-            .find_map(|s| s.strip_prefix("set-cookie: "))
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-        let reply = self
-            .request(
-                "GET",
-                "/auth/session",
-                &format!("Cookie: {cookie}\r\n"),
-                b"",
-                false,
-            )
-            .await;
-        let csrf = serde_json::from_str::<Value>(&reply.2).unwrap()["csrf"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+    async fn request_headers(&self) -> (String, String) {
         (
-            format!("Cookie: {cookie}\r\n"),
-            format!(
-                "Cookie: {cookie}\r\nOrigin: http://127.0.0.1:3000\r\nX-Lytronaut-Csrf: {csrf}\r\n"
-            ),
+            String::new(),
+            "Origin: http://127.0.0.1:3000\r\nX-Lytronaut-Intent: mutation\r\n".into(),
         )
     }
+
     async fn begin(&self, headers: &str, bytes: u64) -> String {
         let request =
             json!({"version":1,"kind":"directory","declared_bytes":bytes,"declared_files":4})
@@ -188,7 +136,7 @@ fn hex(path: &str) -> String {
     path.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 #[tokio::test]
-async fn real_streaming_csrf_unicode_and_truthful_progress() {
+async fn real_streaming_intent_unicode_and_truthful_progress() {
     let s = Server::new().await;
     for path in [
         "/imports",
@@ -205,10 +153,10 @@ async fn real_streaming_csrf_unicode_and_truthful_progress() {
                 false,
             )
             .await;
-        assert_eq!(r.0, 401);
+        assert_eq!(r.0, 403);
         assert!(!r.2.contains("synthetic"));
     }
-    let (cookie, mutation) = s.session().await;
+    let (headers, mutation) = s.request_headers().await;
     let id = s.begin(&mutation, 16384).await;
     let path = format!("/imports/{id}/file");
     let name = "library/未知.data";
@@ -216,12 +164,12 @@ async fn real_streaming_csrf_unicode_and_truthful_progress() {
         "{mutation}X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: {}\r\n",
         hex(name)
     );
-    let csrf_missing = format!(
-        "{cookie}Origin: http://127.0.0.1:3000\r\nX-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: {}\r\n",
+    let intent_missing = format!(
+        "{headers}Origin: http://127.0.0.1:3000\r\nX-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: {}\r\n",
         hex(name)
     );
     assert_eq!(
-        s.request("PUT", &path, &csrf_missing, b"x", true).await.0,
+        s.request("PUT", &path, &intent_missing, b"x", true).await.0,
         403
     );
     assert_eq!(
@@ -231,7 +179,7 @@ async fn real_streaming_csrf_unicode_and_truthful_progress() {
         204
     );
     let report = s
-        .request("GET", &format!("/imports/{id}"), &cookie, b"", false)
+        .request("GET", &format!("/imports/{id}"), &headers, b"", false)
         .await;
     let report: Value = serde_json::from_str(&report.2).unwrap();
     assert_eq!(report["completed_bytes"], 6000);
@@ -258,7 +206,7 @@ async fn real_streaming_csrf_unicode_and_truthful_progress() {
 #[tokio::test]
 async fn actual_stream_overflow_content_encoding_and_unsafe_name_are_rejected() {
     let s = Server::new().await;
-    let (_, mutation) = s.session().await;
+    let (_, mutation) = s.request_headers().await;
     for (name, extra, body, expected) in [
         ("safe", "", vec![b'x'; 8193], 413),
         ("../unsafe", "", vec![b'x'; 1], 400),
@@ -282,7 +230,7 @@ async fn actual_stream_overflow_content_encoding_and_unsafe_name_are_rejected() 
 #[tokio::test]
 async fn malformed_and_overlarge_declarations_never_echo_private_input() {
     let s = Server::new().await;
-    let (_, mutation) = s.session().await;
+    let (_, mutation) = s.request_headers().await;
     let marker = "synthetic-sensitive-source-name";
     let unknown=json!({"version":1,"kind":"directory","declared_bytes":1,"declared_files":1,marker:"private"}).to_string();
     for body in [
