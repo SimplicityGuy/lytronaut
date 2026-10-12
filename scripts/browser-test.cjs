@@ -251,6 +251,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   // Only the currently displayed stage keeps a Blob URL; downsampled grid uses data URLs.
   const preZoomURLs=await page.evaluate(()=>window.__urls);assert(preZoomURLs.created>0);assert.equal(preZoomURLs.created-preZoomURLs.revoked,1);
   await click('Sign out');await page.waitForSelector('#username');await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);
+  const preZoomGPUDevices=gpuMode?await page.evaluate(()=>window.__gpuCounts):null;if(gpuMode)assert.equal(preZoomGPUDevices.created,preZoomGPUDevices.destroyed,'all GPU devices released before browser restart');
   await page.type('#username',username);await page.type('#password',password);await click('Sign in');await page.waitForSelector('#directory');
   // Chromium stores default zoom as log(factor)/log(1.2), partition key x.
   // Restart the isolated profile with actual browser zoom; do not use page scaling.
@@ -283,7 +284,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   checkpoint='final-logout';await click('Sign out');await page.waitForSelector('#username');
   const unauthorized=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(unauthorized,401);
   assert.equal(errors.length,0);assert(!responses.includes(429));const urls=await page.evaluate(()=>window.__urls);assert.equal(urls.created,urls.revoked);
-  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug',startupMs,gpuProof,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
+  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug',startupMs,gpuProof,preZoomGPUDevices,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,keyboardNavigation:true,contrast,preZoomURLsReleasedExceptCurrentStage:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
   console.log(JSON.stringify(result));
   fs.writeFileSync(process.env.LYTRONAUT_BROWSER_REPORT||path.join(root,privateMode?'browser-aggregate.json':'browser-results.json'),JSON.stringify(result,null,2),{mode:0o600});
  }finally{if(browser)await browser.close();fs.rmSync(path.join(root,'browser-profile-'+process.pid),{recursive:true,force:true});server.kill('SIGINT');}

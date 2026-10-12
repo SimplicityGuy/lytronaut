@@ -28,26 +28,46 @@ the first unrelated presentation event would produce invalid latency evidence.
 Neither queue completion, mapped readback nor one prepaint rAF is substituted for
 presentation. No physical scanout/photon timing is measured.
 
-The initial frozen WIP run measured post-frame callback p95 **21.2 ms** at the
-256 cap. Its trace had 46 submit markers, 26 FramePresented, 182 FrameDisplayed
-and 366 DrawAndSwap events, with **zero attributable canvas-presentation samples**.
-The **16.7 ms compositor submit-to-present target is unverified**, and the
-observed frame-ready proxy exceeds it. Default automatic GPU quality is reduced to
-512 from the 1024 interactive ceiling, with an explicit 256 choice. No guaranteed
-frame rate is advertised. Final exact-code evidence is recorded in the linked
-report when the branch artifact has been frozen and rerun.
+The final frozen application source is `35eb53c0f60ae3a4d47ec94192729073582b1e8b`.
+The [public aggregate report](assets/lytronaut-us7-gpu.json) records artifact hashes,
+hardware, browser run 47886 and the previous exact-code run 67559. Later evidence
+and harness commits leave the Rust application and frozen artifacts unchanged.
+The [orientation-six screenshot](assets/lytronaut-us7-gpu-orientation6.png) is a
+public synthetic canvas output. Native and WASM artifacts use debug profiles.
 
-The WIP failure suite observed CPU fallback after device destruction in 92 ms,
-oversized metadata in 11 ms, missing API/adapter/device rejection/pipeline failure
-in 151/130/139/149 ms, and late device acquisition in 955 ms. The acquisition
-bound was subsequently reduced to 700 ms for more scheduling margin. Created
-and explicitly destroyed failure/late devices matched (4/4). Twelve sequential
-capture switches passed. No page errors/unhandled rejections or asset 429s;
-all Blob URLs drained at logout. Last valid frames, controls and original links
-remained usable. The same complete run passed import/ZIP/ZIP64/cancellation,
-orientation/integrity/stale-response checks, 30 thumbnails, three ordered albums,
-keyboard, actual 200% browser zoom/DPR, responsive/forced-colors/reduced-motion
-and accessibility tree checks. Manual screen-reader certification is unmeasured.
+At the 256 cap, run 47886 measured double-rAF post-frame callback p95 **23.9 ms**;
+run 67559 measured **34.1 ms**. These are frame-ready proxies, not actual compositor
+presentation latency. The latest trace has 52 submit markers, 107 FramePresented,
+315 FrameDisplayed and 636 DrawAndSwap events, with **zero attributable canvas
+presentation samples**. The **16.7 ms compositor submit-to-present target is
+unverified**. Both observed proxies exceed 16.7 ms. Automatic GPU quality starts
+at 512, reduced from the 1024 interactive ceiling; the resolution control also
+permits 256. No 60 fps or guaranteed presentation claim is made.
+
+Automatic renderer selection requires no mode, toggle or retry button. The suite
+asserts those controls are absent and missing API, adapter failure, device rejection,
+pipeline failure and late device acquisition fall back without user action.
+Measured acquisition-to-fallback times are 15.2/9.6/15.1/16.1/718.6 ms respectively.
+The timeout is 700 ms; late-created devices are explicitly destroyed after resolution.
+Pipeline and late-acquisition fault devices each record one created and one destroyed.
+Device loss falls back in 98 ms. Oversized metadata retains the prior JPEG URL in
+10 ms. Twelve capture switches create seven devices, destroy six, and retain only
+the active device; logout destroys the seventh. No page errors or unhandled
+rejections occur, controls and the last valid frame remain usable.
+
+Actual WASM linear memory is **2,162,688 bytes** before and after the warm interaction
+sequence. This measures the WASM buffer, separately from conservative counted
+application allocations: **55,205,376 CPU bytes** and **1,728,016 GPU bytes** for the
+full synthetic frame (1,213,456 GPU bytes at the 256 cap). Neither number is browser
+RSS or measured driver residency. The allocation policy includes decoded pixels,
+canvas intermediate, staging copies, encoded derivative leases and persistent
+browser budget; the active focus lease is 24 MiB within shared admission limits.
+
+The complete run also passes import/ZIP/ZIP64/cancellation, orientation/integrity/
+stale-response checks, 30 thumbnails, three ordered albums, keyboard, actual 200%
+browser zoom/DPR, responsive/forced-colors/reduced-motion and accessibility tree
+checks. No asset 429s occur and all Blob URLs drain at logout. Manual screen-reader
+certification is unmeasured.
 
 Reproduce from an exclusive artifact build, immediately freeze native binary,
 WASM and generated glue before another branch can overwrite the shared target:

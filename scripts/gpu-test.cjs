@@ -7,7 +7,7 @@ module.exports=async function gpuTest(page,click){
  const initialize=async fault=>{
   const script=await page.evaluateOnNewDocument(f=>{window.__gpuFault=f;if(f==='missing-api')Object.defineProperty(navigator,'gpu',{value:undefined,configurable:true});},fault);
   await page.reload();await page.waitForSelector('#directory');
-  await page.waitForFunction(()=>document.querySelectorAll('.capture').length>0);
+  await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&document.querySelectorAll('.capture').length>0&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
   for(let pageIndex=0;pageIndex<2;pageIndex++){
    const found=await page.evaluate(name=>{const b=[...document.querySelectorAll('.capture')].find(b=>b.textContent===name);if(!b)return false;b.click();return true;},captureName);
    if(found)break;await click('Next page');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 2');
@@ -56,13 +56,13 @@ module.exports=async function gpuTest(page,click){
  await page.waitForFunction(()=>document.querySelector('#gpu-stage').height===256);await ready();
  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
  const scaling=await compare(8);assert.equal(scaling.maximum,0);assert.equal(scaling.height,256);
- const timings=await page.evaluate(async()=>{const times=[];const range=document.querySelector('#focus'),canvas=document.querySelector('#gpu-stage');
+ const timings=await page.evaluate(async()=>{const wasm=await (await import('/client/lytronaut_client.js')).default();const linearMemoryBytesAtStart=wasm.memory.buffer.byteLength;const times=[];const range=document.querySelector('#focus'),canvas=document.querySelector('#gpu-stage');
   for(let i=0;i<35;i++){
    const old=canvas.dataset.submittedMs;range.value=i%2?range.min:range.max;range.dispatchEvent(new Event('input',{bubbles:true}));
    await new Promise((resolve,reject)=>{const start=performance.now();function poll(){if(canvas.dataset.submittedMs!==old&&document.querySelector('#gpu-status').textContent.startsWith('GPU verified derivative'))resolve();else if(performance.now()-start>5000)reject(Error('GPU submit timeout'));else setTimeout(poll,1);}poll();});
    const submit=Number(canvas.dataset.submittedMs);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
    if(i>=5)times.push(performance.now()-submit);
-  }times.sort((a,b)=>a-b);return {samples:times.length,p50SubmitToPostFrameCallbackMs:times[14],p95SubmitToPostFrameCallbackMs:times[28],maxMs:times[29],physicalPresentationMeasured:false};
+  }times.sort((a,b)=>a-b);return {samples:times.length,p50SubmitToPostFrameCallbackMs:times[14],p95SubmitToPostFrameCallbackMs:times[28],maxMs:times[29],linearMemoryBytesAtStart,linearMemoryBytesAtEnd:wasm.memory.buffer.byteLength,physicalPresentationMeasured:false};
  });
  const oversized=await page.evaluate(async()=>{
   const library=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');const captures=(await (await fetch(`/libraries/${library.id}/captures?limit=100`)).json()).items;
