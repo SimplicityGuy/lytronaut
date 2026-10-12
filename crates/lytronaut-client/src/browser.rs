@@ -466,6 +466,90 @@ impl Net {
         }
     }
 }
+/// Display-only ownership: exported/public Decoded dataURLs remain unchanged.
+struct JpegUrl(String);
+impl JpegUrl {
+    fn transfer(mut self) -> String {
+        std::mem::take(&mut self.0)
+    }
+}
+impl Drop for JpegUrl {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            let _ = web_sys::Url::revoke_object_url(&self.0);
+        }
+    }
+}
+#[derive(Clone)]
+enum Thumbnail {
+    Jpeg(String),
+    Unavailable,
+}
+impl Thumbnail {
+    fn jpeg(&self) -> Option<&String> {
+        match self {
+            Self::Jpeg(url) => Some(url),
+            Self::Unavailable => None,
+        }
+    }
+}
+#[cfg(feature = "test-harness")]
+impl crate::retained_observations::Owned for Thumbnail {
+    fn visit(&self, inventory: &mut crate::retained_observations::Inventory) {
+        if let Self::Jpeg(url) = self {
+            inventory.string(url);
+        }
+    }
+}
+fn jpeg_display(data: &str, limit: usize, abort: &AbortController) -> Result<JpegUrl> {
+    if cancelled(abort) {
+        return Err("Cancelled".into());
+    }
+    // These are the existing caller's accepted native JPEG dataURL thresholds.
+    // Decode only its base64 envelope; never re-encode or transform its bytes.
+    let encoded = data
+        .strip_prefix("data:image/jpeg;base64,")
+        .filter(|_| data.len() <= limit)
+        .ok_or("Invalid display JPEG")?;
+    let binary = web_sys::window()
+        .ok_or("Display unavailable")?
+        .atob(encoded)
+        .map_err(|_| "Invalid display JPEG")?;
+    let bytes = binary.chars().map(|value| value as u8).collect::<Vec<_>>();
+    drop(binary);
+    let parts = Array::new();
+    parts.push(&Uint8Array::from(bytes.as_slice()));
+    let options = BlobPropertyBag::new();
+    options.set_type("image/jpeg");
+    let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+        .map_err(|_| "Display unavailable")?;
+    let url = JpegUrl(
+        web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| "Display unavailable")?,
+    );
+    if cancelled(abort) {
+        return Err("Cancelled".into());
+    }
+    Ok(url)
+}
+#[cfg(feature = "test-harness")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn harness_display_jpeg(
+    data: String,
+    limit: u32,
+    abort: AbortController,
+) -> std::result::Result<String, JsValue> {
+    // Explicitly synthetic test-only seam; the returned URL becomes test-owned.
+    jpeg_display(&data, limit as usize, &abort)
+        .map(JpegUrl::transfer)
+        .map_err(|error| JsValue::from_str(&error))
+}
+struct DisplayCanvas(web_sys::HtmlCanvasElement);
+impl Drop for DisplayCanvas {
+    fn drop(&mut self) {
+        self.0.set_width(0);
+        self.0.set_height(0);
+    }
+}
 // Rust-controlled browser JPEG decode/downsample; original bytes are unchanged.
 async fn downsample(url: &str, abort: &AbortController) -> Result<String> {
     let image = match web_sys::HtmlImageElement::new() {
@@ -487,9 +571,11 @@ async fn downsample(url: &str, abort: &AbortController) -> Result<String> {
                 .map_err(|_| "Canvas unavailable")?
                 .dyn_into::<web_sys::HtmlCanvasElement>()
                 .map_err(|_| "Canvas unavailable")?;
-            canvas.set_width(128);
-            canvas.set_height(128);
+            let canvas = DisplayCanvas(canvas);
+            canvas.0.set_width(128);
+            canvas.0.set_height(128);
             let context = canvas
+                .0
                 .get_context("2d")
                 .map_err(|_| "Canvas unavailable")?
                 .ok_or("Canvas unavailable")?
@@ -509,12 +595,13 @@ async fn downsample(url: &str, abort: &AbortController) -> Result<String> {
                 )
                 .map_err(|_| "Thumbnail unavailable")?;
             let data = canvas
+                .0
                 .to_data_url_with_type("image/jpeg")
                 .map_err(|_| "Thumbnail unavailable")?;
             if data.len() > 128 * 1024 {
                 return Err("Thumbnail exceeds persistent budget".into());
             }
-            Ok(data)
+            jpeg_display(&data, 128 * 1024, abort).map(JpegUrl::transfer)
         } else {
             Err("Preview cancelled or decode failed".into())
         }
@@ -753,7 +840,7 @@ struct Ui {
     album: RwSignal<Option<String>>,
     captures: RwSignal<Rc<Vec<CaptureSummary>>>,
     detail: RwSignal<Option<CaptureDetail>>,
-    thumbs: RwSignal<BTreeMap<String, String>>,
+    thumbs: RwSignal<BTreeMap<String, Thumbnail>>,
     stage: RwSignal<String>,
     gpu_enabled: RwSignal<bool>,
     gpu_busy: RwSignal<bool>,
@@ -969,9 +1056,9 @@ impl Ui {
         self.thumbs
             .update(|current| thumbs = std::mem::take(current));
         self.clear_stage();
-        // Only previously owned URLs/controllers are released after reentrancy.
-        for url in thumbs.values() {
-            if url.starts_with("blob:") {
+        // Release only old URLs, outside signal borrows and after state reset.
+        for image in thumbs.values() {
+            if let Some(url) = image.jpeg() {
                 let _ = web_sys::Url::revoke_object_url(url);
             }
         }
@@ -1724,12 +1811,20 @@ impl Ui {
                 }
                 break;
             }
+            let mut previous = None;
             self.thumbs.update(|map| {
-                map.insert(
+                previous = map.insert(
                     capture.id.as_str().into(),
-                    result.unwrap_or_else(|_| "unavailable".into()),
+                    result
+                        .map(Thumbnail::Jpeg)
+                        .unwrap_or(Thumbnail::Unavailable),
                 );
             });
+            if let Some(previous) = previous
+                && let Some(url) = previous.jpeg()
+            {
+                let _ = web_sys::Url::revoke_object_url(url);
+            }
         }
         Ok(())
     }
@@ -2261,8 +2356,23 @@ impl Ui {
         }
         match result {
             Ok(decoded) => {
+                let display = jpeg_display(&decoded.image, 2 * 1024 * 1024, abort)?;
+                if generation != *self.stage_generation.borrow()
+                    || cancelled(abort)
+                    || self.status.is_disposed()
+                {
+                    return Ok(()); // display guard revokes the uncommitted URL.
+                }
+                drop(decoded.image);
+                let renderer = self.gpu.borrow_mut().take();
+                drop(renderer);
+                if generation != *self.stage_generation.borrow()
+                    || cancelled(abort)
+                    || self.status.is_disposed()
+                {
+                    return Ok(());
+                }
                 self.gpu_visible.set(false);
-                self.gpu.borrow_mut().take();
                 self.gpu_status
                     .set("Browser AVC verified frame · GPU device released".into());
                 self.orientation.set(1);
@@ -2271,7 +2381,7 @@ impl Ui {
                 self.focus_value.set(decoded.lambda);
                 self.displayed_derivative.set(None);
                 let old = self.stage.get_untracked();
-                self.stage.set(decoded.image);
+                self.stage.set(display.transfer());
                 if old.starts_with("blob:") {
                     let _ = web_sys::Url::revoke_object_url(&old);
                 }
@@ -2297,8 +2407,7 @@ impl Ui {
             &files.iter().map(|f| f.size() as u64).collect::<Vec<_>>(),
         )
         .map_err(str::to_owned)?;
-        self.clear_assets();
-        let generation = *self.generation.borrow();
+        let generation = self.clear_assets();
         let metadata_abort =
             AbortController::new().map_err(|_| "Browser cancellation unavailable")?;
         let metadata_lease = self.net.lease(VIEWER_BUDGET, &metadata_abort).await?;
@@ -2662,7 +2771,7 @@ fn Workspace() -> impl IntoView {
                     <canvas id="gpu-stage" role="img" aria-label="Verified stored derivative GPU presentation" style:display=move||if gpu_visible.get(){"block"}else{"none"} style="max-width:100%;max-height:100%;object-fit:contain"/>
                 </div><div class="focus-controls"><label for="gpu-quality">"Preview resolution cap"</label><select id="gpu-quality" prop:value=move||gpu_quality.get().to_string() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){gpu_quality.set(value);let u=ui();if u.gpu_enabled.get_untracked(){u.request_selected(SelectedIntent::Focus(u.focus_value.get_untracked()));}}}><option value="512">"512 · default"</option><option value="256">"256 · reduced"</option></select><output id="gpu-status" aria-live="polite">{move||gpu_status.get()}</output><button disabled=move||detail.get().is_none_or(|d|!d.originals.iter().any(|f|f.role==OriginalRole::RefocusStack)) on:click=move |_|{let u=ui();u.request_selected(SelectedIntent::Video(0));}>"Try browser H.264 refocus"</button><label for="focus">"Discrete focus · nearest stored plane"</label><input id="focus" type="range" min=move||video_lambdas.get().into_iter().reduce(f64::min).or_else(||focus_stack.get().map(|s|s.lambdas[0])).unwrap_or(0.0) max=move||video_lambdas.get().into_iter().reduce(f64::max).or_else(||focus_stack.get().map(|s|*s.lambdas.last().unwrap())).unwrap_or(1.0) step="any" prop:value=move||focus_value.get() disabled=move||export_busy.get()||(focus_stack.get().is_none()&&video_lambdas.get().is_empty()) aria-valuetext=move||if !video_lambdas.get().is_empty(){let values=video_lambdas.get();let i=lytronaut_format::annex_b::nearest_lambda(&values,focus_value.get()).unwrap_or(0);format!("Archived video plane {}, lambda {}",i+1,values[i])}else{focus_stack.get().map(|s|format!("Stored plane {}, lambda {}",s.nearest(focus_value.get()).unwrap_or(0)+1, s.lambdas[s.nearest(focus_value.get()).unwrap_or(0)])).unwrap_or_else(||"Preview only; browser H.264 focus is unverified".into())} on:input=move|e|{if let Ok(value)=event_target_value(&e).parse(){let u=ui();u.request_selected(SelectedIntent::Focus(value));}}/><output for="focus">{move||if !video_label.get().is_empty(){video_label.get()}else{displayed_derivative.get().map(|d|format!("Displayed: {} × {} source · plane {} · relative lambda {} · EXIF {} · lossy JPEG",d.source_dimensions.width,d.source_dimensions.height,d.plane_index+1,d.lambda,d.orientation)).unwrap_or_else(||"Preview only · H.264 browser verification pending".into())}}</output><label for="orientation">"Explicit derivative EXIF orientation"</label><select id="orientation" prop:value=move||orientation.get().to_string() disabled=move||export_busy.get()||focus_stack.get().is_none()||!video_lambdas.get().is_empty() on:change=move|e|{if let Ok(value)=event_target_value(&e).parse(){orientation.set(value);let u=ui();u.request_selected(SelectedIntent::Focus(focus_value.get_untracked()));}}>{(1..=8).map(|n|view!{<option value=n.to_string()>{n}</option>}).collect_view()}</select><p>"Processed recipe may be baked. Default identity; imported orientation, aperture, perspective, tone, denoise and animation are preserved only."</p></div><div class="viewer-strip"><button on:click=move |_|ui().navigate(-1) disabled=move||captures.get().is_empty()>"Previous capture"</button><span>{move||detail.get().map(|d|format!("{}{}",d.capture.name,if d.capture.name_truncated{" [truncated]"}else{""})).unwrap_or_else(||"No capture selected".into())}</span><button on:click=move |_|ui().navigate(1) disabled=move||captures.get().is_empty()>"Next capture"</button><button on:click=move |_|{if let Some(d)=detail.get_untracked(){let u=ui();u.request_selected(SelectedIntent::Capture(d.capture.id));}}>"Retry preview"</button></div></section>
                 <div class="lower"><section class="browser-panel" aria-label="Capture grid and filmstrip"><h2>"Captures"</h2><div class="capture-grid">
-                    {move||captures.get().iter().cloned().map(|capture|{let id=capture.id.as_str().to_owned();let thumb_id=StoredValue::new(id.clone());let selected_id=capture.id.clone();let click_id=capture.id.clone();view!{<button class="capture" aria-pressed=move||if detail.get().is_some_and(|d|d.capture.id==selected_id){"true"}else{"false"} on:click=move |_|{let u=ui();u.request_selected(SelectedIntent::Capture(click_id.clone()));}><Show when=move||thumbs.with(|thumbs|thumbs.get(&id).is_some_and(|u|u.starts_with("data:image/jpeg"))) fallback=||view!{<div class="thumb-empty">"◉"</div>}><img src=move||thumbs.with(|thumbs|thumbs.get(&thumb_id.get_value()).cloned().unwrap_or_default()) alt=""/></Show><span>{format!("{}{}",capture.name,if capture.name_truncated{" [truncated]"}else{""})}</span></button>}}).collect_view()}
+                    {move||captures.get().iter().cloned().map(|capture|{let id=capture.id.as_str().to_owned();let thumb_id=StoredValue::new(id.clone());let selected_id=capture.id.clone();let click_id=capture.id.clone();view!{<button class="capture" aria-pressed=move||if detail.get().is_some_and(|d|d.capture.id==selected_id){"true"}else{"false"} on:click=move |_|{let u=ui();u.request_selected(SelectedIntent::Capture(click_id.clone()));}><Show when=move||thumbs.with(|thumbs|thumbs.get(&id).and_then(Thumbnail::jpeg).is_some()) fallback=||view!{<div class="thumb-empty">"◉"</div>}><img src=move||thumbs.with(|thumbs|thumbs.get(&thumb_id.get_value()).and_then(Thumbnail::jpeg).cloned().unwrap_or_default()) alt=""/></Show><span>{format!("{}{}",capture.name,if capture.name_truncated{" [truncated]"}else{""})}</span></button>}}).collect_view()}
                 </div><nav class="filmstrip" aria-label="Capture filmstrip">{move||captures.get().iter().cloned().enumerate().map(|(i,capture)|{let id=capture.id;view!{<button aria-label=format!("Select capture {}: {}",offset.get_untracked() as usize+i+1,capture.name) on:click=move |_|{let u=ui();u.request_selected(SelectedIntent::Capture(id.clone()));}>{i+1}</button>}}).collect_view()}</nav>
                 <div class="pagination"><button disabled=move||offset.get()==0 on:click=move |_|{let u=ui();u.request_page(offset.get_untracked().saturating_sub(PAGE_SIZE));}>"Previous page"</button><span>{move||format!("Page {}",offset.get()/PAGE_SIZE+1)}</span><button disabled=move||next.get().is_none() on:click=move |_|{let u=ui();u.request_page(next.get_untracked().unwrap_or(0));}>"Next page"</button></div>
                 <Show when=move||!files.get().is_empty()><h2>"Preserved library files"</h2><ul>{move||file_links(files.get())}</ul></Show>

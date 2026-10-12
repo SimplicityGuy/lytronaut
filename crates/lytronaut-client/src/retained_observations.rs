@@ -73,11 +73,11 @@ impl<T: Owned> Owned for Option<T> {
 impl Owned for f64 {
     fn visit(&self, _i: &mut Inventory) {}
 }
-impl Owned for std::collections::BTreeMap<String, String> {
+impl<T: Owned> Owned for std::collections::BTreeMap<String, T> {
     fn visit(&self, i: &mut Inventory) {
         for (key, value) in self {
             i.string(key);
-            i.string(value);
+            value.visit(i);
         }
     }
 }
