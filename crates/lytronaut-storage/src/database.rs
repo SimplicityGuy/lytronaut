@@ -184,6 +184,15 @@ pub fn supported_postgres_version(server_version_num: &str) -> bool {
         .is_ok_and(|version| (180_000..190_000).contains(&version))
 }
 
+/// The startup decision for a connected server's reported `server_version_num`.
+fn require_supported_postgres(server_version_num: &str) -> Result<(), DatabaseError> {
+    if supported_postgres_version(server_version_num) {
+        Ok(())
+    } else {
+        Err(DatabaseError::UnsupportedServer)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ApplicationDatabase {
     pub(crate) pool: AnyPool,
@@ -307,9 +316,9 @@ impl ApplicationDatabase {
                     .fetch_one(&pool)
                     .await
                     .map_err(|_| DatabaseError::Connection)?;
-            if !supported_postgres_version(&version) {
+            if let Err(error) = require_supported_postgres(&version) {
                 pool.close().await;
-                return Err(DatabaseError::UnsupportedServer);
+                return Err(error);
             }
         }
         Ok(Self {
@@ -592,6 +601,14 @@ mod tests {
         }
         for unsupported in ["170011", "190000", "90624", "", "18.6", "-180006"] {
             assert!(!supported_postgres_version(unsupported));
+        }
+        // The startup refusal path for servers reporting another release.
+        assert_eq!(require_supported_postgres("180006"), Ok(()));
+        for reported in ["170011", "190000", "not-a-version"] {
+            assert_eq!(
+                require_supported_postgres(reported),
+                Err(DatabaseError::UnsupportedServer)
+            );
         }
         let message = DatabaseError::UnsupportedServer.to_string();
         assert_eq!(
