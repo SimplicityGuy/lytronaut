@@ -80,3 +80,27 @@ jobs:
       # the exact-count suite and removes the container and its volume.
       - name: Actual PostgreSQL storage, Desktop, HTTP and portable backup parity
         run: mise exec -- just postgres-parity
+  large-bundle:
+    name: large-bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup
+      # The proof writes about 9 GiB of real bundle and restored bytes; use
+      # whichever runner filesystem has the most free space.
+      - name: Choose the largest scratch disk
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/lytronaut-large
+          sudo chown "$(id -u):$(id -g)" /mnt/lytronaut-large
+          mnt=$(df --output=avail -B1 /mnt/lytronaut-large | tail -1)
+          tmp=$(df --output=avail -B1 "$RUNNER_TEMP" | tail -1)
+          if [ "$mnt" -gt "$tmp" ]; then scratch=/mnt/lytronaut-large; else scratch="$RUNNER_TEMP"; fi
+          echo "TMPDIR=$scratch" >> "$GITHUB_ENV"
+      - name: Portable bundle beyond 4 GiB round trip with exact hashes
+        run: mise exec -- just large-bundle-test
