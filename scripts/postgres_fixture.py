@@ -31,12 +31,18 @@ def pinned_image():
     return match.group(1), int(match.group(2)) * 10000 + int(match.group(3))
 
 
-def docker(*args, stdin=None, check=True, timeout=TIMEOUT, env=None):
+def docker(*args, stdin=None, check=True, timeout=TIMEOUT, env=None, secrets_=()):
     result = subprocess.run(["docker", *args], input=stdin, text=True, capture_output=True,
                             timeout=timeout, env=env)
     if check and result.returncode:
-        # Never echo SQL input; it may contain a generated password.
-        raise SystemExit(f"docker {args[0]} failed: {result.stderr.strip()[:500]}")
+        # Never echo SQL input: psql error context quotes the failing statement,
+        # which may contain a generated password.
+        detail = result.stderr.strip()[:500]
+        if stdin is not None:
+            detail = "statement output withheld"
+        for value in secrets_:
+            detail = detail.replace(value, "[redacted]")
+        raise SystemExit(f"docker {args[0]} failed: {detail}")
     return result.stdout
 
 
@@ -101,7 +107,8 @@ class PostgresFixture:
                 f"GRANT SELECT ON public.lytronaut_parity_sentinel TO {self.role};",
             ]
         docker("exec", "-i", self.name, "psql", "--no-psqlrc", "--quiet", "-v", "ON_ERROR_STOP=1",
-               "-U", "postgres", "-d", self.database, stdin="\n".join(sql) + "\n")
+               "-U", "postgres", "-d", self.database, stdin="\n".join(sql) + "\n",
+               secrets_=(self.password,))
         actual = self.superuser_sql("SHOW server_version_num").strip()
         if actual != str(self.version_num):
             raise SystemExit(f"unexpected PostgreSQL server_version_num {actual}; pinned {self.version_num}")

@@ -90,6 +90,14 @@ class Project:
         return docker("compose", "--project-directory", str(ROOT), "--env-file", str(EMPTY_ENV),
                       "-p", self.name, *files, *args, env={**self.env, **(env or {})}, **kwargs)
 
+    def stream(self, *args, stdin=None, stdout=None, timeout=600):
+        """Binary stdin/stdout passthrough (for pg_dump/pg_restore through `exec -T`)."""
+        files = sum((["-f", str(f)] for f in self.files), [])
+        result = subprocess.run(["docker", "compose", "--project-directory", str(ROOT), "--env-file", str(EMPTY_ENV),
+                                 "-p", self.name, *files, *args], stdin=stdin, stdout=stdout,
+                                stderr=subprocess.PIPE, env=self.env, timeout=timeout)
+        assert result.returncode == 0, (args[:4], result.stderr[-1000:])
+
     def up(self, extra=(), env=None, recreate=False):
         self.started = True
         self.compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "300",
@@ -348,7 +356,8 @@ def main():
         app_password = secrets.token_hex(16) + "%@:/?#&'\" +"
         bootstrap_password = secrets.token_hex(24)
         SENSITIVE.extend([app_password, bootstrap_password, app_password.split("%")[0]])
-        write_secret(secrets_dir, "lytronaut-database-password", app_password, f"{APP_UID}:{PG_UID}", "0440")
+        # CRLF ending: the application reader and the role bootstrap must both strip it.
+        write_secret(secrets_dir, "lytronaut-database-password", app_password + "\r\n", f"{APP_UID}:{PG_UID}", "0440")
         write_secret(secrets_dir, "postgres-bootstrap-password", bootstrap_password, f"{PG_UID}:{PG_UID}", "0400")
         postgres_env = storage_env("postgres", extra=("postgres",))
         postgres = Project("postgres", [ROOT / "compose.yaml", ROOT / "compose.postgres.yaml"],
@@ -378,35 +387,65 @@ def main():
         checked(f"PostgreSQL {version} Compose: healthy restricted role, owned schema only, synthetic import")
         host_permissions(postgres_env)
         persistent_restarts(postgres, ["lytronaut", "postgres"])
+        checked("bundled PostgreSQL and the application both accept a CRLF-terminated password secret")
+        # Compose-controlled PostgreSQL restart restarts the dependent application.
+        application = postgres.container()
+        started = json.loads(docker("inspect", application))[0]["State"]["StartedAt"]
         postgres.compose("restart", "postgres", timeout=240)
+        restarted = json.loads(docker("inspect", application))[0]["State"]["StartedAt"]
+        assert restarted != started, "application was not restarted with PostgreSQL"
         postgres.up()
         assert postgres.client().ready().snapshot() == ACTIVE[postgres.name]
-        checked("PostgreSQL restart: dependent application restarted and reconnected")
+        checked("Compose restart of PostgreSQL restarted the dependent application, which reconnected")
+        # Engine-level crash: the postmaster dies without Compose; the restart policy
+        # brings PostgreSQL back and the running application reconnects by itself.
+        database = postgres.container("postgres")
+        application_started = json.loads(docker("inspect", application))[0]["State"]["StartedAt"]
+        # The exec may itself be cut off when the container's main process exits.
+        docker("exec", database, "pg_ctl", "stop", "-m", "immediate", "-D", "/var/lib/postgresql/18/docker",
+               check=False)
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            info = json.loads(docker("inspect", database))[0]
+            if info["RestartCount"] >= 1 and info["State"].get("Health", {}).get("Status") == "healthy":
+                break
+            time.sleep(1)
+        else:
+            raise AssertionError("PostgreSQL was not restarted after an engine crash")
+        assert postgres.client().ready().snapshot() == ACTIVE[postgres.name]
+        # Record, rather than assume, whether recovery needed an application restart.
+        in_place = json.loads(docker("inspect", application))[0]["State"]["StartedAt"] == application_started
+        report["applicationReconnectedInPlaceAfterEngineCrash"] = in_place
+        checked("PostgreSQL engine crash: restart policy recovered it and the application serves the catalog "
+                + ("(reconnected in place)" if in_place else "(after its own restart)"))
         postgres_bundle = postgres.client().ready().backup()
 
-        # Documented operational backup: stopped application, pg_dump, restore as the role.
-        def superuser(statement, database="lytronaut"):
-            return docker("exec", postgres.container("postgres"), "psql", "--no-psqlrc", "-v", "ON_ERROR_STOP=1",
-                          "-U", "postgres", "-d", database, "-Atqc", statement).strip()
+        # Documented recovery, literally: stop the application, pg_dump through
+        # `exec -T`, lose the PostgreSQL location, start a fresh cluster, drop its
+        # empty bootstrap schema, pg_restore as the role through `exec -T`, start.
+        dump = SCRATCH / "lytronaut-catalog.dump"
         postgres.compose("stop", "lytronaut", timeout=120)
-        pg = postgres.container("postgres")
-        docker("exec", pg, "pg_dump", "-U", "postgres", "-d", "lytronaut", "--format=custom", "-f", "/tmp/catalog.dump")
-        superuser("CREATE DATABASE lytronaut_recovery")
-        superuser("REVOKE ALL ON DATABASE lytronaut_recovery FROM PUBLIC; "
-                  "GRANT CONNECT, CREATE, TEMPORARY ON DATABASE lytronaut_recovery TO lytronaut")
-        docker("exec", pg, "pg_restore", "-U", "postgres", "-d", "lytronaut_recovery", "--no-owner", "--no-acl",
-               "--role=lytronaut", "--exit-on-error", "/tmp/catalog.dump")
-        tables = superuser("SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname='lytronaut'")
-        assert tables and superuser("SELECT nspowner::regrole FROM pg_namespace WHERE nspname='lytronaut'",
-                                    "lytronaut_recovery") == "lytronaut"
-        for table in tables.split(","):
-            query = f"SELECT count(*) FROM lytronaut.{table}"
-            assert superuser(query) == superuser(query, "lytronaut_recovery"), table
-        superuser("DROP DATABASE lytronaut_recovery")
-        docker("exec", pg, "rm", "/tmp/catalog.dump")
+        with open(dump, "wb") as out:
+            postgres.stream("exec", "-T", "postgres", "pg_dump", "-U", "postgres", "-d", "lytronaut",
+                            "--format=custom", stdout=out)
+        assert dump.stat().st_size > 0
+        postgres.compose("down", "--timeout", "60", timeout=240)
+        if storage == "bind":
+            as_root(SCRATCH / "postgres", f"rm -rf /x/postgres && install -d -m 0700 -o {PG_UID} -g {PG_UID} /x/postgres")
+        else:
+            docker("volume", "rm", f"{postgres.name}_postgres")
+        postgres.compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "300", "postgres", timeout=420)
+        postgres.compose("exec", "-T", "postgres", "psql", "--no-psqlrc", "-v", "ON_ERROR_STOP=1",
+                         "-U", "postgres", "-d", "lytronaut", "-c", "DROP SCHEMA lytronaut")
+        with open(dump, "rb") as source:
+            postgres.stream("exec", "-T", "postgres", "pg_restore", "-U", "postgres", "-d", "lytronaut",
+                            "--no-owner", "--no-acl", "--role=lytronaut", "--exit-on-error", stdin=source)
         postgres.up()
         assert postgres.client().ready().snapshot() == ACTIVE[postgres.name]
-        checked("pg_dump of the stopped application restored as the restricted role with identical row counts")
+        owner = postgres.compose("exec", "-T", "postgres", "psql", "--no-psqlrc", "-U", "postgres", "-d", "lytronaut",
+                                 "-Atqc", "SELECT nspowner::regrole FROM pg_namespace WHERE nspname='lytronaut'").strip()
+        assert owner == "lytronaut", owner
+        checked("documented pg_dump/pg_restore recovery onto a fresh bundled cluster; application browses it")
 
         # Misconfiguration fails closed without exposing the credential or URL.
         wrong = SCRATCH / "wrong-password"
@@ -467,6 +506,28 @@ def main():
         public = fixture.superuser_sql("SELECT count(*) FROM pg_tables WHERE schemaname='public'").strip()
         assert (sentinel, public) == ("synthetic-persistence-parity", "1"), (sentinel, public)
         checked("external PostgreSQL by credential-free URL + secret file: import, restarts, restore; public untouched")
+        # Documented external recovery: dump, prepare an empty database (role and
+        # grants, no schema), restore as the role, point the URL at it and start.
+        external.compose("stop", "lytronaut", timeout=120)
+        dump = SCRATCH / "external-catalog.dump"
+        with open(dump, "wb") as out:
+            result = subprocess.run(["docker", "exec", fixture.name, "pg_dump", "-U", "postgres", "-d", "lytronaut",
+                                     "--format=custom"], stdout=out, stderr=subprocess.PIPE, timeout=600)
+        assert result.returncode == 0 and dump.stat().st_size > 0, result.stderr[-500:]
+        fixture.superuser_sql("CREATE DATABASE lytronaut_recovered")
+        docker("exec", fixture.name, "psql", "--no-psqlrc", "-v", "ON_ERROR_STOP=1", "-U", "postgres",
+               "-d", "lytronaut_recovered", "-c", "REVOKE CREATE ON SCHEMA public FROM PUBLIC",
+               "-c", "REVOKE ALL ON DATABASE lytronaut_recovered FROM PUBLIC",
+               "-c", "GRANT CONNECT, CREATE, TEMPORARY ON DATABASE lytronaut_recovered TO lytronaut")
+        with open(dump, "rb") as source:
+            result = subprocess.run(["docker", "exec", "-i", fixture.name, "pg_restore", "-U", "postgres",
+                                     "-d", "lytronaut_recovered", "--no-owner", "--no-acl", "--role=lytronaut",
+                                     "--exit-on-error"], stdin=source, stderr=subprocess.PIPE, timeout=600)
+        assert result.returncode == 0, result.stderr[-500:]
+        recovered_url = fixture.url(host=fixture.name, password=False).replace("/lytronaut?", "/lytronaut_recovered?")
+        external.up(env={"LYTRONAUT_DATABASE_URL": recovered_url}, recreate=True)
+        assert external.client().ready().snapshot() == ACTIVE[external.name]
+        checked("documented external pg_dump/pg_restore recovery into an empty database; application browses it")
 
         redaction_audit(projects)
         out = pathlib.Path(output)
