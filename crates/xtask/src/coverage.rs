@@ -31,6 +31,162 @@ const NATIVE_GATE: &[&str] = &[
 ];
 /// Crate measured by the WASM gate: all browser-only first-party code.
 const WASM_GATE: &[&str] = &["lytronaut-client"];
+/// Owner-approved exception (2026-10-13, lytronaut-cjq): "if we can't hit 95% on
+/// gpu specific tests, that's fine". GPU-specific WebGPU code is still measured and
+/// reported on its own row, but removed from the WASM(client) and union gate
+/// denominators and numerators. Native is unaffected. Shared non-GPU logic (for
+/// example model.rs or generic browser flows) can never be listed here.
+const GPU_EXEMPTION_APPROVAL: &str = "Owner-approved GPU-specific exception, 2026-10-13 (lytronaut-cjq); GPU rendering is verified by the physical-GPU reference host, not by this line gate";
+struct GpuExemption {
+    path: &'static str,
+    /// `None` exempts the whole file (only allowed for the dedicated GPU module).
+    function: Option<&'static str>,
+    /// Exempt only the GPU-only block that starts on the line equal to this
+    /// marker (including indentation) inside `function`; it must be unique there.
+    block: Option<&'static str>,
+    reason: &'static str,
+}
+const GPU_EXEMPTIONS: &[GpuExemption] = &[
+    GpuExemption {
+        path: "crates/lytronaut-client/src/gpu.rs",
+        function: None,
+        block: None,
+        reason: "WebGPU renderer: adapter/device acquisition, pipeline, texture upload, presentation and device-loss tracking",
+    },
+    GpuExemption {
+        path: "crates/lytronaut-client/src/browser.rs",
+        function: Some("gpu_identity"),
+        block: None,
+        reason: "fetches and verifies the derivative uploaded to the WebGPU renderer",
+    },
+    GpuExemption {
+        path: "crates/lytronaut-client/src/browser.rs",
+        function: Some("present_gpu"),
+        block: None,
+        reason: "acquires the WebGPU renderer and presents a verified frame, CPU fallback on failure",
+    },
+    GpuExemption {
+        path: "crates/lytronaut-client/src/browser.rs",
+        function: Some("watch_gpu"),
+        block: None,
+        reason: "polls the WebGPU renderer for device loss and switches to CPU presentation",
+    },
+    GpuExemption {
+        path: "crates/lytronaut-client/src/browser.rs",
+        function: Some("change_focus"),
+        block: Some(
+            "                if generation == *self.stage_generation.borrow() && self.gpu_enabled.get_untracked()",
+        ),
+        reason: "hands a verified focus plane to the WebGPU renderer when GPU presentation is active",
+    },
+    GpuExemption {
+        path: "crates/lytronaut-client/src/browser.rs",
+        function: Some("change_focus"),
+        block: Some("                if self.gpu_enabled.get_untracked() {"),
+        reason: "releases the WebGPU renderer after a rejected focus derivative",
+    },
+    GpuExemption {
+        path: "crates/lytronaut-client/src/browser.rs",
+        function: Some("change_video"),
+        block: Some("        if self.gpu_visible.get_untracked() {"),
+        reason: "keeps the WebGPU device-loss watcher running during video decode",
+    },
+];
+/// The only files an exemption may name, and the only whole-file exemption.
+const GPU_EXEMPTION_FILES: &[&str] = &[
+    "crates/lytronaut-client/src/gpu.rs",
+    "crates/lytronaut-client/src/browser.rs",
+    "crates/lytronaut-client/src/video.rs",
+];
+const GPU_WHOLE_FILE: &str = "crates/lytronaut-client/src/gpu.rs";
+/// Ceiling on exempt source lines. Growth of the exempt code beyond the approved
+/// baseline fails the gate until this reviewed constant is changed.
+const GPU_EXEMPT_SOURCE_LINE_CEILING: usize = 646;
+
+/// Resolve the approved exemption list to line ranges, failing closed on any
+/// entry that is missing, ambiguous, not GPU-specific or outside the allowed files.
+type ExemptLines = BTreeMap<String, BTreeSet<usize>>;
+fn gpu_exemptions(root: &Path) -> Result<(ExemptLines, Vec<Value>)> {
+    let mut lines = ExemptLines::new();
+    let mut listed = Vec::new();
+    let mut total = 0;
+    for entry in GPU_EXEMPTIONS {
+        if !GPU_EXEMPTION_FILES.contains(&entry.path) {
+            return Err(format!("GPU exemption names a non-GPU file: {}", entry.path).into());
+        }
+        let source = fs::read_to_string(root.join(entry.path))?;
+        let (start, end) = match entry.function {
+            None => {
+                if entry.path != GPU_WHOLE_FILE || !source.contains("wgpu::") {
+                    return Err(format!(
+                        "whole-file GPU exemption must be the WebGPU module: {}",
+                        entry.path
+                    )
+                    .into());
+                }
+                (1, source.lines().count())
+            }
+            Some(function) => {
+                let ranges = rust_source::function_lines(&source, function)?;
+                let [(start, end)] = ranges[..] else {
+                    return Err(format!(
+                        "GPU exemption {}::{function} must name exactly one function (found {})",
+                        entry.path,
+                        ranges.len()
+                    )
+                    .into());
+                };
+                let (start, end) = match entry.block {
+                    None => (start, end),
+                    Some(marker) => {
+                        let hits: Vec<usize> = source
+                            .lines()
+                            .enumerate()
+                            .skip(start - 1)
+                            .take(end - start + 1)
+                            .filter(|(_, line)| line.trim_end() == marker)
+                            .map(|(i, _)| i + 1)
+                            .collect();
+                        let [line] = hits[..] else {
+                            return Err(format!(
+                                "GPU exemption block {marker:?} must occur exactly once in {}::{function} (found {})",
+                                entry.path,
+                                hits.len()
+                            )
+                            .into());
+                        };
+                        rust_source::block_lines(&source, line)?
+                    }
+                };
+                let body: String = source
+                    .lines()
+                    .skip(start - 1)
+                    .take(end - start + 1)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !body.to_ascii_lowercase().contains("gpu") {
+                    return Err(format!(
+                        "GPU exemption {}::{function} does not reference GPU code",
+                        entry.path
+                    )
+                    .into());
+                }
+                (start, end)
+            }
+        };
+        total += end - start + 1;
+        lines
+            .entry(entry.path.to_owned())
+            .or_default()
+            .extend(start..=end);
+        listed.push(json!({"path": entry.path, "function": entry.function, "block": entry.block, "start": start, "end": end, "reason": entry.reason}));
+    }
+    if total > GPU_EXEMPT_SOURCE_LINE_CEILING {
+        return Err(format!("GPU-exempt source grew to {total} lines (approved ceiling {GPU_EXEMPT_SOURCE_LINE_CEILING}); review the exemption list").into());
+    }
+    Ok((lines, listed))
+}
+
 /// First-party tooling crates: reported separately, never in a denominator.
 const TOOLING: &[&str] = &["xtask", "lytronaut-coverage"];
 
@@ -147,6 +303,10 @@ impl Tally {
     }
 }
 
+fn with_exempt(mut total: Tally, exempt: Tally) -> Tally {
+    total.add(exempt);
+    total
+}
 fn tally(lines: &BTreeMap<usize, u64>) -> Tally {
     Tally {
         lines: lines.len(),
@@ -188,12 +348,16 @@ struct FileResult {
     native: Tally,
     wasm: Tally,
     union: BTreeMap<usize, u64>,
+    /// GPU-exempt WASM and union lines, measured but outside the WASM/union gates.
+    exempt_wasm: Tally,
+    exempt_union: Tally,
 }
 
 pub fn run(args: &[String]) -> Result<()> {
     let args = parse_args(args)?;
     let root = PathBuf::from(git(&["rev-parse", "--show-toplevel"])?).canonicalize()?;
     let inventory = rust_source::inventory(&root)?;
+    let (gpu_exempt, gpu_listed) = gpu_exemptions(&root)?;
     let (native_map, native_external) = parse_lcov(&args.native, &root)?;
     let mut wasm_builds = Vec::new();
     let mut wasm_map = LineMap::new();
@@ -294,12 +458,23 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         let mut union = native_lines.clone();
         merge_into(&mut union, &wasm_lines);
+        let exempt = gpu_exempt.get(&file.path).cloned().unwrap_or_default();
+        let split = |lines: &BTreeMap<usize, u64>| -> (BTreeMap<usize, u64>, BTreeMap<usize, u64>) {
+            lines
+                .iter()
+                .map(|(n, c)| (*n, *c))
+                .partition(|(n, _)| !exempt.contains(n))
+        };
+        let (wasm_kept, wasm_exempt) = split(&wasm_lines);
+        let (union_kept, union_exempt) = split(&union);
         results.push(FileResult {
             path: file.path.clone(),
             krate: file.krate.clone(),
             native: tally(&native_lines),
-            wasm: tally(&wasm_lines),
-            union,
+            wasm: tally(&wasm_kept),
+            union: union_kept,
+            exempt_wasm: tally(&wasm_exempt),
+            exempt_union: tally(&union_exempt),
         });
     }
 
@@ -308,10 +483,14 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut union_total = Tally::default();
     let mut client_native = Tally::default();
     let mut shared_wasm = Tally::default();
+    let mut exempt_wasm = Tally::default();
+    let mut exempt_union = Tally::default();
     let mut crates: BTreeMap<String, (Tally, Tally, Tally)> = BTreeMap::new();
     for result in &results {
         let union = tally(&result.union);
         union_total.add(union);
+        exempt_wasm.add(result.exempt_wasm);
+        exempt_union.add(result.exempt_union);
         if NATIVE_GATE.contains(&result.krate.as_str()) {
             native_total.add(result.native);
         } else {
@@ -397,7 +576,10 @@ pub fn run(args: &[String]) -> Result<()> {
         "source": {"git_head": head, "worktree_dirty": dirty, "cargo_lock_sha256": sha256(&root.join("Cargo.lock"))?},
         "floors": {"native": NATIVE_FLOOR, "wasm": WASM_FLOOR, "union": UNION_FLOOR},
         "totals": {"native": native_total.json(), "wasm_client": wasm_total.json(), "union": union_total.json(),
-            "informational": {"client_native": client_native.json(), "shared_crates_wasm": shared_wasm.json()}},
+            "informational": {"client_native": client_native.json(), "shared_crates_wasm": shared_wasm.json()},
+            "without_gpu_exemption": {"wasm_client": with_exempt(wasm_total, exempt_wasm).json(), "union": with_exempt(union_total, exempt_union).json()}},
+        "gpu_exemption": {"approval": GPU_EXEMPTION_APPROVAL, "ceiling_source_lines": GPU_EXEMPT_SOURCE_LINE_CEILING,
+            "wasm": exempt_wasm.json(), "union": exempt_union.json(), "ranges": gpu_listed},
         "crates": crates.iter().map(|(k, (n, w, u))| json!({"crate": k, "native": n.json(), "wasm": w.json(), "union": u.json()})).collect::<Vec<_>>(),
         "files": results.iter().map(|r| json!({"path": r.path, "crate": r.krate, "native": r.native.json(), "wasm": r.wasm.json(), "union": tally(&r.union).json(),
             "uncovered_union_lines": r.union.iter().filter(|(_, c)| **c == 0).map(|(n, _)| *n).collect::<Vec<_>>()})).collect::<Vec<_>>(),
@@ -422,10 +604,31 @@ pub fn run(args: &[String]) -> Result<()> {
         md.push_str(&format!("| {name} | {} | {floor}% |\n", total.cell()));
     }
     md.push_str(&format!(
+        "| GPU-specific (exempt) | WASM {} · union {} | not gated |\n",
+        exempt_wasm.cell(),
+        exempt_union.cell()
+    ));
+    md.push_str(&format!(
+        "\nWithout the GPU exemption: WASM(client) {} · union {}\n",
+        with_exempt(wasm_total, exempt_wasm).cell(),
+        with_exempt(union_total, exempt_union).cell()
+    ));
+    md.push_str(&format!(
         "\nInformational (not gated): lytronaut-client native {} · format/contracts in WASM {}\n",
         client_native.cell(),
         shared_wasm.cell()
     ));
+    md.push_str(&format!("\n## GPU-specific exception\n\n{GPU_EXEMPTION_APPROVAL}.\n\n| File | Function | Lines | Reason |\n|---|---|---|---|\n"));
+    for e in &gpu_listed {
+        md.push_str(&format!(
+            "| {} | {} | {}-{} | {} |\n",
+            e["path"].as_str().unwrap_or(""),
+            e["function"].as_str().unwrap_or("(whole file)"),
+            e["start"],
+            e["end"],
+            e["reason"].as_str().unwrap_or("")
+        ));
+    }
     if !failures.is_empty() {
         md.push_str("\n## Failures\n\n");
         for failure in report["failures"].as_array().into_iter().flatten() {
@@ -524,10 +727,14 @@ pub fn run(args: &[String]) -> Result<()> {
     )?;
     fs::write(args.out.join("coverage.md"), md)?;
     println!(
-        "native {} · wasm(client) {} · union {}",
+        "native {} · wasm(client) {} · union {} · GPU-exempt wasm {} union {} · without exemption wasm(client) {} union {}",
         native_total.cell(),
         wasm_total.cell(),
-        union_total.cell()
+        union_total.cell(),
+        exempt_wasm.cell(),
+        exempt_union.cell(),
+        with_exempt(wasm_total, exempt_wasm).cell(),
+        with_exempt(union_total, exempt_union).cell()
     );
     if failures.is_empty() {
         Ok(())

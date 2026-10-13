@@ -605,6 +605,45 @@ fn merge(mut ranges: Vec<Exclusion>) -> Vec<Exclusion> {
     merged
 }
 
+/// Inclusive line ranges of every `fn name` item in `source`.
+pub fn function_lines(source: &str, name: &str) -> Result<Vec<(usize, usize)>> {
+    let tokens = tokenize(source)?;
+    let mut ranges = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        if token.tok == Tok::Ident("fn".into())
+            && tokens.get(i + 1).map(|t| &t.tok) == Some(&Tok::Ident(name.into()))
+        {
+            let end = item_end(&tokens, i);
+            ranges.push((token.line, tokens[end].line));
+        }
+    }
+    Ok(ranges)
+}
+
+/// Inclusive lines of the first brace-delimited block that starts on or after
+/// `start_line` (for example an `if ... { }` statement).
+pub fn block_lines(source: &str, start_line: usize) -> Result<(usize, usize)> {
+    let tokens = tokenize(source)?;
+    let open = tokens
+        .iter()
+        .position(|t| t.line >= start_line && t.tok == Tok::Punct('{'))
+        .ok_or("no block after the marker")?;
+    let mut depth = 0usize;
+    for token in &tokens[open..] {
+        match token.tok {
+            Tok::Punct('{') => depth += 1,
+            Tok::Punct('}') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok((start_line, token.line));
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("unterminated block".into())
+}
+
 /// One first-party source file and how the measured builds compile it.
 #[derive(Debug)]
 pub struct SourceFile {
@@ -828,6 +867,14 @@ fn body() {
         assert!(scan.mods[0].excluded.is_some());
         assert_eq!(scan.mods[1].inline_path, vec!["a".to_owned()]);
         assert!(!scan.has_code);
+    }
+
+    #[test]
+    fn function_lines_cover_the_whole_body() {
+        let source = "impl A {\n    async fn present_gpu(&self) {\n        if x { y(); }\n    }\n    fn other() {}\n}\n";
+        assert_eq!(function_lines(source, "present_gpu").unwrap(), vec![(2, 4)]);
+        assert!(function_lines(source, "absent").unwrap().is_empty());
+        assert_eq!(block_lines(source, 3).unwrap(), (3, 3));
     }
 
     #[test]
