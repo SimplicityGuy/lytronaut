@@ -196,8 +196,9 @@ then carries no password. Compose mounts the file as a secret, so the password i
 not in `compose.yaml`, the image, the container environment, `docker inspect` or
 `docker compose config`. Startup and connection errors are fixed messages that
 never include the URL, password or file path. The file holds one line of 1 to
-1024 bytes without control characters (a single final LF or CRLF is ignored, by
-the application and by the bundled role bootstrap alike); a URL that already has a password
+1024 bytes of UTF-8 without control characters (Unicode Cc, including multi-byte
+C1 controls such as U+0085); a single final LF or CRLF is ignored. The application
+and the bundled role bootstrap apply exactly these rules; a URL that already has a password
 together with a password file is rejected as ambiguous. Compose outside Swarm
 ignores secret `uid`/`gid`/`mode`, so set them on the host file itself.
 
@@ -232,8 +233,9 @@ the restricted login role `lytronaut` (no superuser, create-database, create-rol
 replication or row-security bypass), revokes `CREATE` on `public`, grants
 `CONNECT, CREATE, TEMPORARY` on database `lytronaut` (database `CREATE` lets the
 application create isolated restore schemas), and creates schema `lytronaut`
-owned by that role. The script hands the password to `psql` from the secret file
-directly and keeps statements out of the server log. It never runs again on an
+owned by that role. PostgreSQL reads the secret file itself (`pg_read_file`), so
+the password is never in a command line, environment variable or SQL text, and
+statements are kept out of the server log. It never runs again on an
 initialized cluster: changing the secret file afterwards does not change the role
 password (use `ALTER ROLE lytronaut PASSWORD ...` as the superuser, then restart the
 application).
@@ -323,12 +325,15 @@ originals and work together:
 ```sh
 docker compose -f compose.yaml -f compose.postgres.yaml stop lytronaut
 docker compose -f compose.yaml -f compose.postgres.yaml exec -T postgres \
-  pg_dump -U postgres -d lytronaut --format=custom > lytronaut-catalog.dump
+  pg_dump -U postgres -d lytronaut --schema='lytronaut*' --format=custom > lytronaut-catalog.dump
 # snapshot LYTRONAUT_ORIGINALS_DIR, LYTRONAUT_WORK_DIR and LYTRONAUT_CATALOG_DIR now
 docker compose -f compose.yaml -f compose.postgres.yaml start lytronaut
 ```
 
-The dump includes isolated restore schemas. To recover the bundled service onto
+`--schema='lytronaut*'` dumps exactly the application's schemas: `lytronaut` and
+its isolated `lytronaut_restore_*` copies. Anything else in the database (for
+example administrator-owned objects in `public`) is not application data and
+could not be restored as the restricted role. To recover the bundled service onto
 an empty `LYTRONAUT_POSTGRES_DIR` (same secrets), put back the matching file
 snapshot, start only PostgreSQL so its one-time bootstrap recreates the role and
 an empty `lytronaut` schema, drop that empty schema (plain `DROP SCHEMA` refuses if
@@ -344,7 +349,11 @@ $C exec -T postgres pg_restore -U postgres -d lytronaut --no-owner --no-acl \
 $C up -d --no-build
 ```
 
-For an external server, dump with your administrator connection, prepare an empty
+For an external server, dump the same `--schema='lytronaut*'` with your
+administrator connection; because only the application's schemas are dumped,
+objects that administrators or other tools own in `public` (or elsewhere) neither
+enter the dump nor block the restore, so the procedure works on any PostgreSQL 18
+server. Prepare an empty
 database with the role and grants from [External PostgreSQL server](#external-postgresql-server)
 but without creating the schema, run the same `pg_restore ... --role=lytronaut`
 into it, and point `LYTRONAUT_DATABASE_URL` at that database. `just
@@ -424,8 +433,10 @@ path and an externally managed PostgreSQL configured only by URL and secret file
 imports a synthetic library; checks owners and modes, graceful stop, down/up and
 restart-policy restarts on the same storage, that a Compose restart of PostgreSQL
 restarts the application and that a PostgreSQL server crash is recovered, a
-CRLF-terminated password secret, the documented `pg_dump`/`pg_restore` recovery
-for the bundled and the external server (each browsed afterwards), fail-closed
+CRLF-terminated password secret, rejection of a multi-byte control character by
+both the application and the role bootstrap, the documented `pg_dump`/`pg_restore` recovery
+for the bundled and the external server (the external one beside an
+administrator-owned `public` table; each browsed afterwards), fail-closed
 redacted startup with a wrong or ambiguous password, and that no
 generated password appears in Compose configuration, container configuration,
 logs, the image or the report; and restores all four SQLite/PostgreSQL bundle
