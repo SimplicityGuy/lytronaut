@@ -214,6 +214,12 @@ CleanupPending, CleanupComplete (a cleanup was already decided and begun).
 | `failed`/`cancelled` | absent | none present | Release quota (nothing owned remains) |
 | `queued`/`running`/`cancelling` | absent | any | Mark interrupted, then as the `failed` rows above |
 
+Intentional behaviour change: a published result (FilesPublished) whose job has no
+recorded outcome used to be cleaned up at startup as an interrupted job. Because a
+database restored from an older snapshot looks exactly the same, it is now kept as
+unverified. After a crash between publication and the final status write the user
+therefore sees a retained, unready restore and removes it with `DELETE`.
+
 Every cell that can delete data requires either a recorded cancellation/DELETE or
 terminal failure (cancelled, failed, cleanup-blocked), a never-ready phase, or an
 already recorded cleanup decision. Without a journal nothing restore-owned is
