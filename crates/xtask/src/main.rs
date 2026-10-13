@@ -1,4 +1,7 @@
-//! Deterministic dependency boundary and redistribution evidence checks.
+//! Deterministic dependency boundary, redistribution evidence and coverage gate checks.
+mod coverage;
+mod rust_source;
+
 use serde_json::Value;
 use std::{
     collections::BTreeSet,
@@ -21,7 +24,8 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("boundaries") => boundaries(),
         Some("licenses") => licenses(args.iter().any(|a| a == "--write")),
-        _ => Err("usage: cargo run -p xtask -- boundaries|licenses [--write]".into()),
+        Some("coverage") => coverage::run(&args[1..]),
+        _ => Err("usage: cargo run -p xtask -- boundaries|licenses [--write]|coverage ...".into()),
     }
 }
 fn boundaries() -> Result<()> {
