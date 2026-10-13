@@ -47,7 +47,7 @@ async function integrity(after=false){
       res.setHeader('Content-Type',name.endsWith('.wasm')?'application/wasm':'text/javascript');fs.createReadStream(path.join(dist,name)).on('error',()=>res.destroy()).pipe(res);
     });
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin=`http://127.0.0.1:${server.address().port}`;
-    browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile'),protocolTimeout:3600000,args:['--disable-background-networking','--disable-component-update','--no-first-run']});
+    browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile'),protocolTimeout:3600000,args:['--disable-background-networking','--disable-component-update','--no-first-run']});
     const page=await browser.newPage();let pageErrors=0,externalRequests=0;page.on('pageerror',()=>pageErrors++);await page.setRequestInterception(true);
     page.on('request',request=>{if(request.method()!=='GET'||(!['data:','blob:'].includes(new URL(request.url()).protocol)&&new URL(request.url()).origin!==origin)){externalRequests++;request.abort().catch(()=>{});}else request.continue().catch(()=>{});});
     await page.goto(origin);await page.addScriptTag({url:origin+'/pair.js'});checkpoint='private-export';

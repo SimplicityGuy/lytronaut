@@ -46,7 +46,7 @@ async function verifySealed(after=false) {
   try {
     if(privateRoot){checkpoint='sealed-precheck';await verifySealed();}
     await new Promise(r=>server.listen(0,'127.0.0.1',r));
-    browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile')});
+    browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile')});
     const page=await browser.newPage();const errors=[];page.on('pageerror',()=>errors.push('pageerror'));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     checkpoint=privateRoot?'private-corpus':'public-codec';

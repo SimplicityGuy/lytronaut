@@ -17,6 +17,16 @@ const data=privateMode?root:path.join(root,'data');
 fs.mkdirSync(data,{recursive:true,mode:0o700});
 const server=process.env.LYTRONAUT_EXTERNAL_SERVER?{on(){},stderr:{on(){}},kill(){}}:spawn(binary,[],{cwd:process.cwd(),env:{...process.env,LYTRONAUT_DATA:data,LYTRONAUT_DATABASE:privateMode?'app.db':'catalog.db',LYTRONAUT_ORIGIN:origin,LYTRONAUT_LISTEN:new URL(origin).host},stdio:['ignore','ignore','pipe']});
 let serverFailure=false;server.stderr.on("data",d=>{if(!privateMode)process.stderr.write(d);});server.on('exit',code=>{if(code)serverFailure=true;});
+// The native service writes its LLVM profile (coverage builds) only on a normal
+// exit, so shutdown awaits the graceful SIGINT path instead of abandoning it.
+const serverExit=new Promise(resolve=>server.on('exit',(code,signal)=>resolve({code,signal})));
+const stopServer=async()=>{
+ if(process.env.LYTRONAUT_EXTERNAL_SERVER)return;
+ if(server.exitCode===null&&server.signalCode===null)server.kill('SIGINT');
+ let timer;const exit=await Promise.race([serverExit,new Promise(resolve=>{timer=setTimeout(()=>resolve(null),30000);})]);clearTimeout(timer);
+ if(!exit){server.kill('SIGKILL');throw Error('service did not exit within 30s of SIGINT');}
+ if(exit.signal||exit.code!==0)throw Error(`service exited uncleanly after SIGINT (code ${exit.code}, signal ${exit.signal})`);
+};
 let checkpoint='startup';
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 (async()=>{
@@ -24,7 +34,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
  try{
   const startupStart=Date.now();let ready=false;for(let i=0;i<1200;i++){try{if((await fetch(origin+'/healthz')).ok){ready=true;break;}}catch{}if(serverFailure)throw Error('test service startup failed');await delay(250);}assert(ready,'service must become healthy within 300s');const startupMs=Date.now()-startupStart;
   if(!privateMode)console.error("starting isolated Chrome");
-  browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1',userDataDir:path.join(root,'browser-profile-'+process.pid),args:[]});
+  browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1',userDataDir:path.join(root,'browser-profile-'+process.pid),args:[]});
   let page=await browser.newPage();
   const click=async text=>{await page.waitForFunction(text=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===text&&!b.disabled);if(!b)return false;b.click();return true;},{polling:50},text);};await page.setViewport({width:1440,height:1000});
   const instrument=async p=>p.evaluateOnNewDocument(gpuMode=>{
@@ -456,7 +466,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   const prefs=JSON.parse(fs.readFileSync(preferences,'utf8'));prefs.partition??={};
   prefs.partition.default_zoom_level={x:Math.log(2)/Math.log(1.2)};
   prefs.partition.per_host_zoom_levels={};fs.writeFileSync(preferences,JSON.stringify(prefs));
-  browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1',userDataDir:path.join(root,'browser-profile-'+process.pid),args:[]});
+  browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1',userDataDir:path.join(root,'browser-profile-'+process.pid),args:[]});
   page=await browser.newPage();attach(page);await instrument(page);await page.setViewport({width:1440,height:1000});await page.goto(origin);await page.waitForSelector('#directory');
   const zoom=await page.evaluate(()=>({inner:innerWidth,outer:outerWidth,dpr:devicePixelRatio}));
   assert(Math.abs(zoom.dpr/baseline.dpr-2)<0.01,'actual browser200% DPR');
@@ -485,5 +495,5 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   result.applicationWasmSha256=hash(path.join(clientDir,'lytronaut_client_bg.wasm'));result.generatedGlueSha256=hash(path.join(clientDir,'lytronaut_client.js'));if(binary)result.nativeServiceSha256=hash(binary);
   console.log(JSON.stringify(result));
   fs.writeFileSync(process.env.LYTRONAUT_BROWSER_REPORT||path.join(root,privateMode?'browser-aggregate.json':'browser-results.json'),JSON.stringify(result,null,2),{mode:0o600});
- }finally{if(browser)await browser.close();fs.rmSync(path.join(root,'browser-profile-'+process.pid),{recursive:true,force:true});server.kill('SIGINT');}
+ }finally{if(browser)await browser.close();fs.rmSync(path.join(root,'browser-profile-'+process.pid),{recursive:true,force:true});await stopServer().catch(e=>{console.error(e.message);process.exitCode=1;});}
 })().catch(e=>{console.error(privateMode?'Browser validation failed at '+checkpoint+' '+(e.stack?.match(/browser-test.cjs:\d+:\d+/)?.[0]||'')+' (details redacted)':'checkpoint '+checkpoint+' '+e.stack);process.exitCode=1;});

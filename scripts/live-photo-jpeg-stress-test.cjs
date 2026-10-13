@@ -45,7 +45,7 @@ async function trial(index,bitrate){
     service=spawn(path.join(target,'debug/lytronaut-service'),[],{env:{...process.env,LYTRONAUT_DATA:data,LYTRONAUT_DATABASE:'catalog.db',LYTRONAUT_ORIGIN:origin,LYTRONAUT_LISTEN:new URL(origin).host,LYTRONAUT_CLIENT:dist},stdio:'ignore'});
     service.on('exit',()=>{exited=true;});service.on('error',()=>{exited=true;});
     await bounded((async()=>{for(;;){if(stopped)throw Error('stress startup stopped');if(exited)throw Error('stress service unavailable');try{const response=await fetch(origin+'/healthz',{signal:AbortSignal.timeout(1000)});await response.body?.cancel();if(response.ok)return;}catch{}await wait(100);}})(),30000);
-    browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile'),timeout:30000});
+    browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile'),timeout:30000});
     const page=await browser.newPage();page.setDefaultTimeout(30000);page.setDefaultNavigationTimeout(30000);
     let requestFailed=false,pageFailed=false;
     await page.setRequestInterception(true);page.on('request',request=>{try{const url=new URL(request.url());const localImage=url.protocol==='data:'&&request.url().startsWith('data:image/jpeg;base64,')&&request.url().length<=2*1024*1024;const operation=url.origin===origin||localImage?request.continue():request.abort();operation.catch(()=>{requestFailed=true;});}catch{requestFailed=true;request.abort().catch(()=>{});}});
