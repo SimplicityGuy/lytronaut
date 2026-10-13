@@ -239,8 +239,35 @@ fn licenses(write: bool) -> Result<()> {
         if files.is_empty() {
             return Err(format!("missing upstream license text for {name} {version}").into());
         }
-        for file in files {
-            let relative = file.strip_prefix(&text_root)?;
+        // Supplemental texts for code a package bundles under a different license
+        // than its own declaration (e.g. LLVM compiler-rt runtime sources).
+        let supplement = PathBuf::from(format!("notices/supplements/{name}-{version}"));
+        let mut supplements = BTreeSet::new();
+        if supplement.is_dir() {
+            for entry in fs::read_dir(&supplement)? {
+                let path = entry?.path();
+                if path.is_file() {
+                    supplements.insert(path);
+                }
+            }
+            notices.push_str("Bundled third-party sources carry additional license terms; their texts and provenance are stored in notices/supplements.\n\n");
+        }
+        let texts = files
+            .into_iter()
+            .map(|file| -> Result<(String, PathBuf)> {
+                Ok((file.strip_prefix(&text_root)?.display().to_string(), file))
+            })
+            .chain(supplements.into_iter().map(|file| {
+                Ok((
+                    format!(
+                        "supplement/{}",
+                        file.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    file,
+                ))
+            }))
+            .collect::<Result<Vec<_>>>()?;
+        for (relative, file) in texts {
             // Preserve legal words/indentation while making notice formatting
             // reproducible across upstream CRLF and trailing-space variants.
             let legal = fs::read_to_string(&file)?;
@@ -250,8 +277,7 @@ fn licenses(write: bool) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join("\n");
             notices.push_str(&format!(
-                "### {}\n\n```text\n{}\n```\n\n",
-                relative.display(),
+                "### {relative}\n\n```text\n{}\n```\n\n",
                 legal.trim_end()
             ));
         }
