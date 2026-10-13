@@ -949,12 +949,17 @@ async fn failing_final_update_never_reports_ready(pg: bool) {
     );
     assert!(Journal::load(&env.root(), &id).unwrap().is_some());
     remove_update_fault(&mut env, "deny_transition").await;
+    // The result was published but no outcome was ever recorded, which is
+    // indistinguishable from a database that regressed after success: restart
+    // keeps it unready and retained, and only DELETE removes it.
     assert!(env.restart().await);
-    let (state, error, _, _) = env.job(&id).await;
+    let (state, error, reserved, retained) = env.job(&id).await;
     assert_eq!(
         (state.as_str(), error.as_deref()),
-        ("failed", Some("interrupted"))
+        ("failed", Some("unverified-result"))
     );
+    assert!(reserved + retained > 0);
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
     env.assert_released(&id).await;
     env.finish().await;
 }
@@ -1044,8 +1049,17 @@ async fn journal_fault_matrix_recovers_or_retains(pg: bool) {
             fs::remove_dir(journal.pending(&env.root())).unwrap();
         }
         if point == "files-published" {
-            // Published, but the job never durably succeeded: not ready.
+            // Published but with no recorded outcome (the row is still queued):
+            // it may have been ready before a database regression, so restart
+            // keeps it unready and retained; only DELETE removes it.
             assert!(journal.result(&env.root()).exists());
+            assert!(env.restart().await);
+            assert_eq!(env.job(&id).await.1.as_deref(), Some("unverified-result"));
+            assert!(journal.result(&env.root()).join("store").exists());
+            assert!(env.job(&id).await.2 + env.job(&id).await.3 > 0);
+            assert_eq!(env.delete(&id).await, StatusCode::OK);
+            env.assert_released(&id).await;
+            continue;
         }
         if let Some(namespace) = journal.namespace()
             && point == "namespace-created"
@@ -1548,6 +1562,65 @@ async fn ready_restore_without_published_journal_is_unready_and_retained(pg: boo
     env.finish().await;
 }
 
+/// A JobSucceeded journal is durable proof the restore was once ready (the
+/// worker read back its committed success). If the database later goes back in
+/// time (row missing, or regressed to queued/running/cancelling, or failed for
+/// another reason) there was no recorded DELETE: startup must keep everything,
+/// report it unready (re-creating a missing row so it stays visible, counted in
+/// quota and deletable), and only an explicit DELETE with proof removes it.
+async fn ever_ready_restore_with_regressed_row_is_never_auto_deleted(pg: bool) {
+    let env = Env::new(pg).await;
+    for regression in [
+        "DELETE FROM export_jobs WHERE id=$1",
+        "UPDATE export_jobs SET state='queued',retained=0,reserved=0 WHERE id=$1",
+        "UPDATE export_jobs SET state='running' WHERE id=$1",
+        "UPDATE export_jobs SET state='cancelling' WHERE id=$1",
+        "UPDATE export_jobs SET state='failed',error='failed' WHERE id=$1",
+    ] {
+        let (_, id) = env.upload(archive(0).await).await;
+        let id = id.unwrap();
+        let journal = env.assert_ready(&id).await;
+        assert_eq!(journal.phase(), Phase::JobSucceeded);
+        sqlx::query(regression)
+            .bind(&id)
+            .execute(env.catalog().pool())
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert!(env.restart().await);
+            let (state, error, reserved, retained) = env.job(&id).await;
+            assert_eq!(
+                (state.as_str(), error.as_deref()),
+                ("failed", Some("unverified-result")),
+                "{regression}"
+            );
+            assert!(
+                reserved + retained > 0,
+                "quota must stay counted: {regression}"
+            );
+            let report = report(&env.api, &id).await.unwrap();
+            assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+            assert!(
+                journal.result(&env.root()).join("store").exists(),
+                "never auto-deleted: {regression}"
+            );
+            assert!(Journal::load(&env.root(), &id).unwrap().is_some());
+            if let Some(namespace) = journal.namespace() {
+                assert!(
+                    restore_schemas(env.catalog())
+                        .await
+                        .contains(&namespace.schema().to_owned())
+                );
+            }
+            env.sentinels.assert_intact(&env.fx).await;
+        }
+        // An explicit DELETE proves ownership through the journal and releases all.
+        assert_eq!(env.delete(&id).await, StatusCode::OK);
+        env.assert_released(&id).await;
+    }
+    env.finish().await;
+}
+
 macro_rules! matrix {
     ($($scenario:ident => $sqlite:ident, $postgres:ident;)*) => {$(
         #[tokio::test]
@@ -1578,6 +1651,7 @@ matrix! {
     unverifiable_ready_result_fails_closed_and_is_never_auto_deleted => sqlite_unverifiable_ready_result, postgres_unverifiable_ready_result;
     monitor_read_error_after_success_never_discards_result => sqlite_monitor_read_error_after_success, postgres_monitor_read_error_after_success;
     ready_restore_without_published_journal_is_unready_and_retained => sqlite_ready_without_published_journal, postgres_ready_without_published_journal;
+    ever_ready_restore_with_regressed_row_is_never_auto_deleted => sqlite_ever_ready_regressed_row, postgres_ever_ready_regressed_row;
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]

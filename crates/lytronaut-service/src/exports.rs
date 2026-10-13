@@ -355,6 +355,37 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
             // A failed journal fsync here is retried at the next startup; the
             // database success and verified published files are durable.
             let _ = journal.transition(&directory, crate::restore_journal::Phase::JobSucceeded);
+        } else if (journal.phase() == crate::restore_journal::Phase::JobSucceeded
+            && !(state.as_deref() == Some("cancelled")
+                || (state.as_deref() == Some("failed")
+                    && error.as_deref() == Some("cleanup-blocked"))))
+            || (journal.phase() == crate::restore_journal::Phase::FilesPublished
+                && !matches!(state.as_deref(), Some("cancelled" | "failed")))
+        {
+            // JobSucceeded is durable proof the job was once ready (the worker
+            // read back its committed success). Without a recorded DELETE
+            // (cancelled, or a blocked DELETE cleanup) the database went back
+            // in time: keep everything and report it unready. A published
+            // result (FilesPublished) whose job has no recorded terminal outcome
+            // may also have been ready before the database regressed, so it is
+            // kept the same way. A missing row is re-created so it stays
+            // visible, counted in quota and deletable.
+            store_available(catalog, store).await?;
+            if state.is_none() {
+                recreate_unverified(catalog, id, journal.reserved()).await?;
+            } else {
+                mark_unverified(catalog, id).await?;
+                // A regressed row may have lost its accounting; the retained
+                // files still occupy staging, so count the journaled amount.
+                let reserved = i64::try_from(journal.reserved()).map_err(storage)?;
+                sqlx::query(
+                    "UPDATE export_jobs SET retained=$1 WHERE id=$2 AND retained+reserved=0",
+                )
+                .bind(reserved)
+                .bind(id)
+                .execute(catalog.pool())
+                .await?;
+            }
         } else {
             // Keep an already recorded cancellation/failure reason; only a job
             // that never durably finished is marked interrupted.
@@ -430,6 +461,25 @@ async fn mark_unverified(catalog: &Catalog, id: &str) -> Result<()> {
         eprintln!("Lytronaut job {id}: the unverified state could not be persisted");
     }
     persisted?;
+    Ok(())
+}
+/// Re-create the row of a once-ready restore whose journal survived a database
+/// that went back in time, as unready with its full reservation retained.
+async fn recreate_unverified(catalog: &Catalog, id: &str, reserved: u64) -> Result<()> {
+    eprintln!(
+        "Lytronaut job {id}: a previously ready restore has no database record; it is retained as unverified until DELETE"
+    );
+    let reserved = i64::try_from(reserved).map_err(storage)?;
+    let mut tx = catalog.begin_write().await?;
+    sqlx::query("INSERT INTO export_jobs(id,kind,state,retained,reserved,error) VALUES($1,'restore','failed',$2,0,'unverified-result')")
+        .bind(id)
+        .bind(reserved)
+        .execute(&mut *tx)
+        .await?;
+    catalog
+        .record_job_order(&mut tx, lytronaut_storage::SchemaComponent::Export, id)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 /// Runtime cleanup (DELETE, worker finalization, failed upload). The caller's
