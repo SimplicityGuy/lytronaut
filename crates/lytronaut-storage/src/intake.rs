@@ -22,7 +22,17 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageError {
     Invalid,
+    /// A declared or framed size exceeds a configured or format bound; the
+    /// same request can never succeed (not retryable).
     Quota,
+    /// The volume lacks the free space this work needs right now, including
+    /// other jobs' reservations and the free-space floor (retryable).
+    Space {
+        required_bytes: u64,
+        available_bytes: u64,
+    },
+    /// The volume lacks free inodes for the files this work creates (retryable).
+    Inodes,
     Busy,
     Cancelled,
     Conflict,
@@ -391,14 +401,19 @@ impl Store {
             0
         };
         // Conservatively reserve every active job on both volumes; same-volume roots are safe too.
+        // A shortage is retryable and names its numbers; only a declaration
+        // beyond the configured budget (checked above) is a permanent Quota.
         for (root, others) in [(&self.0.originals, 0), (&self.0.staging, exports as u64)] {
-            if fs2::available_space(root)?
-                < (bytes as u64)
-                    .saturating_add(reserve)
-                    .saturating_add(others)
-                    .saturating_add(l.free_floor)
-            {
-                return Err(StorageError::Quota);
+            let required = (bytes as u64)
+                .saturating_add(reserve)
+                .saturating_add(others)
+                .saturating_add(l.free_floor);
+            let available = fs2::available_space(root)?;
+            if available < required {
+                return Err(StorageError::Space {
+                    required_bytes: required,
+                    available_bytes: available,
+                });
             }
         }
         let id = unique()?;

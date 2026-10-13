@@ -18,6 +18,33 @@ struct Started {
     id: String,
 }
 fn failure(e: StorageError) -> Response {
+    // A free-space or inode shortage is retryable and, for space, names the
+    // required and available bytes; a declaration beyond the configured
+    // upload budget stays a permanent 413 invalid_input.
+    match e {
+        StorageError::Space {
+            required_bytes,
+            available_bytes,
+        } => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(lytronaut_contracts::ApiError {
+                    version: lytronaut_contracts::WireVersion::V1,
+                    code: ErrorCode::ResourceLimit,
+                    retryable: true,
+                    shortfall: Some(lytronaut_contracts::SpaceShortfall {
+                        required_bytes,
+                        available_bytes,
+                    }),
+                }),
+            )
+                .into_response();
+        }
+        StorageError::Inodes => {
+            return error(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit);
+        }
+        _ => {}
+    }
     error(
         match e {
             StorageError::Quota => StatusCode::PAYLOAD_TOO_LARGE,
@@ -256,5 +283,47 @@ async fn zip(
             }
             failure(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    async fn body(response: Response) -> (StatusCode, lytronaut_contracts::ApiError) {
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+    /// A shortage is a retryable 429 resource_limit (with its numbers for
+    /// space); a declaration over the upload budget is a permanent 413.
+    #[tokio::test]
+    async fn space_shortage_and_budget_overrun_are_distinct_refusals() {
+        let (status, error) = body(failure(StorageError::Space {
+            required_bytes: 9,
+            available_bytes: 4,
+        }))
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+        assert!(error.retryable);
+        assert_eq!(
+            error.shortfall,
+            Some(lytronaut_contracts::SpaceShortfall {
+                required_bytes: 9,
+                available_bytes: 4
+            })
+        );
+        let (status, error) = body(failure(StorageError::Inodes)).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            (error.code, error.retryable, error.shortfall),
+            (ErrorCode::ResourceLimit, true, None)
+        );
+        let (status, error) = body(failure(StorageError::Quota)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            (error.code, error.retryable),
+            (ErrorCode::InvalidInput, false)
+        );
     }
 }

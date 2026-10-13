@@ -670,17 +670,28 @@ async fn quota_failures_fail_closed_and_release(pg: bool) {
         .execute(env.catalog().pool())
         .await
         .unwrap();
-    assert!(matches!(
+    // A shortage is retryable and names its numbers (HTTP 429
+    // resource_limit); only a declaration beyond the upload budget is a
+    // permanent Quota (HTTP 413 invalid_input).
+    let import = |declared_bytes| ImportRequest {
+        version: WireVersion::V1,
+        kind: ImportKind::Directory,
+        declared_bytes,
+        declared_files: 1,
+    };
+    match env.store.begin(&import(1)).await {
+        Err(lytronaut_storage::StorageError::Space {
+            required_bytes,
+            available_bytes,
+        }) => assert!(required_bytes > available_bytes && required_bytes >= (i64::MAX / 8) as u64),
+        other => panic!("expected a space shortage, got {other:?}"),
+    }
+    assert_eq!(
         env.store
-            .begin(&ImportRequest {
-                version: WireVersion::V1,
-                kind: ImportKind::Directory,
-                declared_bytes: 1,
-                declared_files: 1,
-            })
+            .begin(&import(env.store.limits().upload_bytes + 1))
             .await,
         Err(lytronaut_storage::StorageError::Quota)
-    ));
+    );
     assert_eq!(env.delete(&held).await, StatusCode::OK);
     env.assert_released(&held).await;
     // Declarations: any positive size is admissible in principle; one no
