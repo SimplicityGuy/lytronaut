@@ -92,7 +92,10 @@ Compose caps CPU at 2, memory at 2 GiB and PIDs at 128; logs rotate after three
 individual file, 3 GiB encoded input and an 8 GiB aggregate reservation. At least
 2 GiB must remain free. These are application admission budgets, not filesystem
 quotas: use server volume quotas and capacity monitoring for durable originals
-and catalog growth. Increase budgets deliberately for larger libraries.
+and catalog growth. Increase budgets deliberately for larger libraries. The same
+budgets bound the portable backup bundle; with these defaults a library with more
+than about 2.3 GiB of original files cannot be backed up as a bundle (see
+[Backup bundle size limits](#backup-bundle-size-limits)).
 Resource exhaustion rejects requests while preserving already stored originals.
 No GPU device or hardware acceleration runtime mount is required.
 
@@ -181,7 +184,9 @@ tests use the official image pinned by release and immutable multi-architecture
 index digest
 `postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873`,
 which includes linux/amd64 and linux/arm64. An external server must run
-PostgreSQL 18.
+PostgreSQL 18: at startup the application reads `server_version_num` and refuses
+any other major release with the fixed message "unsupported PostgreSQL server
+version; Lytronaut requires PostgreSQL 18", before migrating anything.
 
 ### Database password secret
 
@@ -190,8 +195,9 @@ The application reads its PostgreSQL password from the file named by
 then carries no password. Compose mounts the file as a secret, so the password is
 not in `compose.yaml`, the image, the container environment, `docker inspect` or
 `docker compose config`. Startup and connection errors are fixed messages that
-never include the URL, password or file path. The file holds one line of at most
-1024 characters (a final newline is ignored); a URL that already has a password
+never include the URL, password or file path. The file holds one line of 1 to
+1024 bytes without control characters (a single final LF or CRLF is ignored, by
+the application and by the bundled role bootstrap alike); a URL that already has a password
 together with a password file is rejected as ambiguous. Compose outside Swarm
 ignores secret `uid`/`gid`/`mode`, so set them on the host file itself.
 
@@ -234,8 +240,12 @@ application).
 
 Startup ordering: the PostgreSQL health check uses TCP, which the image only
 opens after initialization completes, so the application starts only once the
-role and schema exist; Compose restarts the application when PostgreSQL is
-restarted. Both services use `restart: unless-stopped`. PostgreSQL receives
+role and schema exist. When Compose restarts PostgreSQL (`docker compose restart
+postgres`, or `up` recreating it), Compose also restarts the application. If the
+PostgreSQL server itself crashes, the engine's `restart: unless-stopped` policy
+restarts it and the running application reconnects on its next database use;
+both cases are exercised by `just deployment-test`. Both services use
+`restart: unless-stopped`. PostgreSQL receives
 SIGINT (fast shutdown) and has 60 seconds; the application has 30 seconds.
 
 ### External PostgreSQL server
@@ -302,11 +312,13 @@ backend restores into either backend.
 
 ### PostgreSQL backup, recovery and upgrades
 
-The portable bundle remains the backend-independent backup and the supported way
-to move between SQLite and PostgreSQL or between PostgreSQL major versions. For
-an operational backup of a PostgreSQL deployment, stop the application (leave
-PostgreSQL running), then take a consistent dump and snapshot originals and work
-together:
+The portable bundle is the backend-independent backup and the way to move a
+library between SQLite and PostgreSQL or between PostgreSQL major versions,
+within the [size limits](#backup-bundle-size-limits) below; a larger PostgreSQL
+library moves between major versions with `pg_dump`/`pg_restore` plus its file
+locations instead. For an operational backup of a PostgreSQL deployment, stop the
+application (leave PostgreSQL running), then take a consistent dump and snapshot
+originals and work together:
 
 ```sh
 docker compose -f compose.yaml -f compose.postgres.yaml stop lytronaut
@@ -316,14 +328,27 @@ docker compose -f compose.yaml -f compose.postgres.yaml exec -T postgres \
 docker compose -f compose.yaml -f compose.postgres.yaml start lytronaut
 ```
 
-The dump includes isolated restore schemas. To recover, prepare an empty
-database with the role and grants above but without creating the schema, restore
-the dump as that role, and put back the matching file snapshot:
+The dump includes isolated restore schemas. To recover the bundled service onto
+an empty `LYTRONAUT_POSTGRES_DIR` (same secrets), put back the matching file
+snapshot, start only PostgreSQL so its one-time bootstrap recreates the role and
+an empty `lytronaut` schema, drop that empty schema (plain `DROP SCHEMA` refuses if
+it is not empty), restore the dump as the role through `exec -T` (the service has
+no published port), then start the application:
 
 ```sh
-pg_restore -U postgres -d lytronaut --no-owner --no-acl --role=lytronaut \
-  --exit-on-error lytronaut-catalog.dump
+C="docker compose -f compose.yaml -f compose.postgres.yaml"
+$C up -d --no-build --wait postgres
+$C exec -T postgres psql -U postgres -d lytronaut -v ON_ERROR_STOP=1 -c 'DROP SCHEMA lytronaut'
+$C exec -T postgres pg_restore -U postgres -d lytronaut --no-owner --no-acl \
+  --role=lytronaut --exit-on-error < lytronaut-catalog.dump
+$C up -d --no-build
 ```
+
+For an external server, dump with your administrator connection, prepare an empty
+database with the role and grants from [External PostgreSQL server](#external-postgresql-server)
+but without creating the schema, run the same `pg_restore ... --role=lytronaut`
+into it, and point `LYTRONAUT_DATABASE_URL` at that database. `just
+deployment-test` runs both procedures literally and browses the recovered catalog.
 
 A stopped-service copy of `LYTRONAUT_POSTGRES_DIR` is also consistent; never copy
 it while PostgreSQL runs.
@@ -331,15 +356,49 @@ it while PostgreSQL runs.
 Minor PostgreSQL releases (18.x) keep the on-disk format: update the pinned
 release and digest after verifying them from the official sources, then
 `docker compose ... up -d --no-build`. A new major release cannot open an older
-cluster directory. Upgrade by creating a new deployment with an empty
-PostgreSQL location and restoring a portable bundle (or a `pg_dump`) into it;
+cluster directory, and the application refuses a server other than PostgreSQL 18
+until a release supports it. Upgrade by creating a new deployment with an empty
+PostgreSQL location and restoring a portable bundle (within its size limits) or a
+`pg_dump` into it;
 keep the old location until the new deployment is verified. Application upgrades
 migrate the catalog schema additively on startup on either backend.
+
+### Backup bundle size limits
+
+A portable bundle carries every unique original plus a logical catalog of at most
+288 MiB. The current implementation bounds it by the single-upload budgets:
+
+- Creating a bundle fails when the unique originals exceed
+  `LYTRONAUT_UPLOAD_BYTES` + 288 MiB.
+- Admission of a backup job reserves originals + 2 x 288 MiB + 60 bytes + 40 bytes
+  per original. It is refused (`resource_limit`) unless that fits within
+  `LYTRONAUT_RESERVED_BYTES` minus other jobs' reservations, and unless free work
+  space is at least that amount plus all active reservations plus
+  `LYTRONAUT_FREE_FLOOR` (2 GiB).
+- Restoring requires the uploaded bundle to be at most `LYTRONAUT_ENCODED_BYTES` +
+  288 MiB + framing, each original at most `LYTRONAUT_FILE_BYTES`, the originals at
+  most `LYTRONAUT_UPLOAD_BYTES` + 288 MiB, and it reserves 2 x the bundle size +
+  288 MiB under the same reservation and free-space rules.
+
+With the default Compose budgets (2 GiB upload, 3 GiB encoded, 512 MiB per file,
+8 GiB reserved) a library with more than about 2.3 GiB of original files cannot be
+backed up as a bundle, and no original over 512 MiB can be restored from one. For
+a library of `N` bytes of originals, set `LYTRONAUT_UPLOAD_BYTES` >= `N`,
+`LYTRONAUT_ENCODED_BYTES` >= `N`, `LYTRONAUT_FILE_BYTES` >= the largest
+original, `LYTRONAUT_RESERVED_BYTES` >= 2 x (`N` + 288 MiB) + 288 MiB, and keep at
+least that much plus 2 GiB free in the work location. Raising the upload budgets
+also raises what a single browser upload may send, so prefer stopped-service
+volume snapshots (SQLite) or `pg_dump` plus file snapshots (PostgreSQL) for large
+libraries. Decoupling the bundle ceiling from the single-upload limit is tracked as
+a known limitation in `lytronaut-lbk`.
 
 ### Limitations
 
 - One application instance per catalog: do not run two services against the same
   SQLite location or PostgreSQL schema.
+- Portable bundles are limited by the single-upload budgets (about 2.3 GiB of
+  originals with the defaults); see [Backup bundle size limits](#backup-bundle-size-limits)
+  and `lytronaut-lbk`.
 - No application accounts or login: protect access at your proxy; database
   credentials are not user accounts.
 - Application reservations bound staging files, not PostgreSQL storage: monitor
@@ -363,8 +422,11 @@ mise exec -- just postgres-parity
 `deployment-test` starts the default SQLite Compose path, the bundled PostgreSQL
 path and an externally managed PostgreSQL configured only by URL and secret file;
 imports a synthetic library; checks owners and modes, graceful stop, down/up and
-restart-policy restarts on the same storage, PostgreSQL restart reconnection,
-fail-closed redacted startup with a wrong or ambiguous password, and that no
+restart-policy restarts on the same storage, that a Compose restart of PostgreSQL
+restarts the application and that a PostgreSQL server crash is recovered, a
+CRLF-terminated password secret, the documented `pg_dump`/`pg_restore` recovery
+for the bundled and the external server (each browsed afterwards), fail-closed
+redacted startup with a wrong or ambiguous password, and that no
 generated password appears in Compose configuration, container configuration,
 logs, the image or the report; and restores all four SQLite/PostgreSQL bundle
 combinations, starting and browsing each restored copy through the override
