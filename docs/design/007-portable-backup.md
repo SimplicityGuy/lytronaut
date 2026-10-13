@@ -145,7 +145,9 @@ cannot be proved or completed is persisted as `failed` with error `cleanup-block
 and keeps its files, journal and quota; admission keeps counting that quota.
 `DELETE` and every startup retry the cleanup; once it succeeds the reservation is
 released and the job reads `interrupted`. A previously ready result that no longer
-verifies at startup becomes `failed` with error `unverified-result` (also reported
+verifies at startup (including a ready restore row whose journal is missing or never
+recorded publication, since the database and export root are separate stores)
+becomes `failed` with error `unverified-result` (also reported
 as retryable `storage_unavailable`), keeps its files, namespace, journal and quota,
 and is never cleaned automatically: only an explicit `DELETE`, with ownership proof,
 removes the user's restored copy. If either non-ready state cannot be persisted,
@@ -204,6 +206,17 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
 
 Not covered by an engine test: a database connection lost during cleanup, and
 measured memory under concurrent admission. Coverage is gated separately.
+
+Known follow-ups, deliberately not changed here:
+
+- An `unverified-result` job stays unready until `DELETE`; re-verifying it at each
+  startup and restoring readiness when it verifies again would be safe.
+- Directory cleanup removes the owned result with `remove_dir_all` after checking
+  its marker; renaming it to a private tombstone first would make a crash mid-removal
+  recoverable instead of permanently blocked.
+- The worker's progress monitor stops work early on a single failed state read; a
+  short retry before stopping would avoid aborting healthy jobs on one transient
+  error (outcomes are already decided only by durable state).
 
 Transient ownership uses a separate durable nonce record before creating a private
 job transfer directory and marker. Uploads, export artifacts and logical spools

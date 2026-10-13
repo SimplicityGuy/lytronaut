@@ -106,7 +106,19 @@ that depends on the job's private restore schema). Remove or fix the conflict
 yourself, then `DELETE /exports/<id>` or restart; the job's quota is released only
 after its owned files and schema are gone. A startup failure instead means the
 whole store is unavailable (export work directory or a restore journal unreadable,
-or the database unreachable).
+or the database unreachable, or a job's blocked/unverified state could not be
+recorded).
+
+If the log reports `Lytronaut job <id>: its published restore result failed
+verification and is no longer ready`, a previously completed restore copy no longer
+matches its ownership record (for example its private directory permissions changed,
+its restore journal is missing after the work volume was restored from an older
+snapshot, or its PostgreSQL restore schema is missing or altered). The job now reads
+failed (`storage_unavailable`) and nothing it holds is deleted or released
+automatically. Inspect `staging.exports/<id>.restored`; if the copy is still wanted,
+take it out of the application's work area yourself, then `DELETE /exports/<id>`.
+DELETE removes the copy and schema only when ownership can still be proved; without
+a journal it refuses, and you remove the leftovers manually before deleting the job.
 
 Use the workspace's **Back up originals and catalog** action and download its
 private bundle. Restore uploads into a separate store inside the work volume;
