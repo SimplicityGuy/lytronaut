@@ -1,6 +1,7 @@
 # Portable Live Photo export
 
-Status: implementation in progress; Photos-library import acceptance is pending.
+Status: implementation in progress. Apple Photos import, VoiceOver, the full counted
+memory budget and GPU submit-to-present latency remain unverified (see the final section).
 
 A Live Photo is a still image plus a paired movie. Neither an ordinary JPEG nor
 an ordinary MOV alone is advertised as a Live Photo. Lytronaut packages the complete
@@ -613,3 +614,73 @@ selecting a newer capture during AVC adoption, independently of its existing
 successful AVC adoption test. These new tests are source-only and unexecuted;
 they do not establish physical memory, counted 64/32 MiB, performance or Photos
 acceptance.
+
+## Local reference-host validation (2026-10-13, source `623f2b9`)
+
+Run on a macOS Apple M1 Pro host with Chrome 155 headless, public synthetic
+fixtures only. Artifacts were rebuilt from a clean target directory; earlier local
+programs were discarded. Reports, program hashes and logs are kept in a local
+evidence directory, not in the repository or CI.
+
+| Gate | Status | Measured result |
+| --- | --- | --- |
+| Rust/WASM and native build | Pass | Debug native service and examples, production and `test-harness` WASM, release service and WASM; only the feature glue exports the GPU acquisition hook |
+| Real-GPU regression | Pass | Adapter `apple`/`metal-3`; `chrome://gpu` reports WebGPU hardware accelerated on ANGLE Metal, no software renderer. The GPU browser suite, `live-photo-gpu-owner-test`, `live-photo-test.cjs` and the CPU browser suite passed |
+| Automatic CPU/GPU selection | Pass | No renderer buttons; five injected faults fell back to CPU within 742 ms; device loss recovered in 52 ms; destroy-reentry kept the newer capture |
+| Counted 64 MiB transient / 32 MiB retained | **Partial** | See below |
+| Performance (design 001 targets) | **Partial** | See below |
+| Apple Photos recognition | **Not run** | See below |
+| VoiceOver | **Not run** | Cannot be automated |
+
+**Counted budget.** Owners recorded in the mounted-UI trace were summed per
+phase only when live at the same time. The three owner shapes had zero dropped
+events. The peak was PCM encoding: 24.63 MiB for 2048×1024 and 24.96 MiB for
+1138×1842, which is the maximum 8352-macroblock shape. Download held 18.5 MiB
+(ZIP + JS copy). Observed retained Rust owners were about 22.7 KB, plus the
+3,931,710-byte logical Blob payload bound above. These sources were at most
+35,744 bytes, so an 8 MiB admitted source is **not measured**. Also unmeasured:
+canvas and VideoFrame backing during strip copy; physical JS string/Blob storage
+and sharing; serde/BTree nodes, allocator rounding and Vec growth overlap; the UI
+manifest; Tachys strings, signal infrastructure and DOM storage. Opaque decoder
+pools are outside the counted budget by definition. This is not acceptance of
+the 64 MiB/32 MiB budget.
+
+**Performance**, release native and WASM. Focus interaction p95 was 91.3 ms in
+GPU mode (one 100.5 ms maximum) and 88.6 ms in CPU mode, against ≤100 ms. Neither
+first batch had pending grid images, so neither is load-contended evidence.
+Native HTTP decode p95 was 2.9 ms. Fallback indication took at most 761 ms,
+against ≤1 s. The ≤16.7 ms GPU submit-to-present target is **not verified**:
+submit to the second animation frame callback is only a proxy (headless p95 94.9 ms),
+and no presentation was correlated. A headful trace run failed exact pixel
+comparison at device scale 2; it is not counted.
+
+**Apple Photos is not verified.** For the current synthetic pair, the resource
+loader recognizes it (`livePhotoResourceRecognized=true`) and rejects a mismatched
+pair. Automation could not create an isolated library: PhotoKit library creation
+needs a private entitlement and UI scripting is unavailable. A guarded launch
+pointed at an isolated library still opened system libraries, so it was stopped
+before import. A person must do the following:
+
+1. Hold Option while opening Photos and create
+   `/private/tmp/lytronaut-9fw-isolated-photos-20261012/Test.photoslibrary`,
+   without making it the System Photo Library or enabling iCloud.
+2. Import the extracted `focus.JPG` and `focus.MOV` together.
+3. Confirm that one item appears with the LIVE badge, the key frame is correct
+   and the motion plays.
+4. Reopen the usual library as the default and delete the test library.
+
+**VoiceOver is not verified.** A person must check that VoiceOver announces the
+Live Photo export, cancel and download controls with useful labels. It must also
+announce progress, cancellation, unsupported-capability and completion messages
+from the status region, and keep a logical focus order through export and
+cancellation.
+
+### Import-lane regression
+
+Recover import status and Retry catalog adaptation held the import action lane
+without the upload busy flag. The directory and ZIP inputs stayed enabled, and a
+new selection was cleared and rejected as "Previous operation still pending."
+This was the intermittent preserved-import timeout. The browser test now holds
+the real recovery response and requires the inputs and Recover button to be
+disabled while it is pending; it failed before the fix. Import controls now stay
+disabled for exactly as long as their mount holds the lane.
