@@ -208,8 +208,17 @@ async fn admit(a: &Api, kind: &str, need: u64) -> std::result::Result<String, Re
         sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs")
             .fetch_one(&mut *tx)
             .await?;
+    // Running imports stage on the same work volume; counting them under the
+    // shared writer admission closes the check-then-reserve race between an
+    // import and an export (import admission counts export reservations).
+    let intake_reserved: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM intake_jobs WHERE state='running'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     let required = need
         .saturating_add(active_reserved as u64)
+        .saturating_add(intake_reserved as u64)
         .saturating_add(a.0.store.limits().free_floor);
     let available = a.0.store.available_staging_bytes().map_err(storage)?;
     if available < required {

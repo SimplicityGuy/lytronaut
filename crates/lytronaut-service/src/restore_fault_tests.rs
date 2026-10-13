@@ -649,6 +649,40 @@ async fn quota_failures_fail_closed_and_release(pg: bool) {
             .await
             .unwrap();
     env.assert_released(&overlong).await;
+    // Imports and exports share the work volume and its writer admission:
+    // each admission counts the other's in-flight reservations, so neither
+    // can pass the free-space check on space the other already reserved.
+    sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,reserved) VALUES('synthetic-running-import','directory','running',1,1,1,1,$1)")
+        .bind(i64::MAX / 8)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    let (status, body) = env.begin_archive().await;
+    assert_short_of_space(status, &body, &env);
+    sqlx::query("DELETE FROM intake_jobs WHERE id='synthetic-running-import'")
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    let held = create(&env.api, "archive", 1).await.unwrap();
+    sqlx::query("UPDATE export_jobs SET state='failed',error='failed',reserved=$1 WHERE id=$2")
+        .bind(i64::MAX / 8)
+        .bind(&held)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        env.store
+            .begin(&ImportRequest {
+                version: WireVersion::V1,
+                kind: ImportKind::Directory,
+                declared_bytes: 1,
+                declared_files: 1,
+            })
+            .await,
+        Err(lytronaut_storage::StorageError::Quota)
+    ));
+    assert_eq!(env.delete(&held).await, StatusCode::OK);
+    env.assert_released(&held).await;
     // Declarations: any positive size is admissible in principle; one no
     // volume can hold is a free-space refusal, while zero, malformed and
     // need-overflowing declarations are invalid input. No job is created.

@@ -372,11 +372,30 @@ impl Store {
         {
             return Err(StorageError::Busy);
         }
+        // Export and restore jobs share the work volume. Their in-flight
+        // reservations count here, under the same writer admission, so an
+        // import and a whole-library export cannot both pass the free-space
+        // check and then together exhaust the volume (export admission counts
+        // running import reservations in turn).
+        let exports_present: i64 = sqlx::query_scalar(self.0.catalog.dialect(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='export_jobs'",
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relkind='r' AND c.relname='export_jobs'",
+        ))
+        .fetch_one(&mut *tx)
+        .await?;
+        let exports: i64 = if exports_present == 1 {
+            sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs")
+                .fetch_one(&mut *tx)
+                .await?
+        } else {
+            0
+        };
         // Conservatively reserve every active job on both volumes; same-volume roots are safe too.
-        for root in [&self.0.originals, &self.0.staging] {
+        for (root, others) in [(&self.0.originals, 0), (&self.0.staging, exports as u64)] {
             if fs2::available_space(root)?
                 < (bytes as u64)
                     .saturating_add(reserve)
+                    .saturating_add(others)
                     .saturating_add(l.free_floor)
             {
                 return Err(StorageError::Quota);
