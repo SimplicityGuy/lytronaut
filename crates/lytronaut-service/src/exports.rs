@@ -134,6 +134,73 @@ async fn archive_need(a: &Api) -> Result<u64> {
     bundle::archive_need(bytes, files)
         .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))
 }
+/// A running job ran short of work space or inodes: retryable, reported as
+/// `resource_limit` with error `space` once its owned files are cleaned.
+fn short_of_work_space() -> Failure {
+    Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit)
+}
+fn job_failure(error: lytronaut_storage::StorageError) -> Failure {
+    match error {
+        lytronaut_storage::StorageError::Space { .. } | lytronaut_storage::StorageError::Inodes => {
+            short_of_work_space()
+        }
+        error => storage(error),
+    }
+}
+/// Re-admit a restore on its exact disk need before anything is extracted.
+/// Upload admission could only reserve payload bytes (`restore_need`); the
+/// uploaded framing now gives every file's real block cost and the count of
+/// files (inodes) the restore will create. The reservation grows to that need
+/// under the writer admission, counting other jobs and the free-space floor,
+/// or the job fails as retryable `space` before writing anything.
+async fn readmit_restore(
+    a: &Api,
+    job: &str,
+    input: &std::path::Path,
+    reserved: u64,
+    cancel: &AtomicBool,
+) -> Result<u64> {
+    let directory = root(&a.0.store);
+    let (unit, inodes) = bundle::block_unit(&directory).map_err(job_failure)?;
+    let (count, need) =
+        bundle::restore_disk_need(input, unit, a.0.store.limits().file_bytes, cancel)
+            .map_err(job_failure)?;
+    if inodes.is_some_and(|free| free < count.saturating_add(bundle::INODE_FLOOR)) {
+        return Err(short_of_work_space());
+    }
+    if need <= reserved {
+        return Ok(reserved);
+    }
+    let written = fs::metadata(input).map_err(storage)?.len();
+    let mut tx = a.0.catalog.begin_write().await?;
+    let others: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs WHERE id<>$1",
+    )
+    .bind(job)
+    .fetch_one(&mut *tx)
+    .await?;
+    let imports: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM intake_jobs WHERE state='running'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    // The upload is already on disk; only the rest of the need is still free.
+    let required = need
+        .saturating_sub(written)
+        .saturating_add(others as u64)
+        .saturating_add(imports as u64)
+        .saturating_add(a.0.store.limits().free_floor);
+    if a.0.store.available_staging_bytes().map_err(storage)? < required {
+        return Err(short_of_work_space());
+    }
+    sqlx::query("UPDATE export_jobs SET reserved=$1 WHERE id=$2")
+        .bind(i64::try_from(need).map_err(storage)?)
+        .bind(job)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(need)
+}
 /// Why admission refused a job. A free-space shortfall carries its numbers.
 enum Refusal {
     Failed(Failure),
@@ -279,7 +346,7 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
                 version: WireVersion::V1,
                 code: match r.try_get::<Option<String>, _>(3)?.as_deref() {
                     Some("unsupported") => ErrorCode::UnsupportedFormat,
-                    Some("bundle-limit") => ErrorCode::ResourceLimit,
+                    Some("bundle-limit" | "space") => ErrorCode::ResourceLimit,
                     Some("cleanup-blocked" | "unverified-result") => ErrorCode::StorageUnavailable,
                     _ => ErrorCode::CorruptAsset,
                 },
@@ -776,20 +843,31 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             .bind(&job)
                             .fetch_one(worker.0.catalog.pool())
                             .await?;
-                    let result = crate::bundle::restore_owned(
-                        &input,
-                        &worker.0.catalog,
-                        crate::bundle::RestoreOwner {
-                            root: &root(&worker.0.store),
-                            job: &job,
-                            reserved: u64::try_from(reserved).map_err(storage)?,
-                        },
-                        worker.0.store.limits(),
-                        &flag,
-                        &progress,
-                    )
-                    .await
-                    .map_err(storage);
+                    let result = async {
+                        let reserved = readmit_restore(
+                            &worker,
+                            &job,
+                            &input,
+                            u64::try_from(reserved).map_err(storage)?,
+                            &flag,
+                        )
+                        .await?;
+                        crate::bundle::restore_owned(
+                            &input,
+                            &worker.0.catalog,
+                            crate::bundle::RestoreOwner {
+                                root: &root(&worker.0.store),
+                                job: &job,
+                                reserved,
+                            },
+                            worker.0.store.limits(),
+                            &flag,
+                            &progress,
+                        )
+                        .await
+                        .map_err(job_failure)
+                    }
+                    .await;
                     let _ = fs::remove_file(input);
                     let result = result?;
                     stored.store(result.bytes, Ordering::Relaxed);
@@ -836,10 +914,16 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                         Ok(None)
                     }
                     ExportRequest::ArchiveOriginals { .. } => {
+                        let reserved: i64 =
+                            sqlx::query_scalar("SELECT reserved FROM export_jobs WHERE id=$1")
+                                .bind(&job)
+                                .fetch_one(worker.0.catalog.pool())
+                                .await?;
                         crate::bundle::backup(
                             &worker.0.catalog,
                             &worker.0.store,
                             &artifact(&worker, &job),
+                            u64::try_from(reserved).map_err(storage)?,
                             &flag,
                             &progress,
                         )
@@ -852,7 +936,7 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             lytronaut_storage::StorageError::Quota => {
                                 Failure(StatusCode::INSUFFICIENT_STORAGE, ErrorCode::ResourceLimit)
                             }
-                            error => storage(error),
+                            error => job_failure(error),
                         })?;
                         stored.store(
                             fs::metadata(artifact(&worker, &job))
@@ -914,6 +998,8 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                 "unsupported"
             } else if f.0 == StatusCode::INSUFFICIENT_STORAGE {
                 "bundle-limit"
+            } else if f.0 == StatusCode::TOO_MANY_REQUESTS && f.1 == ErrorCode::ResourceLimit {
+                "space"
             } else {
                 "failed"
             }),
@@ -1418,7 +1504,7 @@ mod tests {
         );
         fs::remove_file(fixture.root.join("originals").join(blob)).unwrap();
         let a = Api::open(fixture.catalog.clone(), store).await.unwrap();
-        let id = create(&a, "archive", 1).await.unwrap();
+        let id = create(&a, "archive", 64 * 1024 * 1024).await.unwrap();
         run(
             a.clone(),
             id.clone(),

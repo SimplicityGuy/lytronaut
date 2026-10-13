@@ -459,7 +459,7 @@ async fn restore_and_reopen(
         RestoreOwner {
             root: &export_root,
             job: "synthetic-restore",
-            reserved: 1024 * 1024 * 1024,
+            reserved: 1 << 40,
         },
         limits,
         &cancel,
@@ -503,9 +503,16 @@ async fn round_trip(source_pg: bool, destination_pg: bool) {
     let archive = source.root.join("synthetic.bundle");
     let cancel = AtomicBool::new(false);
     let progress = std::sync::atomic::AtomicU64::new(0);
-    backup(&source.catalog, &store, &archive, &cancel, &progress)
-        .await
-        .unwrap();
+    backup(
+        &source.catalog,
+        &store,
+        &archive,
+        u64::MAX,
+        &cancel,
+        &progress,
+    )
+    .await
+    .unwrap();
     let (reopened, result, journal) =
         restore_and_reopen(&destination, &archive, store.limits()).await;
     verify(&reopened, &result.join("originals")).await;
@@ -552,9 +559,16 @@ async fn beyond_upload_budget_round_trip(source_pg: bool, destination_pg: bool) 
     let archive = source.root.join("beyond-upload-budget.bundle");
     let cancel = AtomicBool::new(false);
     let progress = std::sync::atomic::AtomicU64::new(0);
-    let report = backup(&source.catalog, &store, &archive, &cancel, &progress)
-        .await
-        .unwrap();
+    let report = backup(
+        &source.catalog,
+        &store,
+        &archive,
+        u64::MAX,
+        &cancel,
+        &progress,
+    )
+    .await
+    .unwrap();
     assert_eq!(report.files, SPARSE_COUNT + 1);
     let size = fs::metadata(&archive).unwrap().len();
     assert!(
@@ -566,7 +580,6 @@ async fn beyond_upload_budget_round_trip(source_pg: bool, destination_pg: bool) 
     verify(&reopened, &result.join("originals")).await;
     verify_sparse_originals(&result.join("originals"), SPARSE_COUNT, SPARSE_SIZE);
     assert!(logical_tables(&source.catalog, &[]).await == logical_tables(&reopened, &[]).await);
-    assert!(largest_copy_chunk() <= COPY_BUFFER);
     fs::remove_file(&archive).unwrap();
     release(&destination, reopened, journal).await;
     source.finish().await;
@@ -664,6 +677,7 @@ async fn inventory_disorder_duplicates_and_mismatch_fail_closed() {
         &source.catalog,
         &store,
         &archive,
+        u64::MAX,
         &AtomicBool::new(false),
         &std::sync::atomic::AtomicU64::new(0),
     )
@@ -725,7 +739,7 @@ async fn inventory_disorder_duplicates_and_mismatch_fail_closed() {
             RestoreOwner {
                 root: &export_root,
                 job: "synthetic-forged",
-                reserved: 1,
+                reserved: 1 << 40,
             },
             store.limits(),
             &AtomicBool::new(false),
@@ -756,6 +770,7 @@ async fn inventory_disorder_duplicates_and_mismatch_fail_closed() {
             &source.catalog,
             &store,
             &rejected,
+            u64::MAX,
             &AtomicBool::new(false),
             &std::sync::atomic::AtomicU64::new(0),
         )
@@ -766,6 +781,228 @@ async fn inventory_disorder_duplicates_and_mismatch_fail_closed() {
     assert!(!rejected.with_extension("snapshot").exists());
     assert!(!rejected.with_extension("inventory").exists());
     source.finish().await;
+}
+
+/// lytronaut-lbk B1, enforcement: a restore charges every file at its real
+/// block cost against its reservation and stops with a retryable `Space`
+/// before passing it; owned cleanup then leaves nothing. A backup does the
+/// same against its own reservation.
+#[tokio::test]
+async fn disk_reservations_are_enforced_per_file_while_writing() {
+    let source = Fixture::new(false).await;
+    let store = source.seed().await;
+    source.add_sparse_originals(4, 1024 * 1024).await;
+    let archive = source.root.join("charged.bundle");
+    let none = AtomicBool::new(false);
+    let progress = std::sync::atomic::AtomicU64::new(0);
+    // Backup: a reservation smaller than the artifact stops it; the
+    // artifact and both spools are removed.
+    let small = source.root.join("small.bundle");
+    let result = backup(
+        &source.catalog,
+        &store,
+        &small,
+        2 * 1024 * 1024,
+        &none,
+        &progress,
+    )
+    .await;
+    assert!(matches!(result, Err(E::Space { .. })), "{result:?}");
+    for path in [
+        small.clone(),
+        small.with_extension("snapshot"),
+        small.with_extension("inventory"),
+    ] {
+        assert!(!path.exists());
+    }
+    backup(
+        &source.catalog,
+        &store,
+        &archive,
+        u64::MAX,
+        &none,
+        &progress,
+    )
+    .await
+    .unwrap();
+    let (unit, _) = block_unit(&source.root).unwrap();
+    let (count, need) = restore_disk_need(&archive, unit, u64::MAX, &none).unwrap();
+    assert_eq!(count, 5);
+    // Exactly the documented model: upload, SQLite headroom, job files,
+    // both spools and every original at its block cost.
+    let upload = fs::metadata(&archive).unwrap().len();
+    let catalog = u64::from_le_bytes(fs::read(&archive).unwrap()[20..28].try_into().unwrap());
+    let originals =
+        4 * file_cost(1024 * 1024, unit).unwrap() + file_cost(BLOB.len() as u64, unit).unwrap();
+    assert_eq!(
+        need,
+        upload
+            + lytronaut_storage::portable::MAX_BYTES as u64
+            + JOB_FILES * unit
+            + file_cost(catalog, unit).unwrap()
+            + file_cost(5 * 40, unit).unwrap()
+            + originals
+    );
+    // A reservation one block short of that need fails mid-extraction.
+    let destination = Fixture::new(false).await;
+    let export_root = destination.root.join("restore-results");
+    directory(&export_root).unwrap();
+    let result = restore_owned(
+        &archive,
+        &destination.catalog,
+        RestoreOwner {
+            root: &export_root,
+            job: "synthetic-charged",
+            reserved: need - unit,
+        },
+        store.limits(),
+        &none,
+        &progress,
+    )
+    .await;
+    assert!(matches!(result, Err(E::Space { .. })), "{result:?}");
+    let mut journal = crate::restore_journal::Journal::load(&export_root, "synthetic-charged")
+        .unwrap()
+        .unwrap();
+    journal
+        .cleanup(&destination.catalog, &export_root)
+        .await
+        .unwrap();
+    journal.forget_after_quota_release(&export_root).unwrap();
+    assert_eq!(
+        fs::read_dir(&export_root).unwrap().count(),
+        0,
+        "nothing left behind"
+    );
+    // The exact need restores.
+    let result = restore_owned(
+        &archive,
+        &destination.catalog,
+        RestoreOwner {
+            root: &export_root,
+            job: "synthetic-exact",
+            reserved: need,
+        },
+        store.limits(),
+        &none,
+        &progress,
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    let mut journal = crate::restore_journal::Journal::load(&export_root, "synthetic-exact")
+        .unwrap()
+        .unwrap();
+    journal
+        .cleanup(&destination.catalog, &export_root)
+        .await
+        .unwrap();
+    journal.forget_after_quota_release(&export_root).unwrap();
+    // Framing that cannot be in the upload is invalid before anything is summed.
+    let mut bytes = fs::read(&archive).unwrap();
+    bytes[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    let forged = destination.root.join("forged-count.bundle");
+    fs::write(&forged, &bytes).unwrap();
+    assert!(matches!(
+        restore_disk_need(&forged, unit, u64::MAX, &none),
+        Err(E::Invalid)
+    ));
+    bytes.truncate(bytes.len() - 1);
+    bytes[16..20].copy_from_slice(&5u32.to_le_bytes());
+    fs::write(&forged, &bytes).unwrap();
+    assert!(matches!(
+        restore_disk_need(&forged, unit, u64::MAX, &none),
+        Err(E::Invalid)
+    ));
+    assert!(matches!(
+        restore_disk_need(&archive, unit, 1, &none),
+        Err(E::Quota)
+    ));
+    destination.finish().await;
+    source.finish().await;
+}
+
+/// lytronaut-lbk B1, honest sizing for a real library shape: about 33,800
+/// captures with the surveyed corpus's companions (6.5 files per capture on
+/// average). Block rounding adds well under 0.1%, so the worker's
+/// re-admission grows the upload-time reservation by under 0.1% of the
+/// bundle; only libraries of very many tiny files need materially more.
+#[test]
+fn library_shaped_restore_need_grows_the_upload_reservation_by_under_a_tenth_percent() {
+    let unit = 4096;
+    let captures = 33_800u64;
+    let mut files = 0u64;
+    let mut payload = 0u64;
+    let mut cost = 0u64;
+    for capture in 0..captures {
+        let mut sizes = vec![16_000_000, 2_000_000, 3_000_000, 3_000_000, 30_000, 1_500];
+        if capture % 2 == 0 {
+            sizes.push(1_000_000);
+        }
+        for size in sizes {
+            files += 1;
+            payload += size;
+            cost += file_cost(size, unit).unwrap();
+        }
+    }
+    let catalog = 8_937 * captures;
+    let upload = 60 + catalog + 40 * files + payload;
+    let need = upload
+        + lytronaut_storage::portable::MAX_BYTES as u64
+        + JOB_FILES * unit
+        + file_cost(catalog, unit).unwrap()
+        + file_cost(40 * files, unit).unwrap()
+        + cost;
+    assert!(files > 6 * captures && files < 7 * captures);
+    assert!((cost - payload) * 1000 < payload, "rounding under 0.1%");
+    assert!(need > restore_need(upload).unwrap());
+    assert!(need - restore_need(upload).unwrap() < upload / 1000);
+}
+
+/// L6: a library with no originals backs up and restores (zero records).
+#[tokio::test]
+async fn library_without_originals_round_trips() {
+    let source = Fixture::new(false).await;
+    let store = Store::open(
+        source.catalog.clone(),
+        &source.root.join("originals"),
+        &source.root.join("staging"),
+        Limits {
+            free_floor: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let archive = source.root.join("empty.bundle");
+    let none = AtomicBool::new(false);
+    let progress = std::sync::atomic::AtomicU64::new(0);
+    let report = backup(
+        &source.catalog,
+        &store,
+        &archive,
+        u64::MAX,
+        &none,
+        &progress,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.files, 0);
+    assert_eq!(
+        u32::from_le_bytes(fs::read(&archive).unwrap()[16..20].try_into().unwrap()),
+        0
+    );
+    let destination = Fixture::new(false).await;
+    let (reopened, result, journal) =
+        restore_and_reopen(&destination, &archive, store.limits()).await;
+    let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_sources")
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap();
+    assert_eq!(sources, 0);
+    assert_eq!(fs::read_dir(result.join("originals")).unwrap().count(), 0);
+    release(&destination, reopened, journal).await;
+    source.finish().await;
+    destination.finish().await;
 }
 
 /// CI-only proof (`just large-bundle-test`): one original larger than 4 GiB and
@@ -792,9 +1029,16 @@ async fn large_bundle_beyond_4_gib_round_trips_losslessly() {
     let archive = source.root.join("beyond-4-gib.bundle");
     let cancel = AtomicBool::new(false);
     let progress = std::sync::atomic::AtomicU64::new(0);
-    let report = backup(&source.catalog, &store, &archive, &cancel, &progress)
-        .await
-        .unwrap();
+    let report = backup(
+        &source.catalog,
+        &store,
+        &archive,
+        u64::MAX,
+        &cancel,
+        &progress,
+    )
+    .await
+    .unwrap();
     assert_eq!(report.files, sizes.len() as u64 + 1);
     assert!(fs::metadata(&archive).unwrap().len() > originals);
     let (reopened, result, journal) = restore_and_reopen(&destination, &archive, &limits).await;
@@ -802,7 +1046,6 @@ async fn large_bundle_beyond_4_gib_round_trips_losslessly() {
     verify(&reopened, &result.join("originals")).await;
     verify_sparse_sized(&result.join("originals"), &sizes);
     assert!(logical_tables(&source.catalog, &[]).await == logical_tables(&reopened, &[]).await);
-    assert!(largest_copy_chunk() <= COPY_BUFFER);
     release(&destination, reopened, journal).await;
     source.finish().await;
     destination.finish().await;

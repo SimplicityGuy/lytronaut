@@ -1047,6 +1047,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         &catalog,
         s.store.as_ref().unwrap(),
         &archive,
+        u64::MAX,
         &cancel,
         &progress,
     )
@@ -1059,6 +1060,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
             &catalog,
             s.store.as_ref().unwrap(),
             &archive,
+            u64::MAX,
             &cancel,
             &progress
         )
