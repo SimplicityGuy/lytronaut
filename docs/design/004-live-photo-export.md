@@ -1,7 +1,9 @@
 # Portable Live Photo export
 
-Status: implementation in progress. Apple Photos import, VoiceOver, the full counted
-memory budget and GPU submit-to-present latency remain unverified (see the final section).
+Status: implementation in progress. Release CPU-mode focus interaction is **not met**
+on the merged tree (p95 138-150 ms against ≤100 ms). Apple Photos import, VoiceOver,
+the full counted memory budget and GPU submit-to-present latency remain unverified
+(see the final sections).
 
 A Live Photo is a still image plus a paired movie. Neither an ordinary JPEG nor
 an ordinary MOV alone is advertised as a Live Photo. Lytronaut packages the complete
@@ -633,7 +635,7 @@ evidence directory, not in the repository or CI.
 | Real-GPU regression | Pass | Adapter `apple`/`metal-3`; `chrome://gpu` reports WebGPU hardware accelerated on ANGLE Metal, no software renderer. The GPU browser suite, `live-photo-gpu-owner-test`, `live-photo-test.cjs` and the CPU browser suite passed |
 | Automatic CPU/GPU selection | Pass | No renderer buttons; five injected faults fell back to CPU within 742 ms; device loss recovered in 52 ms; destroy-reentry kept the newer capture |
 | Counted 64 MiB transient / 32 MiB retained | **Partial** | See below |
-| Performance (design 001 targets) | **Partial** | See below |
+| Performance (design 001 targets) | **Not met** | Release CPU-mode focus interaction p95 is 138-150 ms on the merged tree (target ≤100 ms). GPU submit-to-present is not verified. Other targets: see below |
 | Apple Photos recognition | **Not run** | See below |
 | VoiceOver | **Not run** | Cannot be automated |
 
@@ -652,21 +654,32 @@ events. The peak was PCM encoding: 24.63 MiB for 2048×1024 and 24.96 MiB for
 canvas and VideoFrame backing during strip copy; physical JS string/Blob storage
 and sharing; serde/BTree nodes, allocator rounding and Vec growth overlap; the UI
 manifest; Tachys strings, signal infrastructure and DOM storage. Opaque decoder
-pools are outside the counted budget by definition. This is not acceptance of
+pools are outside the counted budget by definition. The native service Live
+Photo render peak is also **not measured**: up to an 8 MiB source, a 16 MiB movie,
+an 18 MiB ZIP and one decoded plane can be live at once. This is not acceptance of
 the 64 MiB/32 MiB budget.
 
-**Performance**, release native and WASM. Focus interaction p95 was 91.3 ms in
-GPU mode (one 100.5 ms maximum) and 88.6 ms in CPU mode, against ≤100 ms. Neither
-first batch had pending grid images, so neither is load-contended evidence.
+**Performance**, release native and WASM, target ≤100 ms p95. At `623f2b9`, focus
+interaction p95 was 91.3 ms in GPU mode (one 100.5 ms maximum) and 88.6 ms in CPU
+mode. On the merged tree (`b81e689` code), CPU mode is **not met**: 145 ms
+(first batch) and 150.4 ms (second batch) in one run, 137.9 ms in both batches of
+a rerun. GPU mode measured 83.9 ms. No first batch had pending grid images, so
+none is load-contended evidence.
 Native HTTP decode p95 was 2.9 ms. Fallback indication took at most 761 ms,
 against ≤1 s. The ≤16.7 ms GPU submit-to-present target is **not verified**:
 submit to the second animation frame callback is only a proxy (headless p95 94.9 ms),
 and no presentation was correlated. A headful trace run failed exact pixel
 comparison at device scale 2; it is not counted.
 
-**Apple Photos is not verified.** The synthetic pair passed the resource loader
-at `35c7770`, and again with the `5896bfc` encoder. The loader recognizes it (`livePhotoResourceRecognized=true`) and rejects a mismatched
-pair. Automation could not create an isolated library: PhotoKit library creation
+**Apple Photos is not verified.** The pair to import is the rebuilt synthetic pair
+in the local evidence folder `lytronaut-evidence/9fw-gate5-fbe615a/`. It was built
+by `just live-photo-apple` from `fbe615a` code; its `SHA256SUMS` and `README.md`
+there give hashes and exact steps. On that pair, the Apple resource loader decoded
+3 frames, recognized it (`livePhotoResourceRecognized=true`) and rejected a
+mismatched pair. Independently parsed slice headers give idr_pic_id [0, 1, 0]
+in decode order. Do **not** import the older `35c7770` pair (folder
+`9fw-local-35c7770/gate5`): it predates the idr_pic_id fix, and its movie files
+were removed. Automation could not create an isolated library: PhotoKit library creation
 needs a private entitlement and UI scripting is unavailable. A guarded launch
 pointed at an isolated library still opened system libraries, so it was stopped
 before import. A person must do the following:
@@ -674,7 +687,7 @@ before import. A person must do the following:
 1. Hold Option while opening Photos and create
    `/private/tmp/lytronaut-9fw-isolated-photos-20261012/Test.photoslibrary`,
    without making it the System Photo Library or enabling iCloud.
-2. Import the extracted `focus.JPG` and `focus.MOV` together.
+2. Import `focus.JPG` and `focus.MOV` from `9fw-gate5-fbe615a/` together.
 3. Confirm that one item appears with the LIVE badge, the key frame is correct
    and the motion plays.
 4. Reopen the usual library as the default and delete the test library.
@@ -703,8 +716,16 @@ server-side jobs are not covered; launch still rejects a busy lane with a messag
 
 - **PostgreSQL:** the download handler read the job kind with a SQLite-only `?`
   placeholder, so every Live Photo download failed on PostgreSQL (`6046bf6`). Four
-  Live Photo API cases (create/download, DELETE, in-flight cancel, failed plane)
-  are now a separate exact-count group in `just postgres-parity` (`48bcc66`).
+  Live Photo API cases (create/download, DELETE of a ready pair, DELETE
+  immediately after create, out-of-range plane index) are now a separate
+  exact-count group in `just postgres-parity` (`48bcc66`).
+  These tests have known limits, tracked in follow-up bead `lytronaut-0f6` (Strengthen
+  Live Photo API tests and fix Flatten export durability gap). The
+  DELETE-after-create case accepts either a running or an already-finished job,
+  so it does not prove cancellation of in-flight work. The failed-plane case uses
+  an out-of-range index, not an archived but unavailable plane. The in-process
+  restart helper leaves earlier job workers running. Flatten export still
+  fsyncs the export root rather than the job's own directory.
   Admission uses the epic's reserved-space, free-floor and job-ordering accounting
   with the 18 MiB bundle reservation.
 - **H.264 `idr_pic_id`:** it was derived from source plane parity, so consecutive
@@ -713,10 +734,13 @@ server-side jobs are not covered; launch still rejects a busy lane with a messag
   H.264 7.4.3. The JPEG is unchanged; the MOV bytes change only in
   those slice headers. No golden hashes are committed.
 
-### Merged-tree validation (`4761d42`, epic `7e65524` incorporated)
+### Merged-tree validation (`b81e689` code, epic `7e65524` incorporated)
 
-The tree was validated locally after merging the SQLite/PostgreSQL epic. Code is
-identical to `b81e689`; the only later change is documentation.
+The tree was validated locally after merging the SQLite/PostgreSQL epic, at code
+`b81e689`. The local evidence folder is named `9fw-local-4761d42` after an
+unpushed documentation amend that is not in branch history. That amend has the
+same non-documentation files as `b81e689`; a `REVISION-NOTE.txt` in the folder
+records this.
 
 | Check | Result |
 | --- | --- |
@@ -725,10 +749,13 @@ identical to `b81e689`; the only later change is documentation.
 | CPU browser suite, GPU browser suite (`apple`/`metal-3`), `live-photo-gpu-owner-test`, `live-photo-test.cjs` | Passed |
 | Owner suite (3 shapes, JPEG rejection experiment, import-lane remount) | Passed; counted peaks unchanged (24.96 MiB padded, 24.63 MiB large) |
 | Release focus interaction, GPU mode | p95 83.9 ms (≤100 ms) |
-| Release focus interaction, CPU mode | **Failed the 100 ms target**: p95 145 ms then 138 ms on two runs |
+| Release focus interaction, CPU mode | **Not met**: p95 145 / 150.4 ms (first / second batch), then 137.9 / 137.9 ms on a rerun |
 
-The CPU-mode runs happened under host load from unrelated processes (load average
-about 7). The same check measured 88.6 ms at `623f2b9`, and the merge changed no
-client or format code. This is not counted as a pass, and it stays in the open
-performance gate (`lytronaut-re8.3`). Apple Photos, VoiceOver, the full counted
+The CPU-mode miss is **unexplained and may be a regression**. The second batch,
+which is not load-contended, was also 150.4 ms. The host load average was about 7,
+but host load is not established as the cause. The merge changed no client or
+format code, but it did change the service, which is on the measured path. An
+A/B run of `623f2b9` and the merged code on a quiet host is required
+(`lytronaut-re8.3` item 10). No A/B run was possible here: load average was 8.5
+when it was attempted. Apple Photos, VoiceOver, the full counted
 budget and GPU submit-to-present remain unverified.

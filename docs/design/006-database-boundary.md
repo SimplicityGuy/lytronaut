@@ -265,8 +265,9 @@ its case list:
 - Four Live Photo export scenarios (run separately from the six HTTP scenarios
   above): create and download complete private-metadata-free pairs in all eight
   orientations; DELETE of a ready pair releasing its files and quota across
-  restart; in-flight cancellation that never offers a half-pair; and an
-  unavailable plane failing without output and surviving restart.
+  restart; DELETE immediately after create (the job may already have finished),
+  which never offers a half-pair; and an out-of-range plane index failing without
+  output and surviving restart. Follow-up `lytronaut-0f6` strengthens the last two.
 - Five portable backup cases with a PostgreSQL destination or source:
   SQLite→PostgreSQL, PostgreSQL→SQLite and PostgreSQL→PostgreSQL round trips, the
   four exact version-1 legacy forms, and near-32 MiB legacy files (one large cell;
