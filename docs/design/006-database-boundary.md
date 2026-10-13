@@ -224,26 +224,40 @@ still lists 18.6 as stable; 19 Beta is a prerelease. Fresh official registry
 manifest metadata matched its `Docker-Content-Digest` by SHA-256 of the original
 10,293 response bytes, with Linux amd64 and arm64 descriptors. No manifest
 reserialization, image pull or local service startup was needed for this check.
+Re-verified for `lytronaut-55g` on 2026-10-13: the versioning page and the
+official source listing still show 18.6 as the newest stable release (19 beta 4
+newest prerelease); the `18.6-alpine` tag and the pinned digest both return the
+same 10,293-byte OCI index whose SHA-256 equals the digest; its linux/amd64 and
+linux/arm64 manifests and configs hash to their descriptors and declare
+`PG_VERSION=18.6`. The pin now lives once in `compose.postgres.yaml`, which the
+fixture and deployment tests read.
 
-The disposable CI database runs with one CPU, 512 MiB RAM and a bounded health
-check. Only bootstrap creates the test role and public sentinel. The tested
+The disposable database runs with one CPU, 1 GiB RAM, 256 PIDs and a bounded
+TCP readiness wait. Only bootstrap creates the test role and public sentinel. The tested
 application role has LOGIN, CONNECT and CREATE on the dedicated test database,
 with NOSUPERUSER, NOCREATEDB, NOCREATEROLE and NOREPLICATION; it has no CREATE
 privilege on `public`. Database CREATE permits generated private schemas and
 does not grant the role permission to create databases. The public sentinel has
-one synthetic marker and a SELECT-only grant. Generated passwords and the
-job-only connection URL are masked before use, kept in the runner environment,
-and never uploaded with captures, fixture metadata or credentials.
+one synthetic marker and a SELECT-only grant. Passwords are generated per run;
+the bootstrap password reaches Docker only through the client environment and
+the connection URL only through the test command's environment. The recipe
+redacts the URL and password from test output and nothing is uploaded.
 
 `mise exec -- just postgres-test` requires `LYTRONAUT_TEST_POSTGRES_URL` rather
-than falling back to SQLite or skipping tests. Provision this role and sentinel
-in a dedicated disposable database before using the local recipe; the workflow
-contains the exact trusted bootstrap SQL. For a local bootstrap, use a generated
-password instead of reusing the workflow's disposable bootstrap value. The
-recipe is explicit opt-in and runs serially with exact result-count assertions:
+than falling back to SQLite or skipping tests. `mise exec -- just postgres-parity`
+(used by the CI job, `lytronaut-55g`) provisions exactly this role and sentinel in
+a disposable, uniquely named container and volume of the release pinned in
+`compose.postgres.yaml`, with generated passwords, asserts `server_version_num`,
+runs `postgres-test` and removes its own container and volume. The recipe runs
+serially with exact result-count assertions; the expected total is computed from
+its case list:
 
 - Seven actual PostgreSQL storage unit contracts (including actual SQLite oracles).
 - One actual Desktop intake/adaptation/originals/conflict/reopen contract.
+- Three HTTP upload-boundary scenarios (streaming progress and Unicode names;
+  stream overflow, content encoding and unsafe names; malformed declarations
+  never echoed) on an owned schema, rechecking the restricted role and public
+  sentinel at start and close.
 - Six HTTP scenarios: browse/search/detail/assets/originals and restart,
   unsupported input/cancellation, ZIP publication, concurrent publication polling,
   PNG/JPEG export/cancellation/restart, and the lossless portable bundle
@@ -275,13 +289,13 @@ sentinel before/after migrations and at cleanup, and removes only its own schema
 A failed assertion may leave a generated schema in the disposable CI database;
 the service is job-scoped and never shares a user database.
 
-Only the exact sixth HTTP scenario
-`public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_and_interruption`
-is temporarily omitted from this focused PostgreSQL recipe because portable
-backup remains pending `lytronaut-1ga`. The same scenario remains active in the
-SQLite suite. This is an explicit pending acceptance item, not a coverage
-exclusion, a completed PostgreSQL backup claim, or the final release gate. The
-backup bead must enable the scenario and add same/cross-backend restore checks.
-The current checkpoint has only static validation: older b585 actual 31 SQLite
-and 7 PG results do not attest to this login-free source or its new HTTP paths.
-The full current-tree actual-engine checks and pristine submission remain pending.
+No PostgreSQL case is excluded. The lossless portable bundle HTTP scenario
+(`public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_and_interruption`)
+runs on PostgreSQL in this recipe since `lytronaut-1ga`, and `lytronaut-55g`
+added the upload-boundary group; the earlier staging exclusion no longer exists.
+The recipe fails if any group reports a different count, any failed, ignored or
+measured test, or no result. Deployment-level execution of both engines (Compose
+services, external PostgreSQL, persistence, permissions and all four cross-backend
+restores in Linux containers) is `just deployment-test`, described in
+`docs/operations/linux.md`. Line coverage is gated separately by the release
+acceptance task.
