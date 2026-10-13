@@ -12,7 +12,7 @@ module.exports=async({browser,origin})=>{
     await page.evaluateOnNewDocument(source=>{
       Object.defineProperty(navigator,'gpu',{value:undefined});
       const native={fetch:window.fetch.bind(window),create:URL.createObjectURL,revoke:URL.revokeObjectURL,blob:Blob,image:Image,decode:HTMLImageElement.prototype.decode};
-      const probe=window.__lifetime={native,source,mode:'',lastMainSort:null,lastMainAlias:null,lastAlbumAlias:null,libraryCalls:0,captureCalls:0,posts:0,hold:null,releasePost:null,postAccepted:false,urls:new Map(),created:0,revoked:0,blobMax:0,abortCreate:null,createFailure:false,imageFailure:false,decodeFailure:false,imageFailures:0,decodeFailures:0,reenter:null};
+      const probe=window.__lifetime={native,source,mode:'',lastMainSort:null,lastMainAlias:null,lastAlbumAlias:null,libraryCalls:0,captureCalls:0,posts:0,hold:null,releasePost:null,postAccepted:false,urls:new Map(),created:0,revoked:0,blobMax:0,abortCreate:null,releaseImport:null,createFailure:false,imageFailure:false,decodeFailure:false,imageFailures:0,decodeFailures:0,reenter:null};
       URL.createObjectURL=function(blob){if(probe.createFailure)throw Error('public URL creation failure');const url=native.create.call(this,blob);probe.created++;probe.urls.set(url,blob.size);probe.blobMax=Math.max(probe.blobMax,blob.size);if(probe.abortCreate){const abort=probe.abortCreate;probe.abortCreate=null;abort.abort();}return url;};
       URL.revokeObjectURL=function(url){if(probe.urls.delete(url))probe.revoked++;return native.revoke.call(this,url);};
       window.Image=function(...args){if(probe.imageFailure){probe.imageFailures++;throw Error('public image construction failure');}return new native.image(...args);};
@@ -35,6 +35,10 @@ module.exports=async({browser,origin})=>{
           return new Response(stream,{headers:{'Content-Type':'application/json'}});
         }
         if(/^\/libraries\/public-lifetime-library-[01]\//.test(url.pathname)){url.pathname=url.pathname.replace(/public-lifetime-library-[01]/,source.id);request=new Request(url,request);}
+        if(request.method==='GET'&&/^\/imports\/[^/]+$/.test(url.pathname)&&probe.mode==='hold-import-status'){
+          // Hold the actual import recovery read so the import lane stays occupied.
+          probe.mode='';return new Promise(resolve=>probe.releaseImport=()=>{probe.releaseImport=null;resolve(native.fetch(request));});
+        }
         if(request.method==='POST'&&url.pathname==='/exports')probe.posts++;
         const response=await native.fetch(request);
         if(libraries&&response.ok){const body=await response.json();return new Response(JSON.stringify({...body,items:[0,1].map(index=>({...source,id:'public-lifetime-library-'+index}))}),{headers:{'Content-Type':'application/json'}});}
@@ -129,16 +133,33 @@ module.exports=async({browser,origin})=>{
       await page.waitForFunction(fault=>window.__lifetime[fault==='imageFailure'?'imageFailures':'decodeFailures']>0&&document.querySelectorAll('.capture').length===24&&document.querySelectorAll('.capture .thumb-empty').length>0,{},fault);
       await page.evaluate(fault=>{window.__lifetimeModule.harness_dispose();window.__lifetime[fault]=false;window.__lifetimeModule.harness_remount();},fault);await ready();
     }
+    phase='import-lane-setup';
+    // The import lane is page-global: a remounted owner must keep import controls
+    // disabled while a replaced owner's recovery still holds it.
+    const importControls=()=>page.evaluate(()=>({directory:document.querySelector('#directory').disabled,zip:document.querySelector('#zip').disabled,recover:[...document.querySelectorAll('button')].find(b=>b.textContent==='Recover import status')?.disabled}));
+    await page.evaluate(()=>{sessionStorage.setItem('lytronaut-import','public-lifetime-import');window.__lifetimeModule.harness_remount();});await ready();
+    phase='import-lane-recover-offered';await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(b=>b.textContent==='Recover import status'&&!b.disabled));
+    await page.evaluate(()=>{window.__lifetime.mode='hold-import-status';[...document.querySelectorAll('button')].find(b=>b.textContent==='Recover import status').click();});
+    phase='import-lane-held';await page.waitForFunction(()=>window.__lifetime.releaseImport!==null);await settle();
+    assert.deepEqual(await importControls(),{directory:true,zip:true,recover:true},'held import lane disables import controls');
+    // The held recovery keeps its viewer lease, so browse data waits; only the
+    // remounted import controls are observed until the recovery is released.
+    phase='import-lane-remount';await page.evaluate(()=>window.__lifetimeModule.harness_remount());
+    await page.waitForFunction(()=>document.querySelector('#directory')&&[...document.querySelectorAll('button')].some(b=>b.textContent==='Recover import status'));await settle();
+    assert.deepEqual(await importControls(),{directory:true,zip:true,recover:true},'remounted owner still sees the held import lane');
+    phase='import-lane-released';await page.evaluate(()=>window.__lifetime.releaseImport());
+    await page.waitForFunction(()=>!document.querySelector('#directory').disabled&&!document.querySelector('#zip').disabled&&![...document.querySelectorAll('button')].find(b=>b.textContent==='Recover import status').disabled);
+    await page.evaluate(()=>sessionStorage.removeItem('lytronaut-import'));await ready();
     phase='url-cleanup';await page.evaluate(()=>window.__lifetimeModule.harness_dispose());
     await page.waitForFunction(()=>window.__lifetime.urls.size===0);const urls=await page.evaluate(()=>({created:window.__lifetime.created,revoked:window.__lifetime.revoked,logicalJpegBytesMax:window.__lifetime.blobMax}));
     assert(urls.created>0);assert.equal(urls.created,urls.revoked);assert(urls.logicalJpegBytesMax>0);assert.deepEqual(errors,[]);
-    return {jpeg,stalledRead:true,stalledCancel:true,remountDrains:true,synchronousCaptureControlBurst:true,reentrantSelected:true,reentrantMain:true,reentrantLibrary:true,actionBeforePollDisposed:true,acceptedMutationRecovery:true,constructorFailure:true,decodeFailure:true,rendererDestroyReentryCovered:false,rendererDestroyReentryPending:true,urlsReleasedBeforeClose:true,...urls,capacityCollection:false,totalMemoryProof:false};
+    return {jpeg,stalledRead:true,stalledCancel:true,remountDrains:true,synchronousCaptureControlBurst:true,reentrantSelected:true,reentrantMain:true,reentrantLibrary:true,actionBeforePollDisposed:true,acceptedMutationRecovery:true,importLaneRemount:true,constructorFailure:true,decodeFailure:true,rendererDestroyReentryCovered:false,rendererDestroyReentryPending:true,urlsReleasedBeforeClose:true,...urls,capacityCollection:false,totalMemoryProof:false};
   }catch(cause){
     const detail=String(cause?.message??cause).slice(0,480);const pageErrors=errors.length?' pageErrors='+JSON.stringify(errors.slice(0,4)):'';
     throw Error('public browser lifetime regression failed: '+phase+': '+detail+pageErrors,{cause});
   }
   finally{
-    try{if(!page.isClosed())await page.evaluate(()=>{const p=window.__lifetime;if(!p)return;if(p.hold){p.hold.releaseRead();p.hold.releaseCancel();}if(p.releasePost)p.releasePost();window.__lifetimeModule?.harness_dispose();window.fetch=p.native.fetch;URL.createObjectURL=p.native.create;URL.revokeObjectURL=p.native.revoke;window.Image=p.native.image;HTMLImageElement.prototype.decode=p.native.decode;});}
+    try{if(!page.isClosed())await page.evaluate(()=>{const p=window.__lifetime;if(!p)return;if(p.hold){p.hold.releaseRead();p.hold.releaseCancel();}if(p.releasePost)p.releasePost();if(p.releaseImport)p.releaseImport();window.__lifetimeModule?.harness_dispose();window.fetch=p.native.fetch;URL.createObjectURL=p.native.create;URL.revokeObjectURL=p.native.revoke;window.Image=p.native.image;HTMLImageElement.prototype.decode=p.native.decode;});}
     finally{await page.close();}
   }
 };

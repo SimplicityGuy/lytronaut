@@ -911,7 +911,7 @@ struct Ui {
     stage_generation: Rc<RefCell<u64>>,
     stage_abort: Rc<RefCell<Option<AbortController>>>,
     busy: RwSignal<bool>,
-    /// This mount's import action lane is occupied (upload, recovery or retry).
+    /// The page-global import action lane (upload, recovery or retry) is held.
     import_pending: RwSignal<bool>,
     job: RwSignal<String>,
     progress: RwSignal<u64>,
@@ -2618,14 +2618,28 @@ enum ActionLane {
 }
 thread_local! {
     static ACTIONS: RefCell<[bool; 4]> = const { RefCell::new([false; 4]) };
+    /// The current mount's import indicator. Lanes are page-global and outlive
+    /// owner replacement, so the indicator follows the lane, not the mount that
+    /// launched the action.
+    static IMPORT_INDICATOR: Cell<Option<RwSignal<bool>>> = const { Cell::new(None) };
 }
-/// Releases the lane and, for imports, the launching mount's pending indicator.
-struct ActionGuard(ActionLane, Option<RwSignal<bool>>);
+fn show_import_lane(held: bool) {
+    // Copy the handle out first: setting a signal never runs under this borrow.
+    if let Some(indicator) = IMPORT_INDICATOR.with(Cell::get) {
+        let _ = indicator.try_set(held);
+    }
+}
+/// Make `indicator` the current mount's view of the page-global import lane.
+fn register_import_indicator(indicator: RwSignal<bool>) {
+    indicator.set(ACTIONS.with(|owners| owners.borrow()[ActionLane::Import as usize]));
+    IMPORT_INDICATOR.with(|current| current.set(Some(indicator)));
+}
+struct ActionGuard(ActionLane);
 impl Drop for ActionGuard {
     fn drop(&mut self) {
         ACTIONS.with(|owners| owners.borrow_mut()[self.0 as usize] = false);
-        if let Some(pending) = self.1 {
-            let _ = pending.try_set(false);
+        if matches!(self.0, ActionLane::Import) {
+            show_import_lane(false);
         }
     }
 }
@@ -2658,13 +2672,13 @@ where
     }
     // Acquire synchronously before creating a future. Accepted side effects are
     // never overwritten or cancelled by browse navigation or owner replacement.
-    // Import controls stay disabled for exactly as long as their lane is held, so a
-    // selection is never offered and then rejected as still pending.
-    let pending = matches!(lane, ActionLane::Import).then_some(ui.import_pending);
-    if let Some(pending) = pending {
-        pending.set(true);
+    // The current mount's import controls are disabled while the page-global
+    // import lane is held, including work launched by a replaced mount. Another
+    // tab or a server-side job is not covered; launch still rejects a busy lane.
+    let guard = ActionGuard(lane);
+    if matches!(lane, ActionLane::Import) {
+        show_import_lane(true);
     }
-    let guard = ActionGuard(lane, pending);
     let task = factory();
     spawn_local(async move {
         let _guard = guard;
@@ -2691,6 +2705,7 @@ fn ui() -> Ui {
 }
 pub fn app() -> impl IntoView {
     let state = Ui::new();
+    register_import_indicator(state.import_pending);
     provide_context(StoredValue::new_local(state.clone()));
     if let Ok(Some(storage)) = web_sys::window().unwrap().session_storage()
         && let Ok(Some(id)) = storage.get_item("lytronaut-import")

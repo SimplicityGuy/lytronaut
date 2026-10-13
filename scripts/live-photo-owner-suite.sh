@@ -25,7 +25,7 @@ for(const [index,report] of reports.entries()){
   const lifetime=report.browseLifetimeProof;
   if(index===0){
     assert(lifetime&&typeof lifetime==='object','small canonical owner must execute browser lifetime regressions');
-    const facts=['stalledRead','stalledCancel','remountDrains','synchronousCaptureControlBurst','reentrantSelected','reentrantMain','reentrantLibrary','actionBeforePollDisposed','acceptedMutationRecovery','constructorFailure','decodeFailure','urlsReleasedBeforeClose'];
+    const facts=['stalledRead','stalledCancel','remountDrains','synchronousCaptureControlBurst','reentrantSelected','reentrantMain','reentrantLibrary','actionBeforePollDisposed','acceptedMutationRecovery','importLaneRemount','constructorFailure','decodeFailure','urlsReleasedBeforeClose'];
     const keys=['jpeg',...facts,'rendererDestroyReentryCovered','rendererDestroyReentryPending','created','revoked','logicalJpegBytesMax','capacityCollection','totalMemoryProof'];
     assert.deepEqual(Object.keys(lifetime).sort(),keys.sort(),'fixed public lifetime schema');
     for(const key of facts)assert.equal(lifetime[key],true,`required actual synthetic lifecycle fact: ${key}`);
