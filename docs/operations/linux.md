@@ -111,14 +111,23 @@ recorded).
 
 If the log reports `Lytronaut job <id>: its published restore result failed
 verification and is no longer ready`, a previously completed restore copy no longer
-matches its ownership record (for example its private directory permissions changed,
-its restore journal is missing after the work volume was restored from an older
-snapshot, or its PostgreSQL restore schema is missing or altered). The job now reads
+matches its ownership record. Startup checks only ownership, not the restored data
+itself: the restore journal must exist and record publication; the
+`staging.exports/<id>.restored` directory must exist with private permissions and
+contain the matching private `restore-owner` marker; and on PostgreSQL the job's
+`lytronaut_restore_*` schema must exist with a `restore_ownership` row naming this
+job and nonce. Typical causes are changed directory permissions, a work volume or
+database restored from an older snapshot, or a dropped or edited restore schema or
+marker row. Restored tables and rows are not re-checked at startup. The job now reads
 failed (`storage_unavailable`) and nothing it holds is deleted or released
 automatically. Inspect `staging.exports/<id>.restored`; if the copy is still wanted,
 take it out of the application's work area yourself, then `DELETE /exports/<id>`.
 DELETE removes the copy and schema only when ownership can still be proved; without
 a journal it refuses, and you remove the leftovers manually before deleting the job.
+
+`Lytronaut job <id>: a previously ready restore has no database record` means the
+database is older than the work volume. The job is re-created as failed
+(`storage_unavailable`) with its staging quota counted and is handled the same way.
 
 Use the workspace's **Back up originals and catalog** action and download its
 private bundle. Restore uploads into a separate store inside the work volume;

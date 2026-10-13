@@ -180,6 +180,51 @@ unreleased integration-branch history (introduced 2026-10-11, never on `main`, n
 release or tag), and the current code creates them only inside a recorded transfer
 owner directory.
 
+## Startup reconciliation matrix
+
+Restore jobs at startup, by database row state, restore journal phase and whether
+the owned files (`<job>.restored` / pending store and, on PostgreSQL, the owned
+schema) are present. "Unverified" means: persist `failed` / `unverified-result`
+(reported as retryable `storage_unavailable`), retain files, schema, journal and
+quota (re-counting the journaled reservation if the row lost it), never ready, and
+remove only on an explicit `DELETE` with ownership proof. "Cleanup" means owned
+cleanup with marker/nonce proof, releasing quota only after removal; an unprovable
+or failed cleanup becomes `cleanup-blocked` (retained, retried on DELETE/startup).
+Startup is refused only for whole-store failures or when the chosen state cannot be
+persisted. Journal phases: never-ready = Prepared, SchemaOwned, RowsCommitted,
+FilesReady; published = FilesPublished; once-ready = JobSucceeded; cleanup-intent =
+CleanupPending, CleanupComplete (a cleanup was already decided and begun).
+
+| Row state | Journal phase | Files | Action |
+|---|---|---|---|
+| any, error `unverified-result` | any | any | Keep as is (retained until DELETE) |
+| `succeeded` | published or once-ready | present, verified (dir, private marker, PG schema marker) | Ready; journal → JobSucceeded |
+| `succeeded` | published or once-ready | missing or not verified | Unverified |
+| `succeeded` | never-ready or cleanup-intent | any | Unverified |
+| `succeeded` | absent | any | Unverified (M1) |
+| missing | once-ready | any | Re-create row as unverified with retained = journaled reservation |
+| `queued`/`running`/`cancelling` | once-ready | any | Unverified (database regressed; no recorded DELETE) |
+| `failed` (not `cleanup-blocked`) | once-ready | any | Unverified |
+| `cancelled`, or `failed`/`cleanup-blocked` | once-ready | any | Cleanup (recorded DELETE) |
+| missing, `queued`/`running`/`cancelling` | published | any | Unverified (no recorded outcome; may have been ready); missing row re-created |
+| `cancelled` or `failed` | published | any | Cleanup (recorded terminal outcome) |
+| any non-`succeeded`, or missing | never-ready | any | Mark interrupted (keep a recorded reason), Cleanup |
+| any non-`succeeded`, or missing | cleanup-intent | any | Cleanup (continue the recorded decision) |
+| `failed`/`cancelled` | absent | `<job>.restored` or `<job>.pending-*` present | Cleanup-blocked (unprovable; nothing deleted, quota kept) |
+| `failed`/`cancelled` | absent | none present | Release quota (nothing owned remains) |
+| `queued`/`running`/`cancelling` | absent | any | Mark interrupted, then as the `failed` rows above |
+
+Every cell that can delete data requires either a recorded cancellation/DELETE or
+terminal failure (cancelled, failed, cleanup-blocked), a never-ready phase, or an
+already recorded cleanup decision. Without a journal nothing restore-owned is
+deleted because ownership cannot be proved.
+
+Finished non-restore exports (archive and flatten artifacts) are not re-verified at
+startup. A `succeeded` archive/flatten row keeps its status even if its artifact was
+lost or the database regressed, so the status can be misleading; download still
+refuses it unless the job is `succeeded` and its transfer-owner record and artifact
+verify, so no unverified bytes are served.
+
 ## Verification
 
 Executed on SQLite in the default suite and on PostgreSQL 18.6 through the strict
