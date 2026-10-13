@@ -57,14 +57,16 @@ isolated application copy. See [export and restore](docs/architecture/api.md#ver
 `LYTRONAUT_DATA` selects the private application state directory; never point it
 at a source library. `just browser-test` runs synthetic actual-service/browser
 integration after `just wasm-build build`. See [private Linux Docker operation](docs/operations/linux.md) for image builds,
-Compose configuration and persistent mounts.
+SQLite or PostgreSQL Compose configuration, persistent mounts, backup and upgrades.
+`just postgres-parity` runs the strict PostgreSQL suite against a disposable
+container of the pinned PostgreSQL release.
 See [browser operation and evidence](docs/architecture/browser.md),
 [deployment access](docs/architecture/authentication.md), and
 [workspace contracts](docs/architecture/contracts.md).
 
 ## Architecture direction
 
-An independent Rust implementation using Axum/Tokio, SQLite with durable jobs,
+An independent Rust implementation using Axum/Tokio, SQLite or PostgreSQL with durable jobs,
 and Leptos client-side Rust/WASM. Pure Rust JPEG decoding provides the native
 preview baseline. Optional browser wgpu/WebGPU presentation and WebCodecs
 through Rust bindings require successful runtime probes and retain static/CPU

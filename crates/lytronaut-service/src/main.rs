@@ -41,11 +41,12 @@ async fn run() -> Result<(), ServiceError> {
     let directory = std::path::Path::new(&directory);
     local::private_directory(directory)?;
     local::remove_obsolete_bootstrap(directory)?;
-    let database = local::application_database(directory)?;
-    local::database_file(&database)?;
-    let catalog = lytronaut_storage::Catalog::open_application_database(&database)
+    let catalog = lytronaut_service::database::open(directory)
         .await
-        .map_err(|_| ServiceError)?;
+        .map_err(|error| {
+            eprintln!("Lytronaut: {error}");
+            ServiceError
+        })?;
     let origin =
         std::env::var("LYTRONAUT_ORIGIN").unwrap_or_else(|_| "http://127.0.0.1:3000".to_owned());
     let security = SecurityConfig::new(&origin)?;

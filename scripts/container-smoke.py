@@ -49,7 +49,9 @@ with tempfile.TemporaryDirectory(prefix='lytronaut-container-fixture-') as scrat
                 '--cpus=2', '--memory=2g', '--pids-limit=128',
                 '-e', 'LYTRONAUT_ORIGIN=http://127.0.0.1:3000', '-e', 'LYTRONAUT_FREE_FLOOR=2147483648',
                 '-e', 'LYTRONAUT_UPLOAD_BYTES=67108864', '-e', 'LYTRONAUT_FILE_BYTES=16777216',
-                '-e', 'LYTRONAUT_ENCODED_BYTES=67108864', '-e', 'LYTRONAUT_RESERVED_BYTES=536870912',
+                # Archive admission reserves unique originals + 2 x 288 MiB portable catalog
+                # spool/copy + framing (docs/design/007-portable-backup.md), ~625 MiB here.
+                '-e', 'LYTRONAUT_ENCODED_BYTES=67108864', '-e', 'LYTRONAUT_RESERVED_BYTES=2147483648',
                 '-e', 'LYTRONAUT_UPLOAD_FILES=1000',
                 *(['-e','LYTRONAUT_LISTEN='+listen] if listen else []),
                 *(['-e',f'LYTRONAUT_DATA=/data/work/staging.exports/{restored}.restored/store',

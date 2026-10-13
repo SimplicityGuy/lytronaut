@@ -165,6 +165,9 @@ fn licenses(write: bool) -> Result<()> {
         "Unlicense",
         "0BSD",
         "BSL-1.0",
+        // webpki-roots CA data: redistribution requires retaining the agreement.
+        // The generated notices include its complete upstream LICENSE text.
+        "CDLA-Permissive-2.0",
     ];
     for p in &packages {
         let name = p["name"].as_str().ok_or("missing package name")?;
@@ -180,6 +183,10 @@ fn licenses(write: bool) -> Result<()> {
             | "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT" => "MIT",
             "(MIT OR Apache-2.0) AND Unicode-3.0" => "MIT AND Unicode-3.0",
             "MIT AND BSD-3-Clause" => "MIT AND BSD-3-Clause",
+            // ring 0.17.14 requires both licenses; retain all upstream legal texts.
+            "Apache-2.0 AND ISC" => "Apache-2.0 AND ISC",
+            // rustls offers any one of these permissive licenses.
+            "Apache-2.0 OR ISC OR MIT" | "Apache-2.0 OR BSL-1.0 OR MIT" => "MIT",
             "BSD-3-Clause OR Apache-2.0" => "BSD-3-Clause",
             "BSD-2-Clause OR Apache-2.0 OR MIT"
             | "0BSD OR MIT OR Apache-2.0"
@@ -227,10 +234,18 @@ fn licenses(write: bool) -> Result<()> {
         }
         for file in files {
             let relative = file.strip_prefix(&text_root)?;
+            // Preserve legal words/indentation while making notice formatting
+            // reproducible across upstream CRLF and trailing-space variants.
+            let legal = fs::read_to_string(&file)?;
+            let legal = legal
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n");
             notices.push_str(&format!(
                 "### {}\n\n```text\n{}\n```\n\n",
                 relative.display(),
-                fs::read_to_string(&file)?.trim_end()
+                legal.trim_end()
             ));
         }
     }

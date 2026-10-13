@@ -1,7 +1,7 @@
 //! Local owner-operated diagnostics. Never emit source paths, row values, hashes or credentials.
 use crate::{api, local};
 use lytronaut_contracts::{ImportKind, ImportRequest, WireVersion};
-use lytronaut_storage::{Catalog, Limits, Store, desktop};
+use lytronaut_storage::{Limits, Store, desktop};
 use serde::Serialize;
 use std::{
     fs,
@@ -159,11 +159,7 @@ async fn run_inner(operation: &str, source: &Path, data: &Path) -> Result<Suppor
         return Err(());
     }
     local::private_directory(data).map_err(|_| ())?;
-    let database = local::application_database(data).map_err(|_| ())?;
-    local::database_file(&database).map_err(|_| ())?;
-    let catalog = Catalog::open_application_database(&database)
-        .await
-        .map_err(|_| ())?;
+    let catalog = crate::database::open(data).await.map_err(|_| ())?;
     let store = Store::open(
         catalog.clone(),
         &data.join("originals"),
@@ -197,7 +193,7 @@ async fn run_inner(operation: &str, source: &Path, data: &Path) -> Result<Suppor
         return Err(());
     }
     api::adapt(&catalog, &store, &job).await.map_err(|_| ())?;
-    let version: i64 = sqlx::query_scalar("SELECT version FROM api_imports WHERE job=?")
+    let version: i64 = sqlx::query_scalar("SELECT version FROM api_imports WHERE job=$1")
         .bind(job)
         .fetch_one(catalog.pool())
         .await
