@@ -83,23 +83,35 @@ async fn begin(
                 a.descriptor(asset.as_str(), true).await?;
             }
         }
-        if let ExportRequest::LivePhoto{asset,..}=&request {
-            let (_,key)=a.lookup(asset.as_str(),"file",true).await?;
-            if role(&key)!=OriginalRole::JpegFocusStack {return Err(Failure(StatusCode::UNPROCESSABLE_ENTITY,ErrorCode::UnsupportedFormat));}
-            a.descriptor(asset.as_str(),false).await?;
+        if let ExportRequest::LivePhoto { asset, .. } = &request {
+            let (_, key) = a.lookup(asset.as_str(), "file", true).await?;
+            if role(&key) != OriginalRole::JpegFocusStack {
+                return Err(Failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    ErrorCode::UnsupportedFormat,
+                ));
+            }
+            a.descriptor(asset.as_str(), false).await?;
         }
-        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(length),0) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources").fetch_one(a.0.catalog.pool()).await?; u64::try_from(n).map_err(|_| Failure::invalid())?.checked_add(2 * lytronaut_storage::portable::MAX_BYTES as u64).and_then(|n| n.checked_add(bundle::archive_framing(a.0.store.limits().files).ok()?)).ok_or(Failure::invalid())?}else if matches!(request,ExportRequest::LivePhoto{..}){lytronaut_format::live_photo::BUNDLE_CAP as u64}else{OUTPUT_CAP as u64};
-        let id = create(
-            &a,
-            if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
-                "archive"
-            } else if matches!(request,ExportRequest::LivePhoto{..}) {
-                "live_photo"
-            } else {
-                "flatten"
-            }, need,
-        )
-        .await?;
+        let need = if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
+            archive_need(&a).await?
+        } else if matches!(request, ExportRequest::LivePhoto { .. }) {
+            lytronaut_format::live_photo::BUNDLE_CAP as u64
+        } else {
+            OUTPUT_CAP as u64
+        };
+        let kind = if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
+            "archive"
+        } else if matches!(request, ExportRequest::LivePhoto { .. }) {
+            "live_photo"
+        } else {
+            "flatten"
+        };
+        let id = match admit(&a, kind, need).await {
+            Ok(id) => id,
+            Err(Refusal::Space(shortfall)) => return Ok(short_of_space(shortfall)),
+            Err(Refusal::Failed(failure)) => return Err(failure),
+        };
         let worker = a.clone();
         let job = id.clone();
         tokio::spawn(async move {
@@ -110,7 +122,61 @@ async fn begin(
     .await;
     r.unwrap_or_else(Failure::response)
 }
+/// Real work-volume need of a whole-library archive: every unique original once,
+/// its framing and the bounded catalog twice (docs/design/007). Upper bound:
+/// it also counts sources of jobs that capture will skip.
+async fn archive_need(a: &Api) -> Result<u64> {
+    let row = sqlx::query("SELECT CAST(COALESCE(sum(length),0) AS BIGINT), CAST(count(*) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources")
+        .fetch_one(a.0.catalog.pool())
+        .await?;
+    let bytes = u64::try_from(row.try_get::<i64, _>(0)?).map_err(storage)?;
+    let files = u64::try_from(row.try_get::<i64, _>(1)?).map_err(storage)?;
+    bundle::archive_need(bytes, files)
+        .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))
+}
+/// Why admission refused a job. A free-space shortfall carries its numbers.
+enum Refusal {
+    Failed(Failure),
+    Space(SpaceShortfall),
+}
+impl From<Failure> for Refusal {
+    fn from(failure: Failure) -> Self {
+        Self::Failed(failure)
+    }
+}
+impl From<sqlx::Error> for Refusal {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Failed(error.into())
+    }
+}
+/// Retryable `resource_limit` naming the needed and available work-volume
+/// bytes; byte counts only, never a path.
+fn short_of_space(shortfall: SpaceShortfall) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(ApiError {
+            version: WireVersion::V1,
+            code: ErrorCode::ResourceLimit,
+            retryable: true,
+            shortfall: Some(shortfall),
+        }),
+    )
+        .into_response()
+}
+/// Whole-library jobs are bounded by real free space, never by the
+/// single-upload or aggregate import budgets (lytronaut-lbk).
+fn whole_library(kind: &str) -> bool {
+    matches!(kind, "archive" | "restore")
+}
+/// Test shorthand for `admit` with every refusal as a plain failure.
+#[cfg(test)]
 async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
+    admit(a, kind, need).await.map_err(|refusal| match refusal {
+        Refusal::Failed(failure) => failure,
+        Refusal::Space(_) => Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit),
+    })
+}
+async fn admit(a: &Api, kind: &str, need: u64) -> std::result::Result<String, Refusal> {
     // Reserve atomically before spawning; at most two pending jobs, including uploads.
     let mut tx = a.0.catalog.begin_write().await?;
     sqlx::query("DELETE FROM export_jobs WHERE id IN (SELECT id FROM export_jobs WHERE state IN ('cancelled','failed') AND retained=0 AND reserved=0 ORDER BY (SELECT ordinal FROM application_job_order WHERE kind='export' AND job=export_jobs.id) LIMIT (SELECT CASE WHEN count(*)>127 THEN count(*)-127 ELSE 0 END FROM export_jobs))").execute(&mut *tx).await?;
@@ -123,30 +189,34 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
         .fetch_one(&mut *tx)
         .await?;
     if active >= 2 || retained >= 128 {
-        return Err(Failure(
-            StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::ResourceLimit,
-        ));
+        return Err(Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit).into());
     }
-    let reserved: i64 = sqlx::query_scalar(
-        "SELECT CAST(COALESCE(sum(retained+reserved),0) AS BIGINT) FROM export_jobs",
+    // The aggregate budget bounds bounded per-asset exports; whole-library
+    // archives and restores neither count against it nor are bounded by it.
+    let budgeted: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(retained+reserved),0) AS BIGINT) FROM export_jobs WHERE kind NOT IN ('archive','restore')",
     )
     .fetch_one(&mut *tx)
     .await?;
+    if !whole_library(kind)
+        && need.saturating_add(budgeted as u64) > a.0.store.limits().reserved_bytes
+    {
+        return Err(Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit).into());
+    }
+    // Every job's in-flight reservation shares the work volume's real space.
     let active_reserved: i64 =
         sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs")
             .fetch_one(&mut *tx)
             .await?;
-    if need.saturating_add(reserved as u64) > a.0.store.limits().reserved_bytes
-        || a.0.store.available_staging_bytes().map_err(storage)?
-            < need
-                .saturating_add(active_reserved as u64)
-                .saturating_add(a.0.store.limits().free_floor)
-    {
-        return Err(Failure(
-            StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::ResourceLimit,
-        ));
+    let required = need
+        .saturating_add(active_reserved as u64)
+        .saturating_add(a.0.store.limits().free_floor);
+    let available = a.0.store.available_staging_bytes().map_err(storage)?;
+    if available < required {
+        return Err(Refusal::Space(SpaceShortfall {
+            required_bytes: required,
+            available_bytes: available,
+        }));
     }
     let id = random_id()?;
     sqlx::query("INSERT INTO export_jobs(id,kind,state,reserved) VALUES($1,$2,'queued',$3)")
@@ -166,7 +236,7 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
             .execute(a.0.catalog.pool())
             .await?;
         // Persisted intent (if any) and quota survive initial marker/mkdir errors.
-        return Err(storage(error));
+        return Err(storage(error).into());
     }
     Ok(id)
 }
@@ -204,6 +274,7 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
                     _ => ErrorCode::CorruptAsset,
                 },
                 retryable: true,
+                shortfall: None,
             })
         } else {
             None
@@ -979,20 +1050,21 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))?;
+        // A bundle of any size is accepted; only free work space admits it.
         let declared = request
             .headers()
             .get(header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
-            .filter(|n| *n > 0 && bundle::archive_limit(a.0.store.limits()).is_ok_and(|maximum| *n <= maximum))
             .ok_or(Failure::invalid())?;
-        // Upload + extracted originals/catalog spool coexist. Reserve the v2
-        // spool separately; failed cleanup retains this reservation.
-        let reservation = declared.checked_mul(2)
-            .and_then(|n| n.checked_add(lytronaut_storage::portable::MAX_BYTES as u64))
-            .filter(|n| *n <= i64::MAX as u64)
-            .ok_or(Failure::invalid())?;
-        let id = create(&a, "restore", reservation).await?;
+        // Upload + extracted originals/catalog spool coexist; failed cleanup
+        // retains this reservation.
+        let reservation = bundle::restore_need(declared).map_err(|_| Failure::invalid())?;
+        let id = match admit(&a, "restore", reservation).await {
+            Ok(id) => id,
+            Err(Refusal::Space(shortfall)) => return Ok(short_of_space(shortfall)),
+            Err(Refusal::Failed(failure)) => return Err(failure),
+        };
         let path = crate::transient_owner::Owner::directory(&root(&a.0.store), &id).join("upload");
         let mut upload_created = false;
         let result = async {

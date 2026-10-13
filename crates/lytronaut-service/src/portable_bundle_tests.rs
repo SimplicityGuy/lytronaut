@@ -150,6 +150,32 @@ impl Fixture {
         tx.commit().await.unwrap();
         store
     }
+    /// Add `count` deterministic, distinct originals of `size` bytes each to the
+    /// seeded library: a 16-byte ordinal prefix and a sparse zero tail, so the
+    /// source occupies almost no disk. They belong to the existing successful
+    /// `synthetic-job-2`. Returns their total size.
+    pub(crate) async fn add_sparse_originals(&self, count: u64, size: u64) -> u64 {
+        let mut tx = self.catalog.begin_write().await.unwrap();
+        for (index, digest) in sparse_digests(count, size).into_iter().enumerate() {
+            let path = self.root.join("originals").join(format!("{digest}-{size}"));
+            let mut file = new_file(&path).unwrap();
+            file.write_all(&sparse_prefix(index as u64)).unwrap();
+            file.set_len(size).unwrap();
+            drop(file);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+            let logical = format!("beyond-upload-budget/{index}.lfp");
+            sqlx::query("INSERT INTO intake_sources(job,path,canonical,digest,length) VALUES('synthetic-job-2',$1,$2,$3,$4)")
+                .bind(&logical)
+                .bind(format!("{logical}#canonical"))
+                .bind(&digest)
+                .bind(size as i64)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        count * size
+    }
     pub(crate) async fn finish(mut self) {
         self.catalog.pool().close().await;
         if let Some((connection, schema)) = self.pg.as_mut() {
@@ -159,6 +185,60 @@ impl Fixture {
                 .unwrap();
         }
         fs::remove_dir_all(self.root).unwrap();
+    }
+}
+/// Budgets far below the synthetic library: the former bundle ceiling was
+/// `upload_bytes` + 288 MiB, the former restore transport ceiling
+/// `encoded_bytes` + 288 MiB + framing, and admission required the whole
+/// reservation to fit `reserved_bytes`.
+pub(crate) const SPARSE_SIZE: u64 = 16 * 1024 * 1024;
+pub(crate) const SPARSE_COUNT: u64 = 20;
+pub(crate) fn small_budgets() -> Limits {
+    Limits {
+        upload_bytes: SPARSE_SIZE,
+        file_bytes: SPARSE_SIZE,
+        encoded_bytes: SPARSE_SIZE,
+        reserved_bytes: SPARSE_SIZE,
+        free_floor: 0,
+        ..Default::default()
+    }
+}
+fn sparse_prefix(index: u64) -> [u8; 16] {
+    let mut prefix = *b"lbk-sparse-\0\0\0\0\0";
+    prefix[11..].copy_from_slice(&index.to_le_bytes()[..5]);
+    prefix
+}
+/// Independently computed digests of the sparse originals, in ordinal order.
+fn sparse_digests(count: u64, size: u64) -> Vec<String> {
+    let zeros = [0u8; 65536];
+    (0..count)
+        .map(|index| {
+            let mut hash = Sha256::new();
+            hash.update(sparse_prefix(index));
+            let mut remaining = size - 16;
+            while remaining > 0 {
+                let n = remaining.min(zeros.len() as u64) as usize;
+                hash.update(&zeros[..n]);
+                remaining -= n as u64;
+            }
+            format!("{:x}", hash.finalize())
+        })
+        .collect()
+}
+/// Every sparse original is present in `originals` with its exact length and
+/// a freshly recomputed SHA-256 equal to the independent digest.
+pub(crate) fn verify_sparse_originals(originals: &Path, count: u64, size: u64) {
+    for digest in sparse_digests(count, size) {
+        let path = originals.join(format!("{digest}-{size}"));
+        let (actual, length) = hash_file(&path).unwrap();
+        assert_eq!(length, size);
+        assert_eq!(
+            actual
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            digest
+        );
     }
 }
 fn logical_text(catalog: &Catalog, row: &sqlx::any::AnyRow, column: &str) -> Vec<u8> {
@@ -433,6 +513,121 @@ async fn postgres_matrix_postgres_to_sqlite_exact_logical_round_trip_and_reopen(
 #[ignore = "requires explicit disposable PostgreSQL service"]
 async fn postgres_matrix_postgres_to_postgres_exact_logical_round_trip_and_reopen() {
     round_trip(true, true).await;
+}
+
+// ---- Library size is not bounded by the single-upload budgets (lytronaut-lbk) --
+
+/// A library whose originals exceed every former budget-derived ceiling backs
+/// up and restores losslessly; each transfer moves bytes through the fixed copy
+/// buffer, never a size-proportional one.
+async fn beyond_upload_budget_round_trip(source_pg: bool, destination_pg: bool) {
+    let source = Fixture::new(source_pg).await;
+    let store = source.seed_with(small_budgets()).await;
+    let limits = store.limits().clone();
+    let originals = source.add_sparse_originals(SPARSE_COUNT, SPARSE_SIZE).await;
+    let catalog_maximum = lytronaut_storage::portable::MAX_BYTES as u64;
+    assert!(originals > limits.upload_bytes + catalog_maximum);
+    assert!(originals > limits.reserved_bytes);
+    let destination = Fixture::new(destination_pg).await;
+    let archive = source.root.join("beyond-upload-budget.bundle");
+    let cancel = AtomicBool::new(false);
+    let progress = std::sync::atomic::AtomicU64::new(0);
+    let report = backup(&source.catalog, &store, &archive, &cancel, &progress)
+        .await
+        .unwrap();
+    assert_eq!(report.files, SPARSE_COUNT + 1);
+    let size = fs::metadata(&archive).unwrap().len();
+    assert!(
+        size > limits.encoded_bytes
+            + catalog_maximum
+            + archive_framing(u64::from(limits.files)).unwrap()
+    );
+    let (reopened, result, journal) = restore_and_reopen(&destination, &archive, &limits).await;
+    verify(&reopened, &result.join("originals")).await;
+    verify_sparse_originals(&result.join("originals"), SPARSE_COUNT, SPARSE_SIZE);
+    assert!(logical_tables(&source.catalog, &[]).await == logical_tables(&reopened, &[]).await);
+    assert!(largest_copy_chunk() <= COPY_BUFFER);
+    fs::remove_file(&archive).unwrap();
+    release(&destination, reopened, journal).await;
+    source.finish().await;
+    destination.finish().await;
+}
+#[tokio::test]
+async fn sqlite_library_beyond_upload_budget_round_trips_losslessly() {
+    beyond_upload_budget_round_trip(false, false).await;
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL service"]
+async fn postgres_matrix_library_beyond_upload_budget_sqlite_to_postgres() {
+    beyond_upload_budget_round_trip(false, true).await;
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL service"]
+async fn postgres_matrix_library_beyond_upload_budget_postgres_to_sqlite() {
+    beyond_upload_budget_round_trip(true, false).await;
+}
+
+/// Version-1 bundles keep their 32 MiB catalog-file cap but their originals are
+/// no longer bounded by `upload_bytes` + 32 MiB or the file by `encoded_bytes`.
+#[tokio::test]
+async fn legacy_library_beyond_upload_budget_restores_onto_sqlite() {
+    const SIZE: u64 = 4 * 1024 * 1024;
+    const COUNT: u64 = 10;
+    let limits = Limits {
+        upload_bytes: SIZE,
+        file_bytes: SIZE,
+        encoded_bytes: SIZE,
+        free_floor: 0,
+        ..Default::default()
+    };
+    let source = Fixture::new(false).await;
+    source.seed_with(limits.clone()).await;
+    let originals = source.add_sparse_originals(COUNT, SIZE).await;
+    assert!(originals > limits.upload_bytes + MAX_DB);
+    let database = source.root.join("legacy.db");
+    sqlx::query("VACUUM INTO $1")
+        .bind(database.to_str().unwrap())
+        .execute(source.catalog.pool())
+        .await
+        .unwrap();
+    let (database_hash, database_bytes) = hash_file(&database).unwrap();
+    let mut inventory = vec![(format!("{:x}", Sha256::digest(BLOB)), BLOB.len() as u64)];
+    inventory.extend(
+        sparse_digests(COUNT, SIZE)
+            .into_iter()
+            .map(|digest| (digest, SIZE)),
+    );
+    let input = source.root.join("legacy.bundle");
+    let mut out = new_file(&input).unwrap();
+    out.write_all(MAGIC).unwrap();
+    out.write_all(&(inventory.len() as u32).to_le_bytes())
+        .unwrap();
+    out.write_all(&database_bytes.to_le_bytes()).unwrap();
+    out.write_all(&database_hash).unwrap();
+    std::io::copy(&mut File::open(&database).unwrap(), &mut out).unwrap();
+    for (digest, length) in &inventory {
+        out.write_all(&parse_hash(digest).unwrap()).unwrap();
+        out.write_all(&length.to_le_bytes()).unwrap();
+        let blob = source
+            .root
+            .join("originals")
+            .join(format!("{digest}-{length}"));
+        std::io::copy(&mut File::open(blob).unwrap(), &mut out).unwrap();
+    }
+    out.sync_all().unwrap();
+    drop(out);
+    assert!(fs::metadata(&input).unwrap().len() > limits.encoded_bytes + MAX_DB);
+    let destination = Fixture::new(false).await;
+    let (reopened, result, journal) = restore_and_reopen(&destination, &input, &limits).await;
+    verify(&reopened, &result.join("originals")).await;
+    verify_sparse_originals(&result.join("originals"), COUNT, SIZE);
+    assert!(
+        logical_tables(&source.catalog, &["application_job_order"]).await
+            == logical_tables(&reopened, &["application_job_order"]).await
+    );
+    release(&destination, reopened, journal).await;
+    source.finish().await;
+    destination.finish().await;
 }
 
 // ---- Version-1 (LYTRONAUT-BNDL01) compatibility -------------------------------

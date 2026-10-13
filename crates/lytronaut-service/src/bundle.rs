@@ -28,19 +28,48 @@ const LEGACY_AUTH: [(&str, &str); 3] = [
     ),
 ];
 const MAX_DB: u64 = 32 * 1024 * 1024;
+/// The one working buffer every bundle transfer moves bytes through. Bundle
+/// creation and restore never hold an original or the bundle in memory, so a
+/// library of any size needs the same memory (docs/design/007, lytronaut-lbk).
+pub(crate) const COPY_BUFFER: usize = 65536;
+#[cfg(test)]
+static LARGEST_COPY_CHUNK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Test seam: the largest chunk any bundle transfer in this process moved.
+#[cfg(test)]
+pub(crate) fn largest_copy_chunk() -> usize {
+    LARGEST_COPY_CHUNK.load(Ordering::Relaxed)
+}
 // The fixed bundle header is 60 bytes; each original contributes 40 framing
-// bytes in addition to its opaque payload. Legacy's separate 32 MiB FILE cap
-// remains unchanged, while transport admission covers the larger v2 catalog.
-pub(crate) fn archive_framing(files: u32) -> Result<u64, E> {
+// bytes in addition to its opaque payload. All lengths are u64: the format has
+// no 32-bit size or offset field and therefore no 4 GiB boundary.
+pub(crate) fn archive_framing(files: u64) -> Result<u64, E> {
     60u64
-        .checked_add(u64::from(files).checked_mul(40).ok_or(E::Quota)?)
+        .checked_add(files.checked_mul(40).ok_or(E::Quota)?)
         .ok_or(E::Quota)
 }
-pub(crate) fn archive_limit(limits: &Limits) -> Result<u64, E> {
-    limits
-        .encoded_bytes
-        .checked_add(lytronaut_storage::portable::MAX_BYTES as u64)
-        .and_then(|n| n.checked_add(archive_framing(limits.files).ok()?))
+/// Work-volume bytes a bundle creation holds at its peak: the logical spool
+/// (at most the v2 catalog maximum) beside the growing artifact, which holds the
+/// catalog copy, the framing and every unique original. Only the bounded
+/// catalog is counted twice; originals never are.
+pub(crate) fn archive_need(original_bytes: u64, originals: u64) -> Result<u64, E> {
+    let catalog = lytronaut_storage::portable::MAX_BYTES as u64;
+    original_bytes
+        .checked_add(archive_framing(originals)?)
+        .and_then(|n| n.checked_add(2 * catalog))
+        .filter(|n| *n <= i64::MAX as u64)
+        .ok_or(E::Quota)
+}
+/// Work-volume bytes a restore of a `declared`-byte upload holds at its peak:
+/// the upload itself, its extracted originals and logical spool (together at
+/// most the upload again) and headroom of one catalog maximum for a SQLite
+/// destination catalog. Any positive size whose need fits i64 is acceptable;
+/// whether it can run is decided by free-space admission alone.
+pub(crate) fn restore_need(declared: u64) -> Result<u64, E> {
+    (declared > 0)
+        .then_some(declared)
+        .and_then(|n| n.checked_mul(2))
+        .and_then(|n| n.checked_add(lytronaut_storage::portable::MAX_BYTES as u64))
+        .filter(|n| *n <= i64::MAX as u64)
         .ok_or(E::Quota)
 }
 pub type Schema = Vec<(String, String, String)>;
@@ -196,16 +225,9 @@ pub async fn backup(
                 cancel,
                 progress,
             )?;
+            // No library-size ceiling: the single-upload budget bounds one
+            // browser import, not the whole library (lytronaut-lbk).
             bytes = bytes.checked_add(source.length).ok_or(E::Quota)?;
-            if bytes
-                > store
-                    .limits()
-                    .upload_bytes
-                    .checked_add(lytronaut_storage::portable::MAX_BYTES as u64)
-                    .ok_or(E::Quota)?
-            {
-                return Err(E::Quota);
-            }
         }
         check(cancel)?;
         out.sync_all()?;
@@ -242,10 +264,12 @@ fn copy_checked(
 ) -> Result<(), E> {
     let mut h = Sha256::new();
     let mut remaining = length;
-    let mut buffer = [0; 65536];
+    let mut buffer = [0; COPY_BUFFER];
     while remaining > 0 {
         check(cancel)?;
         let n = remaining.min(buffer.len() as u64) as usize;
+        #[cfg(test)]
+        LARGEST_COPY_CHUNK.fetch_max(n, Ordering::Relaxed);
         input.read_exact(&mut buffer[..n])?;
         out.write_all(&buffer[..n])?;
         h.update(&buffer[..n]);
@@ -292,10 +316,9 @@ async fn restore_legacy(
     fs::DirBuilder::new()
         .mode(0o700)
         .create(pending.join("staging"))?;
+    // No whole-bundle size cap: the 32 MiB catalog file and each original's
+    // per-file limit are checked below; the originals' total is unbounded.
     let mut f = File::open(input)?;
-    if f.metadata()?.len() > limits.encoded_bytes + MAX_DB {
-        return Err(E::Quota);
-    }
     let mut header = [0; 60];
     f.read_exact(&mut header)?;
     if &header[..16] != MAGIC {
@@ -327,10 +350,7 @@ async fn restore_legacy(
         let digest = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let length = u64::from_le_bytes(record[32..].try_into().unwrap());
         bytes = bytes.checked_add(length).ok_or(E::Quota)?;
-        if length > limits.file_bytes
-            || bytes > limits.upload_bytes + MAX_DB
-            || inventory.insert((digest.clone(), length), ()).is_some()
-        {
+        if length > limits.file_bytes || inventory.insert((digest.clone(), length), ()).is_some() {
             return Err(E::Quota);
         }
         let blob = originals.join(format!("{digest}-{length}"));
@@ -560,11 +580,9 @@ async fn restore_portable(
     progress: &std::sync::atomic::AtomicU64,
 ) -> Result<BundleReport, E> {
     check(cancel)?;
+    // No whole-bundle size cap (lytronaut-lbk): the catalog section and each
+    // original are bounded below; the total is limited only by admission.
     let mut input = File::open(input)?;
-    let maximum = archive_limit(limits)?;
-    if input.metadata()?.len() > maximum {
-        return Err(E::Quota);
-    }
     let mut header = [0; 60];
     input.read_exact(&mut header)?;
     if &header[..16] != PORTABLE_MAGIC {
@@ -603,14 +621,7 @@ async fn restore_portable(
         let digest = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let length = u64::from_le_bytes(record[32..].try_into().map_err(|_| E::Invalid)?);
         bytes = bytes.checked_add(length).ok_or(E::Quota)?;
-        if length > limits.file_bytes
-            || bytes
-                > limits
-                    .upload_bytes
-                    .checked_add(lytronaut_storage::portable::MAX_BYTES as u64)
-                    .ok_or(E::Quota)?
-            || inventory.insert((digest.clone(), length), ()).is_some()
-        {
+        if length > limits.file_bytes || inventory.insert((digest.clone(), length), ()).is_some() {
             return Err(E::Quota);
         }
         let path = originals.join(format!("{digest}-{length}"));
@@ -829,21 +840,30 @@ mod portable_admission_tests {
     use super::*;
 
     #[test]
-    fn framing_and_transport_cover_new_catalog_without_changing_legacy_file_cap() {
-        let limits = Limits::default();
+    fn needs_follow_real_bytes_and_ignore_upload_budgets() {
+        let catalog = lytronaut_storage::portable::MAX_BYTES as u64;
         assert_eq!(archive_framing(0).unwrap(), 60);
         assert_eq!(archive_framing(2).unwrap(), 140);
+        assert!(matches!(archive_framing(u64::MAX), Err(E::Quota)));
+        // Creation: originals once, framing, the bounded catalog twice. A
+        // library far beyond any single-upload budget is just a bigger number.
+        let tib = 1u64 << 40;
+        assert_eq!(archive_need(0, 0).unwrap(), 60 + 2 * catalog);
         assert_eq!(
-            archive_limit(&limits).unwrap(),
-            limits.encoded_bytes
-                + lytronaut_storage::portable::MAX_BYTES as u64
-                + 60
-                + u64::from(limits.files) * 40
+            archive_need(5 * tib, 3).unwrap(),
+            5 * tib + 60 + 3 * 40 + 2 * catalog
         );
+        assert!(matches!(archive_need(i64::MAX as u64, 0), Err(E::Quota)));
+        assert!(matches!(archive_need(u64::MAX, 1), Err(E::Quota)));
+        assert!(matches!(archive_need(0, u64::MAX), Err(E::Quota)));
+        // Restore: upload plus extracted copy plus one catalog of headroom.
+        assert_eq!(restore_need(1).unwrap(), 2 + catalog);
+        assert_eq!(restore_need(5 * tib).unwrap(), 10 * tib + catalog);
+        assert!(matches!(restore_need(0), Err(E::Quota)));
+        assert!(matches!(restore_need(i64::MAX as u64 / 2), Err(E::Quota)));
+        assert!(matches!(restore_need(u64::MAX), Err(E::Quota)));
         assert_eq!(MAX_DB, 32 * 1024 * 1024);
-        let mut overflow = limits;
-        overflow.encoded_bytes = u64::MAX;
-        assert!(matches!(archive_limit(&overflow), Err(E::Quota)));
+        assert_eq!(COPY_BUFFER, 64 * 1024);
     }
 }
 
