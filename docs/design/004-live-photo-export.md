@@ -791,6 +791,10 @@ exactly:
   (headless p95 94.9 ms, `physicalPresentationMeasured=false`). It is **not**
   claimed as met.
 
+GPU rendering code is also an owner-approved exception to the 95% line-coverage
+gate (see `docs/operations/coverage.md`). It is verified by the physical-GPU
+reference-host runs. Optional software-adapter runs stay distinct from those.
+
 Neither limitation is upgraded to passed. Still **open**:
 
 - Focus latency under grid-image load.

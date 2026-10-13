@@ -97,7 +97,9 @@ budgets bound the portable backup bundle; with these defaults a library with mor
 than about 2.3 GiB of original files cannot be backed up as a bundle (see
 [Backup bundle size limits](#backup-bundle-size-limits)).
 Resource exhaustion rejects requests while preserving already stored originals.
-No GPU device or hardware acceleration runtime mount is required.
+No GPU device or hardware acceleration runtime mount is required. Optional
+browser GPU rendering is verified separately from the 95% line-coverage gate (see
+[coverage](coverage.md#gpu-specific-exception)).
 
 The native `--healthcheck` probes `/healthz` with the configured Host using a
 bounded local TCP request. Readiness requires a live application database pool;

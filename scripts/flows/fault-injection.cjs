@@ -48,7 +48,11 @@ module.exports = async ({ browser, origin }) => {
     const handled = rule && rule(request);
     if (!handled) request.continue().catch(() => {});
   });
-  const statusIncludes = text => page.waitForFunction(text => (document.querySelector('.status')?.textContent || '').includes(text), {}, text);
+  const statusIncludes = text => page.waitForFunction(text => (document.querySelector('.status')?.textContent || '').includes(text), {}, text)
+    .catch(async error => {
+      const status = await page.$eval('.status', e => e.textContent).catch(() => null);
+      throw Error(`status never included ${JSON.stringify(text)}; last status ${JSON.stringify(status)}`, { cause: error });
+    });
   const click = text => page.waitForFunction(text => {
     const button = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === text && !b.disabled);
     if (!button) return false;
@@ -205,8 +209,16 @@ module.exports = async ({ browser, origin }) => {
       },
       'constructor-throws': () => { window.VideoDecoder = class extends window.__nativeVideoDecoder { constructor() { throw Error('injected constructor failure'); } }; },
     };
+    const decodeNatively = async () => {
+      await page.evaluate(() => { window.VideoDecoder = window.__nativeVideoDecoder; });
+      await click('Try browser H.264 refocus');
+      await statusIncludes('Archived discrete browser focus decoded');
+    };
     proof.codecFaults = [];
     for (const [name, install] of Object.entries(codecFaults)) {
+      // Start every case from a fresh successful decode so the failure status
+      // below can only come from this injected fault.
+      await decodeNatively();
       const before = await page.$eval('.stage img', e => e.src);
       await page.evaluate(install);
       await click('Try browser H.264 refocus');
@@ -214,9 +226,7 @@ module.exports = async ({ browser, origin }) => {
       assert.equal(await page.$eval('.stage img', e => e.src), before, `${name}: verified frame retained`);
       proof.codecFaults.push(name);
     }
-    await page.evaluate(() => { window.VideoDecoder = window.__nativeVideoDecoder; });
-    await click('Try browser H.264 refocus');
-    await statusIncludes('Archived discrete browser focus decoded');
+    await decodeNatively();
     proof.codecRecovered = true;
 
     // 7. A rejected upload transfer is reported as failed and retryable by the user;

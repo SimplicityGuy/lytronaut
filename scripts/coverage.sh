@@ -125,10 +125,6 @@ browser() {
         fi
     }
     run client bash scripts/browser-test.sh
-    # Real WebGPU execution through Chrome's SwiftShader software adapter, plus the
-    # injected adapter/device/pipeline/device-loss faults. Not a physical-GPU result.
-    run client env LYTRONAUT_GPU_TEST=1 LYTRONAUT_GPU_ADAPTER=google/swiftshader \
-        LYTRONAUT_CHROME_ARGS=--enable-unsafe-webgpu LYTRONAUT_TEST_ORIGIN=http://127.0.0.1:3027 bash scripts/browser-test.sh
     run client node scripts/live-photo-test.cjs
     run client node scripts/video-test.cjs
     rm -rf "$cov/owner-evidence" && mkdir -p "$cov/owner-evidence"

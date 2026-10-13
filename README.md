@@ -60,6 +60,12 @@ integration after `just wasm-build build`. See [private Linux Docker operation](
 SQLite or PostgreSQL Compose configuration, persistent mounts, backup and upgrades.
 `just postgres-parity` runs the strict PostgreSQL suite against a disposable
 container of the pinned PostgreSQL release.
+`just coverage` enforces at least 95% first-party line coverage for native code,
+the Rust/WASM client in a real browser, and their union (see
+[coverage](docs/operations/coverage.md)). GPU-specific WebGPU rendering code is
+an owner-approved exception to the 95% gate: it is still measured and reported,
+and it is verified by physical-GPU reference-host runs. Optional software-adapter
+runs are never presented as physical-GPU results.
 See [browser operation and evidence](docs/architecture/browser.md),
 [deployment access](docs/architecture/authentication.md), and
 [workspace contracts](docs/architecture/contracts.md).

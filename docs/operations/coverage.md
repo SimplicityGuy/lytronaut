@@ -60,15 +60,52 @@ step if any did, so one CI pass yields complete evidence. It runs:
 
 - the synthetic browser suite (including `scripts/sidebar-test.cjs` and the
   fault-injection flows in `scripts/flows/`);
-- the same suite in GPU mode against Chrome's SwiftShader software WebGPU
-  adapter (`--enable-unsafe-webgpu`, `LYTRONAUT_GPU_ADAPTER=google/swiftshader`),
-  with the injected adapter, device, pipeline and device-loss faults;
 - the Live Photo and video codec suites;
 - the owner suite against the `coverage,test-harness` build.
 
-The SwiftShader run is real WebGPU API execution for coverage only. It is never
-a physical-GPU or hardware result; physical-GPU evidence comes only from the
-separate reference-host runs.
+The GPU suite is not part of this run. On the CI runner, Chrome 154's SwiftShader
+software adapter renders offscreen but loses the device on canvas presentation in
+headless mode. A headful browser on Xvfb with Vulkan SwiftShader presents
+intermittently: acquisition sometimes exceeds the client's 700 ms bound and falls
+back to CPU, and when it presents, the exact-pixel comparison does not match.
+
+The GPU suite can still be run by hand against the software adapter:
+
+```sh
+LYTRONAUT_GPU_TEST=1 LYTRONAUT_GPU_ADAPTER=google/swiftshader LYTRONAUT_CHROME_HEADLESS=0 \
+  LYTRONAUT_CHROME_ARGS='--enable-unsafe-webgpu --enable-features=Vulkan --use-vulkan=swiftshader --use-webgpu-adapter=swiftshader --enable-unsafe-swiftshader' \
+  xvfb-run -a bash scripts/browser-test.sh
+```
+
+That is WebGPU API execution, never a physical-GPU result. Physical-GPU evidence
+comes only from the reference-host runs.
+
+## GPU-specific exception
+
+The owner approved an exception on 2026-10-13: GPU-specific code may stay below
+95%. It is listed by function in `GPU_EXEMPTIONS` in `crates/xtask/src/coverage.rs`:
+the whole WebGPU module `crates/lytronaut-client/src/gpu.rs`; `gpu_identity`,
+`present_gpu` and `watch_gpu` in `browser.rs`; and three GPU-only blocks inside
+`change_focus` and `change_video`. Each block is named by its exact opening line,
+which must occur once in that function. These lines are removed from both
+the numerator and the denominator of the WASM(client) and union gates. The native
+gate is unchanged. The report still measures them on their own row
+("GPU-specific (exempt)"), prints every exempt range, and prints the WASM and union
+totals without the exemption.
+
+Guard rails make the exception reviewable rather than silent:
+
+- Only `gpu.rs`, `browser.rs` and `video.rs` may be named, and only `gpu.rs` may be
+  exempted whole (it must use `wgpu`).
+- Each named function or block must exist exactly once and reference GPU code.
+- Exempt source is capped at `GPU_EXEMPT_SOURCE_LINE_CEILING` lines, so growth
+  needs a reviewed change.
+
+Shared non-GPU logic such as `model.rs` and generic browser flows is never
+exempt. GPU rendering is verified instead by the physical-GPU reference-host runs, which
+include the injected adapter, device, pipeline and device-loss faults. A
+software-adapter run (above) is optional evidence, and its results are never
+presented as physical-GPU results.
 
 ## What is excluded
 

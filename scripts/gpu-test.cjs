@@ -58,15 +58,15 @@ module.exports=async function gpuTest(page,click){
   return {pixels:[...expected],width:gpu.width,height:gpu.height,cpuBytes:Number(gpu.dataset.cpuBytes),gpuBytes:Number(gpu.dataset.gpuBytes)};
  },orientation);
  const png=PNG.sync.read(Buffer.from(await (await page.$('#gpu-stage')).screenshot({path:require('node:path').join(process.env.LYTRONAUT_TEST_ROOT,'gpu-orientation-'+orientation+'.png')})));assert.equal(png.width,expected.width);assert.equal(png.height,expected.height);
- let maximum=0,squared=0;for(let i=0;i<png.data.length;i++){const d=Math.abs(png.data[i]-expected.pixels[i]);maximum=Math.max(maximum,d);squared+=d*d;}
- const {pixels,...metadata}=expected;return {maximum,rmse:Math.sqrt(squared/png.data.length),...metadata};
+ let maximum=0,squared=0,differing=0,firstDifference=null;for(let i=0;i<png.data.length;i++){const d=Math.abs(png.data[i]-expected.pixels[i]);if(d&&!firstDifference)firstDifference={pixel:Math.floor(i/4),actual:[...png.data.slice(i-i%4,i-i%4+4)],expected:expected.pixels.slice(i-i%4,i-i%4+4)};if(d&&i%4===0)differing++;maximum=Math.max(maximum,d);squared+=d*d;}
+ const {pixels,...metadata}=expected;return {maximum,rmse:Math.sqrt(squared/png.data.length),differing,firstDifference,...metadata};
  };
  const transforms=[];
  for(let orientation=1;orientation<=8;orientation++){
   await page.$eval('#orientation',(e,n)=>{e.value=String(n);e.dispatchEvent(new Event('change',{bubbles:true}));},orientation);
   await page.waitForFunction(n=>document.querySelector('output[for=focus]').textContent.includes('EXIF '+n),{},orientation);await ready();
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const c=await compare(orientation);assert.equal(c.maximum,0,'exact integer texture-to-canvas pixels');assert.equal(c.rmse,0);assert(c.cpuBytes<=96*1024*1024&&c.gpuBytes<=64*1024*1024);transforms.push({orientation,...c});
+  const c=await compare(orientation);assert.equal(c.maximum,0,`exact integer texture-to-canvas pixels (orientation ${orientation}: max ${c.maximum}, rmse ${c.rmse.toFixed(3)}, ${c.width}x${c.height}, ${c.differing} pixels differ, first ${JSON.stringify(c.firstDifference)})`);assert.equal(c.rmse,0);assert(c.cpuBytes<=96*1024*1024&&c.gpuBytes<=64*1024*1024);transforms.push({orientation,...c});
  }
  await page.$eval('#gpu-quality',e=>{e.value='256';e.dispatchEvent(new Event('change',{bubbles:true}));});
  await page.waitForFunction(()=>document.querySelector('#gpu-stage').height===256);await ready();
