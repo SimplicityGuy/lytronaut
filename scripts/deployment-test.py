@@ -34,6 +34,7 @@ import urllib.request
 sys.dont_write_bytecode = True  # keep the checkout clean when importing the fixture
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from postgres_fixture import PostgresFixture, pinned_image  # noqa: E402
+from postgres_fixture import docker as fixture_docker  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 APP_UID = "10001"
@@ -427,7 +428,7 @@ def main():
         postgres.compose("stop", "lytronaut", timeout=120)
         with open(dump, "wb") as out:
             postgres.stream("exec", "-T", "postgres", "pg_dump", "-U", "postgres", "-d", "lytronaut",
-                            "--format=custom", stdout=out)
+                            "--schema=lytronaut*", "--format=custom", stdout=out)
         assert dump.stat().st_size > 0
         postgres.compose("down", "--timeout", "60", timeout=240)
         if storage == "bind":
@@ -468,6 +469,56 @@ def main():
             assert expected in logged and "synthetic-wrong-password" not in logged, logged[-500:]
             assert "postgres://" not in logged and "@postgres" not in logged, logged[-500:]
         checked("wrong or ambiguous database credentials refuse startup with a redacted message")
+
+        # The application reader and the role bootstrap reject the same secrets,
+        # including a multi-byte Unicode C1 control character (U+0085).
+        c1 = SCRATCH / "c1-password"
+        c1.write_bytes("synthetic-c1\u0085password\n".encode())
+        c1.chmod(0o644)
+        SENSITIVE.append("synthetic-c1")
+        result = subprocess.run(["docker", "run", "--rm", "--name", f"{PREFIX}-misconfigured", "--network", "none",
+                                 "--read-only", "--user", f"{APP_UID}:{APP_UID}", "--cap-drop=ALL",
+                                 "-e", "LYTRONAUT_DATABASE_URL=postgres://lytronaut@postgres:5432/lytronaut?sslmode=disable",
+                                 "-e", "LYTRONAUT_DATABASE_PASSWORD_FILE=/run/secrets/c1",
+                                 "-v", f"{c1}:/run/secrets/c1:ro", image],
+                                capture_output=True, text=True, timeout=120)
+        logged = result.stdout + result.stderr
+        assert result.returncode == 1 and "invalid application database configuration" in logged, logged[-500:]
+        assert "synthetic-c1" not in logged
+        bootstrap = SCRATCH / "c1-bootstrap"
+        bootstrap.write_text("synthetic-bootstrap-only")
+        bootstrap.chmod(0o644)
+        script = ("docker-entrypoint.sh postgres > /tmp/log 2>&1 & "
+                  "for n in $(seq 90); do grep -q 'must be one line' /tmp/log && break; "
+                  "pg_isready -h 127.0.0.1 -q && break; sleep 1; done; cat /tmp/log")
+        result = subprocess.run(["docker", "run", "--rm", "--name", f"{PREFIX}-bootstrap-c1", "--network", "none",
+                                 "--user", f"{PG_UID}:{PG_UID}", "--entrypoint", "sh",
+                                 "-e", "POSTGRES_DB=lytronaut", "-e", "POSTGRES_PASSWORD_FILE=/run/secrets/bootstrap",
+                                 "-e", "POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=peer",
+                                 "--tmpfs", f"/var/lib/postgresql:uid={PG_UID},gid={PG_UID}",
+                                 "--tmpfs", f"/var/run/postgresql:uid={PG_UID},gid={PG_UID}",
+                                 "-v", f"{ROOT / 'deploy/postgres/initdb'}:/docker-entrypoint-initdb.d:ro",
+                                 "-v", f"{c1}:/run/secrets/lytronaut_database_password:ro",
+                                 "-v", f"{bootstrap}:/run/secrets/bootstrap:ro", PG_IMAGE, "-c", script],
+                                capture_output=True, text=True, timeout=180)
+        logged = result.stdout + result.stderr
+        assert "lytronaut_database_password must be one line of 1-1024 bytes without control characters" in logged, \
+            logged[-800:]
+        assert "synthetic-c1" not in logged and "database system is ready to accept connections" not in \
+            logged.split("must be one line", 1)[1], logged[-800:]
+        checked("a multi-byte C1 control character is rejected by both the application and the role bootstrap")
+
+        # The disposable fixture never echoes bootstrap SQL (and its password) on failure.
+        try:
+            fixture_docker("exec", "-i", pg_name := postgres.container("postgres"), "psql", "--no-psqlrc",
+                           "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "lytronaut",
+                           stdin="CREATE ROLE synthetic_probe PASSWORD 'synthetic-fixture-secret' NOT VALID SQL;\n",
+                           secrets_=("synthetic-fixture-secret",))
+            raise AssertionError("invalid fixture SQL unexpectedly succeeded")
+        except SystemExit as failure:
+            assert "synthetic-fixture-secret" not in str(failure) and "PASSWORD" not in str(failure), str(failure)
+        assert pg_name
+        checked("fixture failure output withholds bootstrap SQL and passwords")
 
         # 3. All four backup→restore combinations, each copy started and browsed.
         for target, bundle, origin in [(sqlite, sqlite_bundle, sqlite), (sqlite, postgres_bundle, postgres),
@@ -511,8 +562,11 @@ def main():
         external.compose("stop", "lytronaut", timeout=120)
         dump = SCRATCH / "external-catalog.dump"
         with open(dump, "wb") as out:
+            # Only the application's schemas: the fixture's administrator-owned public
+            # sentinel is not application data and must not be restored as the role.
             result = subprocess.run(["docker", "exec", fixture.name, "pg_dump", "-U", "postgres", "-d", "lytronaut",
-                                     "--format=custom"], stdout=out, stderr=subprocess.PIPE, timeout=600)
+                                     "--schema=lytronaut*", "--format=custom"],
+                                    stdout=out, stderr=subprocess.PIPE, timeout=600)
         assert result.returncode == 0 and dump.stat().st_size > 0, result.stderr[-500:]
         fixture.superuser_sql("CREATE DATABASE lytronaut_recovered")
         docker("exec", fixture.name, "psql", "--no-psqlrc", "-v", "ON_ERROR_STOP=1", "-U", "postgres",
