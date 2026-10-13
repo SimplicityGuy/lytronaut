@@ -270,10 +270,11 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
                 version: WireVersion::V1,
                 code: match r.try_get::<Option<String>, _>(3)?.as_deref() {
                     Some("unsupported") => ErrorCode::UnsupportedFormat,
+                    Some("bundle-limit") => ErrorCode::ResourceLimit,
                     Some("cleanup-blocked" | "unverified-result") => ErrorCode::StorageUnavailable,
                     _ => ErrorCode::CorruptAsset,
                 },
-                retryable: true,
+                retryable: r.try_get::<Option<String>, _>(3)?.as_deref() != Some("bundle-limit"),
                 shortfall: None,
             })
         } else {
@@ -834,7 +835,16 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             &progress,
                         )
                         .await
-                        .map_err(storage)?;
+                        .map_err(|error| match error {
+                            // A format bound (the 288 MiB logical catalog,
+                            // its row/cell counts or the u32 original count)
+                            // fails before any artifact exists, never a
+                            // partial bundle; retrying cannot help.
+                            lytronaut_storage::StorageError::Quota => {
+                                Failure(StatusCode::INSUFFICIENT_STORAGE, ErrorCode::ResourceLimit)
+                            }
+                            error => storage(error),
+                        })?;
                         stored.store(
                             fs::metadata(artifact(&worker, &job))
                                 .map_err(storage)?
@@ -893,6 +903,8 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
             "failed",
             Some(if f.1 == ErrorCode::UnsupportedFormat {
                 "unsupported"
+            } else if f.0 == StatusCode::INSUFFICIENT_STORAGE {
+                "bundle-limit"
             } else {
                 "failed"
             }),
@@ -1334,6 +1346,87 @@ mod tests {
         drop(a);
         c.pool().close().await;
         fs::remove_dir_all(dir).unwrap();
+    }
+    async fn request_archive(a: &Api) -> Response {
+        begin(
+            Extension(a.clone()),
+            Ok(Json(ExportRequest::ArchiveOriginals {
+                version: WireVersion::V1,
+            })),
+        )
+        .await
+    }
+    async fn declare_restore(a: &Api, length: &str) -> Response {
+        restore_upload(
+            Extension(a.clone()),
+            Request::builder()
+                .header(header::CONTENT_LENGTH, length)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+    async fn error_body(response: Response) -> ApiError {
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&body).unwrap()
+    }
+    /// Non-space refusals of whole-library jobs stay plain failures without a
+    /// shortfall: the two-job limit, and an unavailable database.
+    #[tokio::test]
+    async fn whole_library_refusals_other_than_space_carry_no_shortfall() {
+        let fixture = crate::bundle::portable_bundle_tests::Fixture::new(false).await;
+        let store = fixture.seed().await;
+        let a = Api::open(fixture.catalog.clone(), store).await.unwrap();
+        let hold = a.0.validation.clone().acquire_owned().await.unwrap();
+        create(&a, "flatten", 1).await.unwrap();
+        create(&a, "flatten", 1).await.unwrap();
+        for response in [request_archive(&a).await, declare_restore(&a, "4096").await] {
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            let error = error_body(response).await;
+            assert_eq!(error.code, ErrorCode::ResourceLimit);
+            assert_eq!(error.shortfall, None);
+        }
+        drop(hold);
+        fixture.catalog.pool().close().await;
+        for response in [request_archive(&a).await, declare_restore(&a, "4096").await] {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(error_body(response).await.shortfall, None);
+        }
+        drop(a);
+        fixture.finish().await;
+    }
+    /// An archive that fails for a reason other than a format bound (here an
+    /// original missing from the store) stays a retryable failure, not a
+    /// `bundle-limit`, and leaves no artifact.
+    #[tokio::test]
+    async fn archive_storage_failure_is_retryable_and_not_a_bundle_limit() {
+        let fixture = crate::bundle::portable_bundle_tests::Fixture::new(false).await;
+        let store = fixture.seed().await;
+        let blob = format!(
+            "{:x}-{}",
+            Sha256::digest(crate::bundle::portable_bundle_tests::BLOB),
+            crate::bundle::portable_bundle_tests::BLOB.len()
+        );
+        fs::remove_file(fixture.root.join("originals").join(blob)).unwrap();
+        let a = Api::open(fixture.catalog.clone(), store).await.unwrap();
+        let id = create(&a, "archive", 1).await.unwrap();
+        run(
+            a.clone(),
+            id.clone(),
+            ExportRequest::ArchiveOriginals {
+                version: WireVersion::V1,
+            },
+            None,
+        )
+        .await;
+        let report = report(&a, &id).await.unwrap();
+        assert_eq!(report.state, JobState::Failed);
+        let error = report.error.unwrap();
+        assert_eq!(error.code, ErrorCode::CorruptAsset);
+        assert!(error.retryable);
+        assert!(!artifact(&a, &id).exists());
+        drop(a);
+        fixture.finish().await;
     }
     #[tokio::test]
     async fn queued_cancel_never_publishes_and_limits_admit_two_only() {

@@ -512,13 +512,36 @@ async fn corrupt_archives_fail_closed_and_release(pg: bool) {
     let mut original = good.clone();
     let last = original.len() - 1;
     original[last] ^= 0x01;
-    for corrupt in [flipped, forged, original] {
+    // Hostile framing: lengths and counts are never used to size memory or
+    // disk. A declared original of u64::MAX bytes, a u32::MAX original count
+    // with no records, a u64::MAX catalog section and a repeated original all
+    // fail closed after bounded work and release everything.
+    let record = 60 + catalog_bytes;
+    let mut huge_original = good.clone();
+    huge_original[record + 32..record + 40].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut huge_count = good[..record].to_vec();
+    huge_count[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut huge_catalog = good.clone();
+    huge_catalog[20..28].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut repeated = good.clone();
+    repeated[16..20].copy_from_slice(&2u32.to_le_bytes());
+    repeated.extend_from_slice(&good[record..]);
+    for corrupt in [
+        flipped,
+        forged,
+        original,
+        huge_original,
+        huge_count,
+        huge_catalog,
+        repeated,
+    ] {
         let (status, id) = env.upload(corrupt).await;
         assert_eq!(status, StatusCode::OK);
         let id = id.unwrap();
         assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
         env.assert_released(&id).await;
     }
+    assert!(crate::bundle::largest_copy_chunk() <= crate::bundle::COPY_BUFFER);
     // The same deployment still restores a good archive afterwards.
     let (_, id) = env.upload(good).await;
     let id = id.unwrap();
@@ -609,6 +632,66 @@ async fn quota_failures_fail_closed_and_release(pg: bool) {
             .0,
         StatusCode::TOO_MANY_REQUESTS
     );
+    // A body longer than its declared length is cut at the declaration:
+    // nothing past the admitted size is written, and the job is released.
+    let response = restore_upload(
+        Extension(env.api.clone()),
+        Request::builder()
+            .header(header::CONTENT_LENGTH, "64")
+            .body(Body::from(vec![7u8; 128]))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let overlong: String =
+        sqlx::query_scalar("SELECT id FROM export_jobs WHERE kind='restore' AND error='upload'")
+            .fetch_one(env.catalog().pool())
+            .await
+            .unwrap();
+    env.assert_released(&overlong).await;
+    // Declarations: any positive size is admissible in principle; one no
+    // volume can hold is a free-space refusal, while zero, malformed and
+    // need-overflowing declarations are invalid input. No job is created.
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    let declared = |length: String| {
+        let api = env.api.clone();
+        async move {
+            let response = restore_upload(
+                Extension(api),
+                Request::builder()
+                    .header(header::CONTENT_LENGTH, length)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            let status = response.status();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+            )
+        }
+    };
+    let (status, body) = declared((i64::MAX as u64 / 4).to_string()).await;
+    assert_short_of_space(status, &body, &env);
+    for invalid in [
+        "0".to_owned(),
+        "abc".to_owned(),
+        u64::MAX.to_string(),
+        (i64::MAX as u64 / 2).to_string(),
+    ] {
+        let (status, body) = declared(invalid).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.get("shortfall").is_none());
+    }
+    let jobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    assert_eq!(jobs_before, jobs_after);
     env.finish().await;
     // Mid-restore: an original larger than the per-file quota fails after the
     // owned destination exists; cleanup removes it and releases the reservation.
@@ -705,6 +788,56 @@ async fn library_beyond_upload_budget_archives_and_restores_through_jobs(pg: boo
     env.assert_released(&restored).await;
     assert!(!bundle.exists());
     assert_eq!(env.job(&archived).await.2, 0);
+    env.finish().await;
+}
+
+/// A logical catalog beyond the 288 MiB v2 section fails at backup time with
+/// a clear non-retryable `resource_limit`, before any artifact exists: never a
+/// partial or corrupt bundle. Its spools are removed and its quota released.
+async fn catalog_beyond_format_bound_fails_backup_cleanly(pg: bool) {
+    let mut fx = Fixture::new(pg).await;
+    let store = fx.seed_with(limits()).await;
+    // Ten 30 MiB opaque records: 300 MiB of logical catalog, each row within
+    // the 32 MiB row bound, together over the 288 MiB section bound.
+    let cell = vec![0x5a_u8; 30 * 1024 * 1024];
+    for ordinal in 0..10_i64 {
+        sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) VALUES($1,'over-format-bound',$2,$3)")
+            .bind(IDS[0])
+            .bind(ordinal)
+            .bind(&cell)
+            .execute(fx.catalog.pool())
+            .await
+            .unwrap();
+    }
+    drop(cell);
+    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    let sentinels = Sentinels::plant(&mut fx, &store).await;
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    let (status, body) = env.begin_archive().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+    let error = report(&env.api, &id).await.unwrap().error.unwrap();
+    assert_eq!(error.code, ErrorCode::ResourceLimit);
+    assert!(!error.retryable);
+    let text = serde_json::to_string(&public_report(&env.api, &id).await.unwrap()).unwrap();
+    assert!(!text.contains(env.fx.root.to_str().unwrap()));
+    let (state, label, reserved, retained) = env.job(&id).await;
+    assert_eq!(
+        (state.as_str(), label.as_deref(), reserved, retained),
+        ("failed", Some("bundle-limit"), 0, 0)
+    );
+    assert!(!artifact(&env.api, &id).exists());
+    assert_eq!(env.owned_entries(&id), Vec::<String>::new());
+    assert!(
+        !crate::transient_owner::Owner::directory(&env.root(), &id).exists(),
+        "spools and the owned transfer directory are removed"
+    );
     env.finish().await;
 }
 
@@ -1839,6 +1972,7 @@ matrix! {
     corrupt_archives_fail_closed_and_release => sqlite_corrupt_archives, postgres_corrupt_archives;
     quota_failures_fail_closed_and_release => sqlite_quota_failures, postgres_quota_failures;
     library_beyond_upload_budget_archives_and_restores_through_jobs => sqlite_library_beyond_upload_budget, postgres_library_beyond_upload_budget;
+    catalog_beyond_format_bound_fails_backup_cleanly => sqlite_catalog_beyond_format_bound, postgres_catalog_beyond_format_bound;
     cancel_and_shutdown_mid_restore_never_publish => sqlite_cancel_and_shutdown, postgres_cancel_and_shutdown;
     process_kill_mid_restore_then_restart_recovers => sqlite_process_kill, postgres_process_kill;
     successful_restore_publishes_and_delete_releases => sqlite_publish_and_delete, postgres_publish_and_delete;
