@@ -1,11 +1,16 @@
+# Default deployment: one service with the application catalog in SQLite.
+# PostgreSQL is opt-in through compose.postgres.yaml (bundled service) or
+# compose.postgres-external.yaml (existing server); see docs/operations/linux.md.
+# Unset storage variables keep the named volumes below; set them to absolute
+# host directories (owned by 10001:10001, mode 0700) to choose storage locations.
 services:
   lytronaut:
-    image: lytronaut:local
+    image: ${LYTRONAUT_IMAGE:-lytronaut:local}
     build: .
     user: "10001:10001"
     read_only: true
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${LYTRONAUT_PORT:-3000}:3000"
     environment:
       LYTRONAUT_ORIGIN: ${LYTRONAUT_ORIGIN:-http://127.0.0.1:3000}
       LYTRONAUT_UPLOAD_BYTES: "2147483648"
@@ -17,9 +22,9 @@ services:
       LYTRONAUT_IMPORT_JOBS: "2"
       LYTRONAUT_IMPORT_DECODERS: "1"
     volumes:
-      - catalog:/data/catalog
-      - originals:/data/originals
-      - work:/data/work
+      - ${LYTRONAUT_CATALOG_DIR:-catalog}:/data/catalog
+      - ${LYTRONAUT_ORIGINALS_DIR:-originals}:/data/originals
+      - ${LYTRONAUT_WORK_DIR:-work}:/data/work
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     cpus: 2

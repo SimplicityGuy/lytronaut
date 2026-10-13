@@ -1,16 +1,24 @@
 //! Real HTTP streaming/request-boundary tests using only independent synthetic input.
+//! `LYTRONAUT_TEST_BACKEND=postgres` (set only by the strict PostgreSQL recipe) runs
+//! the same cases on an owned schema in the explicit disposable test database.
 use lytronaut_service::{AppState, SecurityConfig, router_with_routes, uploads};
-use lytronaut_storage::{Catalog, Limits, Store};
+use lytronaut_storage::{Catalog, DatabaseConfig, Limits, Store};
 use serde_json::{Value, json};
+use sqlx::{
+    ConnectOptions, Connection, PgConnection, any::AnyConnectOptions, postgres::PgConnectOptions,
+};
 use std::{
     fs,
     io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
+    str::FromStr,
 };
 struct Server {
     root: PathBuf,
     store: Store,
+    catalog: Catalog,
+    postgres: Option<(PgConnection, String)>,
     port: u16,
     task: tokio::task::JoinHandle<()>,
 }
@@ -19,6 +27,32 @@ impl Drop for Server {
         self.task.abort();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+async fn postgres_admin() -> PgConnection {
+    let url = std::env::var("LYTRONAUT_TEST_POSTGRES_URL")
+        .expect("PostgreSQL upload tests require the explicit disposable test URL");
+    let options = PgConnectOptions::from_str(&url)
+        .expect("invalid test PostgreSQL configuration")
+        .disable_statement_logging();
+    PgConnection::connect_with(&options)
+        .await
+        .expect("test PostgreSQL connection failed")
+}
+/// The restricted role, untouched public sentinel and owned-schema-only objects.
+async fn assert_postgres_boundary(admin: &mut PgConnection, schema: &str) {
+    let restricted: bool = sqlx::query_scalar("SELECT NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication) AND NOT has_schema_privilege(current_user,'public','CREATE') FROM pg_roles WHERE rolname=current_user")
+        .fetch_one(&mut *admin).await.unwrap();
+    assert!(restricted, "upload parity requires a restricted role");
+    let intact: bool = sqlx::query_scalar("SELECT count(*)=1 AND min(marker)='synthetic-persistence-parity' FROM public.lytronaut_parity_sentinel")
+        .fetch_one(&mut *admin).await.unwrap();
+    assert!(intact, "public sentinel must remain unchanged");
+    let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('intake_jobs','application_job_order','catalog_versions','export_jobs')")
+        .fetch_one(&mut *admin).await.unwrap();
+    assert_eq!(
+        leaked, 0,
+        "application objects must remain in the owned schema"
+    );
+    assert!(schema.starts_with("lytronaut_upload_"));
 }
 impl Server {
     async fn new() -> Self {
@@ -29,9 +63,37 @@ impl Server {
             u128::from_le_bytes(unique)
         ));
         fs::create_dir(&root).unwrap();
-        let catalog = Catalog::open_application_database(&root.join("catalog.db"))
-            .await
-            .unwrap();
+        let mut postgres = None;
+        let catalog = match std::env::var("LYTRONAUT_TEST_BACKEND").as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("sqlite") => {
+                Catalog::open_application_database(&root.join("catalog.db"))
+                    .await
+                    .unwrap()
+            }
+            Ok("postgres") => {
+                let mut admin = postgres_admin().await;
+                let schema = format!("lytronaut_upload_{:x}", u128::from_le_bytes(unique));
+                sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA \"{schema}\"")))
+                    .execute(&mut admin)
+                    .await
+                    .unwrap();
+                assert_postgres_boundary(&mut admin, &schema).await;
+                let url = std::env::var("LYTRONAUT_TEST_POSTGRES_URL").unwrap();
+                let config = DatabaseConfig::Postgres(
+                    AnyConnectOptions::from_str(&url)
+                        .expect("invalid test database URL")
+                        .database_url
+                        .to_string(),
+                )
+                .with_schema(&schema)
+                .unwrap();
+                let catalog = Catalog::open(config).await.unwrap();
+                assert!(!root.join("catalog.db").exists());
+                postgres = Some((admin, schema));
+                catalog
+            }
+            _ => panic!("LYTRONAUT_TEST_BACKEND must be sqlite or postgres"),
+        };
         let store = Store::open(
             catalog.clone(),
             &root.join("originals"),
@@ -51,7 +113,7 @@ impl Server {
         .unwrap();
         let app = router_with_routes(
             AppState {
-                catalog,
+                catalog: catalog.clone(),
                 security: SecurityConfig::new("http://127.0.0.1:3000").unwrap(),
             },
             uploads::routes(store.clone()),
@@ -64,8 +126,35 @@ impl Server {
         Self {
             root,
             store,
+            catalog,
+            postgres,
             port,
             task,
+        }
+    }
+    /// Stop serving, close the pool, re-check the PostgreSQL boundary and remove
+    /// only this test's own schema. A failed assertion may leave the schema in the
+    /// disposable database; it never touches anything else.
+    async fn close(mut self) {
+        self.task.abort();
+        self.catalog.pool().close().await;
+        if let Some((mut admin, schema)) = self.postgres.take() {
+            assert_postgres_boundary(&mut admin, &schema).await;
+            let owned: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_tables WHERE schemaname=$1 AND tablename='intake_jobs'",
+            )
+            .bind(&schema)
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+            assert_eq!(owned, 1, "upload state must persist in the owned schema");
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA \"{schema}\" CASCADE"
+            )))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+            admin.close().await.unwrap();
         }
     }
     async fn request(
@@ -202,6 +291,7 @@ async fn real_streaming_intent_unicode_and_truthful_progress() {
     let report = s.store.job(&id).await.unwrap();
     assert_eq!(report.completed_bytes, report.total_bytes);
     assert_eq!(report.total_bytes, 6000);
+    s.close().await;
 }
 #[tokio::test]
 async fn actual_stream_overflow_content_encoding_and_unsafe_name_are_rejected() {
@@ -226,6 +316,7 @@ async fn actual_stream_overflow_content_encoding_and_unsafe_name_are_rejected() 
         assert!(s.store.manifest(&id).await.is_err());
         assert!(!s.store.job(&id).await.unwrap().error.unwrap().retryable);
     }
+    s.close().await;
 }
 #[tokio::test]
 async fn malformed_and_overlarge_declarations_never_echo_private_input() {
@@ -246,4 +337,5 @@ async fn malformed_and_overlarge_declarations_never_echo_private_input() {
         assert!(!response.2.contains(marker));
         assert!(!response.2.contains("private"));
     }
+    s.close().await;
 }

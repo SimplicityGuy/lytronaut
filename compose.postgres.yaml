@@ -1,0 +1,77 @@
+# Bundled PostgreSQL catalog. Use together with compose.yaml:
+#   docker compose -f compose.yaml -f compose.postgres.yaml up -d --no-build
+# LYTRONAUT_SECRETS_DIR must name a private directory OUTSIDE this checkout that
+# holds two generated files (see docs/operations/linux.md):
+#   postgres-bootstrap-password    superuser bootstrap only; never used by the app
+#   lytronaut-database-password    restricted application role
+# Secrets are mounted files: they never appear in this file, the image, the
+# container environment or `docker compose config` output.
+services:
+  postgres:
+    # Official PostgreSQL 18.6, the latest stable release on
+    # https://www.postgresql.org/support/versioning/ (verified 2026-10-13).
+    # Multi-architecture OCI index digest (linux/amd64 and linux/arm64 included).
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    user: "70:70"
+    read_only: true
+    environment:
+      POSTGRES_DB: lytronaut
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_bootstrap_password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=peer"
+    secrets:
+      - postgres_bootstrap_password
+      - lytronaut_database_password
+    volumes:
+      - ${LYTRONAUT_POSTGRES_DIR:-postgres}:/var/lib/postgresql
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /var/run/postgresql:uid=70,gid=70,mode=0775,size=8m
+      - /tmp:uid=70,gid=70,mode=0700,size=64m
+    networks: [database]
+    healthcheck:
+      # TCP only: the image's initialization server listens on the socket alone,
+      # so this succeeds only after initialization scripts have completed.
+      test: ["CMD", "pg_isready", "--host=127.0.0.1", "--port=5432", "--dbname=lytronaut", "--username=lytronaut"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 1
+    mem_limit: 1g
+    shm_size: 128m
+    pids_limit: 256
+    stop_signal: SIGINT
+    stop_grace_period: 60s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  lytronaut:
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+    environment:
+      # Credential-free URL; the password is read from the mounted secret file.
+      LYTRONAUT_DATABASE_URL: postgres://lytronaut@postgres:5432/lytronaut?sslmode=disable
+      LYTRONAUT_DATABASE_PASSWORD_FILE: /run/secrets/lytronaut_database_password
+      LYTRONAUT_DATABASE_SCHEMA: ${LYTRONAUT_DATABASE_SCHEMA:-lytronaut}
+    secrets:
+      - lytronaut_database_password
+    networks: [default, database]
+networks:
+  database:
+    # No route outside the host; only the application reaches PostgreSQL.
+    internal: true
+secrets:
+  postgres_bootstrap_password:
+    file: ${LYTRONAUT_SECRETS_DIR:?set LYTRONAUT_SECRETS_DIR to the private secrets directory}/postgres-bootstrap-password
+  lytronaut_database_password:
+    file: ${LYTRONAUT_SECRETS_DIR:?set LYTRONAUT_SECRETS_DIR to the private secrets directory}/lytronaut-database-password
+volumes:
+  postgres:

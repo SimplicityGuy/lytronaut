@@ -62,3 +62,21 @@ jobs:
           path: owner-evidence.tar.gz
           if-no-files-found: error
           compression-level: 0
+  persistence-parity:
+    name: persistence-parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      LYTRONAUT_TEST_PREFIX: lytronaut-ci-parity
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup
+      # The recipe starts the pinned official PostgreSQL release from
+      # compose.postgres.yaml as a disposable, task-owned container, bootstraps
+      # the restricted role and public sentinel, asserts server_version_num, runs
+      # the exact-count suite and removes the container and its volume.
+      - name: Actual PostgreSQL storage, Desktop, HTTP and portable backup parity
+        run: mise exec -- just postgres-parity
