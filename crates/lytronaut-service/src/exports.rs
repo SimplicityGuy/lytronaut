@@ -325,19 +325,25 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
             // Retained until an explicit DELETE; never cleaned automatically.
             continue;
         }
-        if state.as_deref() == Some("succeeded")
-            && matches!(
+        if state.as_deref() == Some("succeeded") {
+            // A previously ready job is never cleaned automatically. Its journal
+            // must show publication and its result must verify; otherwise it
+            // becomes unready with everything it owns retained until DELETE.
+            let published = matches!(
                 journal.phase(),
                 crate::restore_journal::Phase::FilesPublished
                     | crate::restore_journal::Phase::JobSucceeded
-            )
-        {
-            let verified = match journal.verify_published(&directory) {
-                Ok(()) => match journal.namespace() {
-                    Some(namespace) => namespace.verify(catalog).await,
-                    None => Ok(()),
-                },
-                Err(error) => Err(error),
+            );
+            let verified = if !published {
+                Err(lytronaut_storage::StorageError::Conflict)
+            } else {
+                match journal.verify_published(&directory) {
+                    Ok(()) => match journal.namespace() {
+                        Some(namespace) => namespace.verify(catalog).await,
+                        None => Ok(()),
+                    },
+                    Err(error) => Err(error),
+                }
             };
             if verified.is_err() {
                 store_available(catalog, store).await?;
@@ -358,6 +364,25 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
                 store_available(catalog, store).await?;
                 block(catalog, id).await?;
             }
+        }
+    }
+    // The database and the export root are separate stores. A ready restore
+    // whose journal is missing (e.g. the export root came from an older
+    // snapshot) cannot be verified: unready, retained, never auto-deleted.
+    let ready: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM export_jobs WHERE kind='restore' AND state='succeeded'")
+            .fetch_all(catalog.pool())
+            .await?;
+    for id in ready {
+        if OpaqueId::try_from(id.clone()).is_err() {
+            mark_unverified(catalog, &id).await?;
+            continue;
+        }
+        if crate::restore_journal::Journal::load(&directory, &id)
+            .map_err(storage)?
+            .is_none()
+        {
+            mark_unverified(catalog, &id).await?;
         }
     }
     Ok(())

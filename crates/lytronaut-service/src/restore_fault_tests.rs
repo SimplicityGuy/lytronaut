@@ -1423,6 +1423,84 @@ async fn monitor_read_error_after_success_never_discards_result(pg: bool) {
     env.finish().await;
 }
 
+/// The filesystem and the database are separate stores (for example the export
+/// root restored from an older host snapshot). A ready restore row without a
+/// loadable journal (M1), or whose journal never reached publication (L2), is
+/// not verifiable: it becomes unready, and nothing it owns is deleted or freed.
+async fn ready_restore_without_published_journal_is_unready_and_retained(pg: bool) {
+    let mut env = Env::new(pg).await;
+    for missing in [true, false] {
+        let (_, id) = env.upload(archive(0).await).await;
+        let id = id.unwrap();
+        let journal = env.assert_ready(&id).await;
+        let retained = env.job(&id).await.3;
+        let path = env.root().join(format!("{id}.restore-journal"));
+        if missing {
+            fs::remove_file(&path).unwrap();
+        } else {
+            let mut record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            record["phase"] = serde_json::json!("RowsCommitted");
+            fs::remove_file(&path).unwrap();
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+                .unwrap();
+            file.write_all(&serde_json::to_vec(&record).unwrap())
+                .unwrap();
+        }
+        for _ in 0..2 {
+            assert!(env.restart().await);
+            let (state, error, _, kept) = env.job(&id).await;
+            assert_eq!(
+                (state.as_str(), error.as_deref()),
+                ("failed", Some("unverified-result")),
+                "journal missing={missing}"
+            );
+            assert_eq!(kept, retained, "quota retained");
+            let report = report(&env.api, &id).await.unwrap();
+            assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+            assert!(
+                journal.result(&env.root()).join("store").exists(),
+                "never auto-deleted"
+            );
+            if let Some(namespace) = journal.namespace() {
+                assert!(
+                    restore_schemas(env.catalog())
+                        .await
+                        .contains(&namespace.schema().to_owned())
+                );
+            }
+            env.sentinels.assert_intact(&env.fx).await;
+        }
+        if missing {
+            // Without a journal ownership is unprovable: DELETE fails closed.
+            assert_ne!(env.delete(&id).await, StatusCode::OK);
+            assert!(journal.result(&env.root()).join("store").exists());
+            assert_eq!(env.job(&id).await.3, retained);
+            // Test teardown of the state the application correctly refused to touch.
+            fs::remove_dir_all(journal.result(&env.root())).unwrap();
+            if let (Some(namespace), Some((admin, _))) = (journal.namespace(), env.fx.pg.as_mut()) {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP SCHEMA \"{}\" CASCADE",
+                    namespace.schema()
+                )))
+                .execute(&mut *admin)
+                .await
+                .unwrap();
+            }
+            assert_eq!(env.delete(&id).await, StatusCode::OK);
+        } else {
+            // With the journal, an explicit DELETE proves ownership and removes it.
+            assert_eq!(env.delete(&id).await, StatusCode::OK);
+        }
+        env.assert_released(&id).await;
+    }
+    env.finish().await;
+}
+
 macro_rules! matrix {
     ($($scenario:ident => $sqlite:ident, $postgres:ident;)*) => {$(
         #[tokio::test]
@@ -1452,6 +1530,7 @@ matrix! {
     whole_store_failures_still_refuse_startup => sqlite_whole_store_failures, postgres_whole_store_failures;
     unverifiable_ready_result_fails_closed_and_is_never_auto_deleted => sqlite_unverifiable_ready_result, postgres_unverifiable_ready_result;
     monitor_read_error_after_success_never_discards_result => sqlite_monitor_read_error_after_success, postgres_monitor_read_error_after_success;
+    ready_restore_without_published_journal_is_unready_and_retained => sqlite_ready_without_published_journal, postgres_ready_without_published_journal;
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]
