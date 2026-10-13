@@ -19,5 +19,16 @@ pub async fn open(data: &Path) -> Result<Catalog, DatabaseError> {
             DatabaseConfig::Sqlite(path)
         }
     };
+    let schema = std::env::var_os("LYTRONAUT_DATABASE_SCHEMA")
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| DatabaseError::Configuration)
+        })
+        .transpose()?;
+    let config = match schema {
+        Some(schema) => config.with_schema(&schema)?,
+        None => config,
+    };
     Catalog::open(config).await
 }

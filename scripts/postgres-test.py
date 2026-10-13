@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run actual PostgreSQL parity with exact counts; never silently skip a backend.
 
-Uses synthetic fixtures only. Portable backup API coverage is pending lytronaut-1ga;
+Uses synthetic fixtures only. Every case runs on PostgreSQL with no exclusions;
 this focused recipe is not the full release/coverage gate.
 """
 import os
@@ -26,11 +26,13 @@ def main():
 
     env = dict(os.environ, LYTRONAUT_TEST_BACKEND="postgres")
     cases = [
-        ("storage", 6, ["-p", "lytronaut-storage", "--lib", "database::tests::postgres_", "--", "--ignored", "--test-threads=1"]),
+        ("storage", 7, ["-p", "lytronaut-storage", "--lib", "database::tests::postgres_", "--", "--ignored", "--test-threads=1"]),
         ("desktop", 1, ["-p", "lytronaut-storage", "--test", "desktop", "postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport_and_reopen", "--", "--exact", "--ignored", "--test-threads=1"]),
-        # Exact sixth scenario exclusion is temporary: PG portable backup remains
-        # pending 1ga. It stays active in the independent default SQLite suite.
-        ("http-api", 5, ["-p", "lytronaut-service", "--test", "api", "--", "--test-threads=1", "--skip", "public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_and_interruption"]),
+        ("http-api", 6, ["-p", "lytronaut-service", "--test", "api", "--", "--test-threads=1"]),
+        ("portable-matrix", 5, ["-p", "lytronaut-service", "--lib", "bundle::portable_bundle_tests::postgres_matrix_", "--", "--ignored", "--test-threads=1"]),
+        # Includes a real SIGKILL of a child test process mid-restore; the child's
+        # output goes to its fixture log, so exactly one result line is parsed here.
+        ("restore-faults", 19, ["-p", "lytronaut-service", "--lib", "api::exports::restore_fault_tests::postgres_", "--", "--ignored", "--test-threads=1"]),
     ]
     total = 0
     for name, expected, args in cases:
@@ -66,9 +68,10 @@ def main():
         if outcome != "ok" or tuple(map(int, (passed, failed, ignored, measured))) != (expected, 0, 0, 0):
             raise SystemExit(f"PostgreSQL {name} count/zero-skip assertion failed")
         total += int(passed)
-    if total != 12:
-        raise SystemExit("PostgreSQL parity requires exactly twelve actual passing tests")
-    print("PostgreSQL parity: 12 passed; 0 failed; 0 ignored (portable backup pending 1ga)")
+    expected_total = sum(expected for _, expected, _ in cases)
+    if total != expected_total:
+        raise SystemExit(f"PostgreSQL parity requires exactly {expected_total} actual passing tests")
+    print(f"PostgreSQL parity: {total} passed; 0 failed; 0 ignored")
 
 
 if __name__ == "__main__":

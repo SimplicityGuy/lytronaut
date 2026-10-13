@@ -242,11 +242,29 @@ contains the exact trusted bootstrap SQL. For a local bootstrap, use a generated
 password instead of reusing the workflow's disposable bootstrap value. The
 recipe is explicit opt-in and runs serially with exact result-count assertions:
 
-- Six actual PostgreSQL storage unit contracts (including actual SQLite oracles).
+- Seven actual PostgreSQL storage unit contracts (including actual SQLite oracles).
 - One actual Desktop intake/adaptation/originals/conflict/reopen contract.
-- Five existing HTTP scenarios: browse/search/detail/assets/originals and restart,
+- Six HTTP scenarios: browse/search/detail/assets/originals and restart,
   unsupported input/cancellation, ZIP publication, concurrent publication polling,
-  and PNG/JPEG export/cancellation/restart.
+  PNG/JPEG export/cancellation/restart, and the lossless portable bundle
+  backup/restore/tamper/conflict/interruption scenario (owned-schema restore).
+- Five portable backup cases with a PostgreSQL destination or source:
+  SQLite→PostgreSQL, PostgreSQL→SQLite and PostgreSQL→PostgreSQL round trips, the
+  four exact version-1 legacy forms, and near-32 MiB legacy files (one large cell;
+  many small rows) restored onto PostgreSQL. SQLite-only counterparts run by default.
+- Nineteen restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
+  archives, quota admission and mid-restore quota, cancellation and shutdown, a
+  real SIGKILL of a restoring child process with restart recovery, publish and
+  DELETE, owner-revoked (denied) cleanup, restricted DROP refused by an unrelated
+  dependent object, failing and ambiguous final status UPDATE, late DELETE racing
+  publication, journal crash-cut matrix, unjournaled restore paths, live writes
+  during a restore import, an exactly-at-limit source cell, an unverifiable ready
+  result that fails closed without auto-deletion, a monitor read error after
+  success that must not discard the result, ready restores without a published
+  journal that stay unready and retained, once-ready restores whose database row
+  regressed or vanished, and whole-store failures that
+  refuse startup (per-job blocked cleanup starts the service). Unrelated SQL and
+  filesystem sentinels, including restore-named decoys, must survive each case.
 
 The HTTP fixture selects PostgreSQL only with the explicit
 `LYTRONAUT_TEST_BACKEND=postgres` set by this recipe. The ordinary test recipe

@@ -149,7 +149,7 @@ impl Server {
                 metadata_bytes: 64 * 1024,
                 files: 32,
                 free_floor: 0,
-                reserved_bytes: 256 * 1024 * 1024,
+                reserved_bytes: 2 * 1024 * 1024 * 1024,
                 ..Default::default()
             },
         )
@@ -994,9 +994,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
             .0,
         204
     );
-    let catalog = Catalog::open_application_database(&s.root.join("catalog.db"))
-        .await
-        .unwrap();
+    let catalog = s.catalog.as_ref().unwrap().clone();
     let pending = s
         .store
         .as_ref()
@@ -1079,7 +1077,7 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         "catalog_sources",
         "api_ids",
     ] {
-        let query = format!("SELECT * FROM {table} ORDER BY rowid");
+        let query = format!("SELECT * FROM {table} ORDER BY 1");
         let original = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .fetch_all(catalog.pool())
             .await
@@ -1090,19 +1088,38 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
             .unwrap();
         assert_eq!(original.len(), restored_rows.len());
     }
-    for query in [
-        "SELECT hex(original) FROM catalog_records ORDER BY version,kind,ordinal",
-        "SELECT quote(uuid)||quote(name)||quote(caption)||quote(rating)||quote(flag_status) FROM catalog_pictures ORDER BY version,uuid",
-        "SELECT quote(uuid)||quote(name)||quote(sort_order) FROM catalog_albums ORDER BY version,uuid",
-        "SELECT quote(album_uuid)||quote(picture_uuid)||quote(picture_index) FROM catalog_memberships ORDER BY version,album_uuid,picture_index",
-        "SELECT quote(id)||quote(kind)||quote(source_key) FROM api_ids ORDER BY id",
+    // Compare independently selected logical bytes; PostgreSQL's hex source
+    // keys and bytea text are derived storage representations, not source values.
+    for (sqlite, postgres) in [
+        (
+            "SELECT lower(hex(original)) FROM catalog_records ORDER BY version,kind,ordinal",
+            "SELECT encode(original,'hex') FROM catalog_records ORDER BY version,kind,ordinal",
+        ),
+        (
+            "SELECT lower(hex(CAST(uuid AS BLOB)))||':'||lower(hex(CAST(name AS BLOB)))||':'||lower(hex(CAST(caption AS BLOB)))||':'||rating||':'||flag_status FROM catalog_pictures ORDER BY version,uuid",
+            "SELECT uuid||':'||encode(name,'hex')||':'||encode(caption,'hex')||':'||rating::text||':'||flag_status::text FROM catalog_pictures ORDER BY version,uuid",
+        ),
+        (
+            "SELECT lower(hex(CAST(uuid AS BLOB)))||':'||lower(hex(CAST(name AS BLOB)))||':'||sort_order FROM catalog_albums ORDER BY version,uuid",
+            "SELECT uuid||':'||encode(name,'hex')||':'||sort_order::text FROM catalog_albums ORDER BY version,uuid",
+        ),
+        (
+            "SELECT lower(hex(CAST(album_uuid AS BLOB)))||':'||lower(hex(CAST(picture_uuid AS BLOB)))||':'||picture_index FROM catalog_memberships ORDER BY version,album_uuid,picture_index",
+            "SELECT album_uuid||':'||picture_uuid||':'||picture_index::text FROM catalog_memberships ORDER BY version,album_uuid,picture_index",
+        ),
+        (
+            "SELECT lower(hex(CAST(id AS BLOB)))||':'||lower(hex(CAST(kind AS BLOB)))||':'||lower(hex(CAST(source_key AS BLOB))) FROM api_ids ORDER BY id",
+            "SELECT encode(convert_to(id,'UTF8'),'hex')||':'||encode(convert_to(kind,'UTF8'),'hex')||':'||source_key FROM api_ids ORDER BY id",
+        ),
     ] {
-        let original: Vec<String> = sqlx::query_scalar(query)
+        let original: Vec<String> = sqlx::query_scalar(catalog.dialect(sqlite, postgres))
             .fetch_all(catalog.pool())
             .await
             .unwrap();
-        let restored_values: Vec<String> =
-            sqlx::query_scalar(query).fetch_all(c.pool()).await.unwrap();
+        let restored_values: Vec<String> = sqlx::query_scalar(sqlite)
+            .fetch_all(c.pool())
+            .await
+            .unwrap();
         assert_eq!(original, restored_values);
     }
     let rows = sqlx::query("SELECT digest,length,path FROM intake_sources ORDER BY path")
@@ -1182,8 +1199,27 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         );
         assert!(!failed.exists());
     }
-    // Recomputed checksums do not authorize executable or inconsistent app databases.
+    // Build a legacy SQLite archive independently of the portable backup encoder.
+    // Its trusted schema is a fresh destination created above; VACUUM captures
+    // committed WAL content rather than copying a possibly stale main file.
     use sha2::{Digest, Sha256};
+    let legacy_seed = s.root.join("independent-legacy.db");
+    sqlx::query("VACUUM INTO $1")
+        .bind(legacy_seed.to_str().unwrap())
+        .execute(c.pool())
+        .await
+        .unwrap();
+    let legacy_database = fs::read(&legacy_seed).unwrap();
+    let portable_size = u64::from_le_bytes(before[20..28].try_into().unwrap()) as usize;
+    let mut legacy_before = before[..60].to_vec();
+    legacy_before[..16].copy_from_slice(b"LYTRONAUT-BNDL01");
+    legacy_before[20..28].copy_from_slice(&(legacy_database.len() as u64).to_le_bytes());
+    legacy_before[28..60].copy_from_slice(&Sha256::digest(&legacy_database));
+    legacy_before.extend_from_slice(&legacy_database);
+    legacy_before.extend_from_slice(&before[60 + portable_size..]);
+    let before = legacy_before;
+    // Recomputed checksums do not authorize executable or inconsistent legacy
+    // app databases. The earlier corruption/truncation checks exercise v2.
     let dbsize = u64::from_le_bytes(before[20..28].try_into().unwrap()) as usize;
     for sql in [
         "CREATE TRIGGER hostile AFTER INSERT ON catalog_albums BEGIN DELETE FROM catalog_pictures; END",
@@ -1305,6 +1341,66 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
             .unwrap();
     assert_eq!(obsolete, 0);
     restored_db.close().await.unwrap();
+    // Exercise all four EXACT accepted v1 forms with an independently authored
+    // SQLite payload, not the new logical encoder or an archive-import helper.
+    for (has_order, has_auth) in [(true, false), (true, true), (false, false), (false, true)] {
+        let fixture = s.root.join(format!("v1-{has_order}-{has_auth}.db"));
+        fs::write(&fixture, &legacy_database).unwrap();
+        let mut db =
+            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&fixture))
+                .await
+                .unwrap();
+        if !has_order {
+            sqlx::query("DROP TABLE application_job_order")
+                .execute(&mut db)
+                .await
+                .unwrap();
+        }
+        if has_auth {
+            sqlx::raw_sql("CREATE TABLE auth_account (singleton INTEGER PRIMARY KEY CHECK(singleton=1), username_hash TEXT, password_hash TEXT, bootstrap_hash TEXT); CREATE TABLE auth_sessions (token_hash TEXT PRIMARY KEY, expires INTEGER NOT NULL, created INTEGER NOT NULL); CREATE TABLE auth_attempts (kind TEXT PRIMARY KEY, start INTEGER NOT NULL, count INTEGER NOT NULL);").execute(&mut db).await.unwrap();
+        }
+        db.close().await.unwrap();
+        let payload = fs::read(&fixture).unwrap();
+        let mut wire = before[..60].to_vec();
+        wire[20..28].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+        wire[28..60].copy_from_slice(&Sha256::digest(&payload));
+        wire.extend_from_slice(&payload);
+        wire.extend_from_slice(&before[60 + dbsize..]);
+        let input = s.root.join(format!("v1-{has_order}-{has_auth}.bundle"));
+        fs::write(&input, wire).unwrap();
+        let target = s.root.join(format!("v1-{has_order}-{has_auth}-restored"));
+        bundle::restore(
+            &input,
+            &target,
+            &expected,
+            store.limits(),
+            &cancel,
+            &progress,
+        )
+        .await
+        .unwrap();
+        let mut db = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new().filename(target.join("store/catalog.db")),
+        )
+        .await
+        .unwrap();
+        let auth_tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE name IN ('auth_account','auth_sessions','auth_attempts')").fetch_one(&mut db).await.unwrap();
+        assert_eq!(auth_tables, 0);
+        let copied: Vec<String> = sqlx::query_scalar(
+            "SELECT hex(original) FROM catalog_records ORDER BY version,kind,ordinal",
+        )
+        .fetch_all(&mut db)
+        .await
+        .unwrap();
+        let expected_records: Vec<String> = sqlx::query_scalar(
+            "SELECT hex(original) FROM catalog_records ORDER BY version,kind,ordinal",
+        )
+        .fetch_all(c.pool())
+        .await
+        .unwrap();
+        assert_eq!(copied, expected_records);
+        db.close().await.unwrap();
+    }
     // Actual HTTP archive and inbound streaming restore; obsolete authentication state never carried into restored DB.
     let r = s
         .request(
@@ -1342,12 +1438,60 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         .unwrap()
         .to_owned();
     assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
-    assert!(
-        s.root
-            .join("staging.exports")
-            .join(format!("{id}.restored/store/catalog.db"))
-            .is_file()
+    // The restore lands on the deployment-selected backend: a private SQLite
+    // file, or an exact nonce-owned PostgreSQL schema named by restore.json.
+    let restored_store = s
+        .root
+        .join("staging.exports")
+        .join(format!("{id}.restored/store"));
+    let descriptor: Value =
+        serde_json::from_slice(&fs::read(restored_store.join("restore.json")).unwrap()).unwrap();
+    let restored_schema = if s.postgres.is_some() {
+        assert_eq!(descriptor["backend"], "postgres");
+        assert!(!restored_store.join("catalog.db").exists());
+        let schema = descriptor["schema"].as_str().unwrap().to_owned();
+        assert!(schema.starts_with("lytronaut_restore_"));
+        Some(schema)
+    } else {
+        assert_eq!(descriptor["backend"], "sqlite");
+        assert!(restored_store.join("catalog.db").is_file());
+        None
+    };
+    let restored_config = match &restored_schema {
+        Some(schema) => s.database.clone().with_schema(schema).unwrap(),
+        None => DatabaseConfig::Sqlite(restored_store.join("catalog.db")),
+    };
+    let restored = Catalog::open(restored_config).await.unwrap();
+    for query in [
+        "SELECT count(*) FROM catalog_records",
+        "SELECT count(*) FROM catalog_pictures",
+        "SELECT count(*) FROM intake_sources",
+    ] {
+        let original: i64 = sqlx::query_scalar(query)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        let copied: i64 = sqlx::query_scalar(query)
+            .fetch_one(restored.pool())
+            .await
+            .unwrap();
+        assert!(original > 0);
+        assert_eq!(original, copied);
+    }
+    let originals = catalog.dialect(
+        "SELECT lower(hex(original)) FROM catalog_records ORDER BY version,kind,ordinal",
+        "SELECT encode(original,'hex') FROM catalog_records ORDER BY version,kind,ordinal",
     );
+    let expected: Vec<String> = sqlx::query_scalar(originals)
+        .fetch_all(catalog.pool())
+        .await
+        .unwrap();
+    let copied: Vec<String> = sqlx::query_scalar(originals)
+        .fetch_all(restored.pool())
+        .await
+        .unwrap();
+    assert_eq!(expected, copied);
+    restored.pool().close().await;
     // Removing a completed restore deletes only its owned copy and releases retained quota.
     let owned = s
         .root
@@ -1364,9 +1508,18 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         "restore"
     );
     assert!(!owned.exists());
+    if let Some(schema) = &restored_schema {
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname=$1")
+                .bind(schema)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0, "DELETE must drop the owned restore schema");
+    }
     assert_eq!(fs::read(&unrelated).unwrap(), b"keep unrelated bytes");
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT retained FROM export_jobs WHERE id=?")
+        sqlx::query_scalar::<_, i64>("SELECT retained FROM export_jobs WHERE id=$1")
             .bind(&id)
             .fetch_one(catalog.pool())
             .await
@@ -1381,7 +1534,14 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     let stalled=tokio::task::spawn_blocking(move||{let mut socket=TcpStream::connect(("127.0.0.1",port)).unwrap();let head=format!("POST /restores HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared}\r\n{stalled_headers}\r\n");socket.write_all(head.as_bytes()).unwrap();socket.write_all(&prefix).unwrap();socket}).await.unwrap();
     let mut uploading = None;
     for _ in 0..100 {
-        uploading=sqlx::query_scalar::<_,String>("SELECT id FROM export_jobs WHERE kind='restore' AND state='queued' ORDER BY rowid DESC LIMIT 1").fetch_optional(catalog.pool()).await.unwrap();
+        let queued = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM export_jobs WHERE kind='restore' AND state='queued'",
+        )
+        .fetch_all(catalog.pool())
+        .await
+        .unwrap();
+        assert!(queued.len() <= 1, "only the stalled upload may be queued");
+        uploading = queued.into_iter().next();
         if uploading.is_some() {
             break;
         }
@@ -1415,12 +1575,19 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     let declared = before.len();
     let response=tokio::task::spawn_blocking(move||{let mut socket=TcpStream::connect(("127.0.0.1",port)).unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();let head=format!("POST /restores HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared}\r\n{headers}\r\n");socket.write_all(head.as_bytes()).unwrap();socket.write_all(&payload).unwrap();socket.shutdown(std::net::Shutdown::Write).unwrap();let mut reply=Vec::new();let _=socket.read_to_end(&mut reply);reply}).await.unwrap();
     assert!(!response.starts_with(b"HTTP/1.1 200"));
+    let mut recorded = false;
     for _ in 0..100 {
         let failed:i64=sqlx::query_scalar("SELECT count(*) FROM export_jobs WHERE kind='restore' AND state='failed' AND error='upload'").fetch_one(catalog.pool()).await.unwrap();
         if failed > 0 {
-            return;
+            recorded = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("interrupted restore upload must record a durable failed job");
+    assert!(
+        recorded,
+        "interrupted restore upload must record a durable failed job"
+    );
+    // Close so a PostgreSQL run drops its disposable schema and re-checks the sentinel.
+    s.close().await;
 }

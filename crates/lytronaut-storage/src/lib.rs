@@ -3,11 +3,14 @@
 mod database;
 pub mod desktop;
 pub mod intake;
+pub mod portable;
+pub mod portable_database;
 mod postgres_schema;
+pub mod restore_namespace;
 mod source_text;
 mod sqlite_schema;
 mod zip;
-use database::{ApplicationDatabase, JobKind};
+use database::{ApplicationDatabase, JobKind, WriteAdmission};
 pub use database::{Backend, DatabaseConfig, DatabaseError};
 pub use intake::{FaultPoint, Limits, SourceEntry, StorageError, Store};
 use sqlx::{Any, AnyPool, SqliteConnection, Transaction};
@@ -33,7 +36,15 @@ impl Catalog {
             .map_err(|e| sqlx::Error::Protocol(e.to_string()))
     }
     pub async fn open(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        let database = ApplicationDatabase::open(config).await?;
+        Self::open_with(config, WriteAdmission::Deployment).await
+    }
+    async fn open_with(
+        config: DatabaseConfig,
+        admission: WriteAdmission,
+    ) -> Result<Self, DatabaseError> {
+        let database = ApplicationDatabase::open(config)
+            .await?
+            .with_admission(admission);
         if database.backend == Backend::Sqlite {
             // Only the application database had historical built-in auth state.
             // Imported Desktop SQLite and immutable originals never enter here.
@@ -126,9 +137,7 @@ impl Catalog {
                 ));
             }
         };
-        sqlx::query("INSERT INTO application_job_order(kind,job) VALUES($1,$2) ON CONFLICT(kind,job) DO NOTHING")
-            .bind(kind).bind(job).execute(&mut **tx).await?;
-        Ok(())
+        self.database.record_job_order(tx, kind, job).await
     }
     /// PostgreSQL source identities are binary-safe encoded; generated app IDs are not.
     pub fn encode_source_key(&self, value: &str) -> String {
@@ -148,6 +157,22 @@ impl Catalog {
     pub async fn healthy(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT 1").execute(self.pool()).await?;
         Ok(())
+    }
+    /// Credentials remain in deployment memory, never in the restored descriptor.
+    pub async fn open_restore_namespace(
+        &self,
+        namespace: &restore_namespace::RestoreNamespace,
+    ) -> Result<Self, DatabaseError> {
+        namespace
+            .validate()
+            .map_err(|_| DatabaseError::Configuration)?;
+        // The namespace is exclusively owned by one restore job (journaled nonce
+        // marker), so its import never contends on the live deployment's key.
+        Self::open_with(
+            self.database.namespace_config(namespace.schema())?,
+            WriteAdmission::ExclusiveRestore,
+        )
+        .await
     }
 }
 #[cfg(test)]

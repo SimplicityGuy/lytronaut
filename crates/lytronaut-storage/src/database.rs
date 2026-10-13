@@ -23,16 +23,35 @@ pub enum Backend {
 pub enum DatabaseConfig {
     Sqlite(PathBuf),
     Postgres(String),
+    PostgresSchema { url: String, schema: String },
 }
 impl fmt::Debug for DatabaseConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Sqlite(_) => f.write_str("DatabaseConfig::Sqlite(<application path>)"),
             Self::Postgres(_) => f.write_str("DatabaseConfig::Postgres(<redacted>)"),
+            Self::PostgresSchema { .. } => {
+                f.write_str("DatabaseConfig::PostgresSchema(<redacted>)")
+            }
         }
     }
 }
 impl DatabaseConfig {
+    /// Explicit deployment namespace; never accept a name supplied by an archive.
+    /// A generated isolated-restore descriptor can name its owned namespace, but
+    /// deployment credentials must still be supplied independently at startup.
+    pub fn with_schema(self, schema: &str) -> Result<Self, DatabaseError> {
+        if !valid_schema(schema) {
+            return Err(DatabaseError::Configuration);
+        }
+        match self {
+            Self::Postgres(url) | Self::PostgresSchema { url, .. } => Ok(Self::PostgresSchema {
+                url,
+                schema: schema.to_owned(),
+            }),
+            Self::Sqlite(_) => Err(DatabaseError::Configuration),
+        }
+    }
     pub fn from_deployment(sqlite_path: &Path, url: Option<&str>) -> Result<Self, DatabaseError> {
         match url {
             None => Ok(Self::Sqlite(sqlite_path.to_owned())),
@@ -81,6 +100,17 @@ impl DatabaseConfig {
     }
 }
 
+fn valid_schema(schema: &str) -> bool {
+    !schema.is_empty()
+        && schema.len() <= 63
+        && schema
+            .bytes()
+            .enumerate()
+            .all(|(i, c)| c.is_ascii_lowercase() || c == b'_' || (i > 0 && c.is_ascii_digit()))
+        && !schema.starts_with("pg_")
+        && schema != "information_schema"
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatabaseError {
     Configuration,
@@ -103,10 +133,38 @@ pub(crate) struct ApplicationDatabase {
     pub(crate) pool: AnyPool,
     pub(crate) backend: Backend,
     sqlite_options: Option<SqliteConnectOptions>,
+    sqlite_memory: bool,
+    postgres_url: Option<String>,
+    admission: WriteAdmission,
+}
+/// Which writers a PostgreSQL write transaction must serialize against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum WriteAdmission {
+    /// The live deployment: every writer shares one database-wide advisory key.
+    Deployment,
+    /// A freshly created, exclusively owned restore namespace. Only its single
+    /// restore job writes there, so it must not hold the deployment's key for
+    /// the length of a row import and stall live intake/export admission.
+    ExclusiveRestore,
 }
 impl ApplicationDatabase {
     pub(crate) async fn open(config: DatabaseConfig) -> Result<Self, DatabaseError> {
         sqlx::any::install_default_drivers();
+        let sqlite_memory =
+            matches!(&config, DatabaseConfig::Sqlite(path) if path == Path::new(":memory:"));
+        let postgres_url = match &config {
+            DatabaseConfig::Postgres(url) | DatabaseConfig::PostgresSchema { url, .. } => {
+                Some(url.clone())
+            }
+            _ => None,
+        };
+        let namespace = match &config {
+            DatabaseConfig::PostgresSchema { schema, .. } if valid_schema(schema) => {
+                Some(schema.clone())
+            }
+            DatabaseConfig::PostgresSchema { .. } => return Err(DatabaseError::Configuration),
+            _ => None,
+        };
         let (backend, options, sqlite_options) = match config {
             DatabaseConfig::Sqlite(path) => {
                 // The previous typed SQLite connector also rejects non-UTF8 paths.
@@ -146,7 +204,7 @@ impl ApplicationDatabase {
                     AnyConnectOptions::from_str(&url).map_err(|_| DatabaseError::Configuration)?;
                 (Backend::Sqlite, any_options, Some(options))
             }
-            DatabaseConfig::Postgres(url) => {
+            DatabaseConfig::Postgres(url) | DatabaseConfig::PostgresSchema { url, .. } => {
                 DatabaseConfig::from_deployment(Path::new("unused"), Some(&url))?;
                 let options =
                     AnyConnectOptions::from_str(&url).map_err(|_| DatabaseError::Configuration)?;
@@ -157,7 +215,9 @@ impl ApplicationDatabase {
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(5))
             .idle_timeout(Duration::from_secs(60))
-            .after_connect(move |connection, _| Box::pin(async move {
+            .after_connect(move |connection, _| {
+                let namespace = namespace.clone();
+                Box::pin(async move {
                 match backend {
                     Backend::Sqlite => {
                         sqlx::raw_sql("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA trusted_schema=OFF;")
@@ -165,11 +225,22 @@ impl ApplicationDatabase {
                     }
                     Backend::Postgres => {
                         sqlx::raw_sql("SET statement_timeout='10s'; SET lock_timeout='5s'; SET idle_in_transaction_session_timeout='10s';")
-                            .execute(connection).await?;
+                            .execute(&mut *connection).await?;
+                        if let Some(namespace) = namespace {
+                            // A bound value avoids identifier interpolation. pg_catalog
+                            // remains implicitly searched; public is never a fallback.
+                            sqlx::query("SELECT pg_catalog.set_config('search_path',$1,false)")
+                                .bind(&namespace).execute(&mut *connection).await?;
+                            let selected: Option<String> = sqlx::query_scalar("SELECT current_schema()::text")
+                                .fetch_one(&mut *connection).await?;
+                            if selected.as_deref() != Some(namespace.as_str()) {
+                                return Err(sqlx::Error::Protocol("configured application schema is unavailable".into()));
+                            }
+                        }
                     }
                 }
                 Ok(())
-            }))
+            })})
             .connect_with(options.disable_statement_logging())
             .await
             .map_err(|_| DatabaseError::Connection)?;
@@ -177,7 +248,22 @@ impl ApplicationDatabase {
             pool,
             backend,
             sqlite_options,
+            sqlite_memory,
+            postgres_url,
+            admission: WriteAdmission::Deployment,
         })
+    }
+    pub(crate) fn with_admission(mut self, admission: WriteAdmission) -> Self {
+        self.admission = admission;
+        self
+    }
+    pub(crate) fn namespace_config(&self, schema: &str) -> Result<DatabaseConfig, DatabaseError> {
+        DatabaseConfig::Postgres(
+            self.postgres_url
+                .clone()
+                .ok_or(DatabaseError::Configuration)?,
+        )
+        .with_schema(schema)
     }
 
     /// All writers that inspect quotas or publish catalog identities use this admission.
@@ -187,10 +273,12 @@ impl ApplicationDatabase {
             Backend::Sqlite => self.pool.begin_with("BEGIN IMMEDIATE").await,
             Backend::Postgres => {
                 let mut tx = self.pool.begin().await?;
-                // Fixed namespace for this application database, not user-controlled data.
-                sqlx::query("SELECT pg_advisory_xact_lock(1280922706, 1)")
-                    .execute(&mut *tx)
-                    .await?;
+                if self.admission == WriteAdmission::Deployment {
+                    // Fixed namespace for this application database, not user-controlled data.
+                    sqlx::query("SELECT pg_advisory_xact_lock(1280922706, 1)")
+                        .execute(&mut *tx)
+                        .await?;
+                }
                 Ok(tx)
             }
         }
@@ -230,7 +318,24 @@ impl ApplicationDatabase {
         let options = self.sqlite_options.as_ref().ok_or(sqlx::Error::Protocol(
             "SQLite snapshot requested for a different application backend".to_owned(),
         ))?;
-        SqliteConnection::connect_with(options).await
+        // Typed connection preserves this worker-channel bound. Any's URL
+        // roundtrip drops it; portable snapshots must not use that path.
+        // These settings belong to the fresh typed connection; pool after_connect
+        // PRAGMAs are not inherited. Named shared-memory fixtures must keep
+        // mode=memory, but file snapshots never create a missing database.
+        let mut snapshot = options
+            .clone()
+            .create_if_missing(false)
+            .row_buffer_size(1)
+            .pragma("query_only", "ON")
+            .pragma("trusted_schema", "OFF")
+            .pragma("cache_size", "-2048")
+            .pragma("mmap_size", "0")
+            .pragma("temp_store", "MEMORY");
+        if !self.sqlite_memory {
+            snapshot = snapshot.read_only(true);
+        }
+        SqliteConnection::connect_with(&snapshot).await
     }
 
     pub(crate) async fn migrate_job_order(&self) -> Result<(), sqlx::Error> {
@@ -245,6 +350,59 @@ impl ApplicationDatabase {
         };
         sqlx::query(ddl).execute(&mut *tx).await?;
         tx.commit().await
+    }
+
+    /// Derived order allocation follows retained rows, not PostgreSQL's
+    /// nontransactional identity sequence. At signed64 exhaustion, rebuild only
+    /// auxiliary ordinals inside the already-admitted write transaction.
+    pub(crate) async fn record_job_order(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        kind: &str,
+        job: &str,
+    ) -> Result<(), sqlx::Error> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM application_job_order WHERE kind=$1 AND job=$2",
+        )
+        .bind(kind)
+        .bind(job)
+        .fetch_one(&mut **tx)
+        .await?;
+        if exists != 0 {
+            return Ok(());
+        }
+        let mut maximum: Option<i64> =
+            sqlx::query_scalar("SELECT max(ordinal) FROM application_job_order")
+                .fetch_one(&mut **tx)
+                .await?;
+        if maximum == Some(i64::MAX) {
+            // A fixed session-local temporary table avoids in-place uniqueness
+            // collisions at MIN/negative/zero/MAX. All original IDs and observable
+            // relative order survive; rollback restores the complete old table.
+            sqlx::query("CREATE TEMPORARY TABLE lytronaut_order_reindex AS SELECT ROW_NUMBER() OVER(ORDER BY ordinal) AS ordinal,kind,job FROM application_job_order")
+                .execute(&mut **tx).await?;
+            sqlx::query("DELETE FROM application_job_order")
+                .execute(&mut **tx)
+                .await?;
+            sqlx::query("INSERT INTO application_job_order(ordinal,kind,job) SELECT ordinal,kind,job FROM lytronaut_order_reindex ORDER BY ordinal")
+                .execute(&mut **tx).await?;
+            sqlx::query("DROP TABLE lytronaut_order_reindex")
+                .execute(&mut **tx)
+                .await?;
+            maximum = sqlx::query_scalar("SELECT max(ordinal) FROM application_job_order")
+                .fetch_one(&mut **tx)
+                .await?;
+        }
+        let next = maximum
+            .map_or(Some(1), |value| value.checked_add(1))
+            .ok_or_else(|| sqlx::Error::Protocol("application job ordering exhausted".into()))?;
+        sqlx::query("INSERT INTO application_job_order(ordinal,kind,job) VALUES($1,$2,$3)")
+            .bind(next)
+            .bind(kind)
+            .bind(job)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
     }
 
     /// Called by each job owner's additive migration only after its table exists.
@@ -306,6 +464,32 @@ pub(crate) enum JobKind {
 mod tests {
     use super::*;
     use sqlx::Row;
+
+    #[test]
+    fn explicit_schema_configuration_cannot_select_a_fallback_or_log_credentials() {
+        let postgres = || DatabaseConfig::Postgres("postgres://user:secret@localhost/app".into());
+        let config = postgres().with_schema("lytronaut_restore_123abc").unwrap();
+        assert!(!format!("{config:?}").contains("secret"));
+        assert!(!format!("{config:?}").contains("123abc"));
+        for invalid in [
+            "",
+            "a,public",
+            "a;DROP SCHEMA public",
+            "pg_catalog",
+            "information_schema",
+            "1schema",
+            "雪",
+            "A",
+            &"a".repeat(64),
+        ] {
+            assert!(postgres().with_schema(invalid).is_err());
+        }
+        assert!(
+            DatabaseConfig::Sqlite("catalog.db".into())
+                .with_schema("isolated")
+                .is_err()
+        );
+    }
 
     #[test]
     fn deployment_config_is_explicit_and_redacted() {
@@ -605,6 +789,80 @@ mod tests {
             .unwrap();
         assert!(acquired);
         second.rollback().await.unwrap();
+        fixture.close().await;
+    }
+
+    async fn order_exhaustion_contract(db: &ApplicationDatabase) {
+        db.migrate_job_order().await.unwrap();
+        let original = [i64::MIN, -1, 0, i64::MAX];
+        let mut tx = db.begin_write().await.unwrap();
+        for (index, ordinal) in original.into_iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO application_job_order(ordinal,kind,job) VALUES($1,'intake',$2)",
+            )
+            .bind(ordinal)
+            .bind(format!("source-{index}"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+        let mut tx = db.begin_write().await.unwrap();
+        db.record_job_order(&mut tx, "export", "new-job")
+            .await
+            .unwrap();
+        let ordered: Vec<String> =
+            sqlx::query_scalar("SELECT job FROM application_job_order ORDER BY ordinal")
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            ordered,
+            ["source-0", "source-1", "source-2", "source-3", "new-job"]
+        );
+        tx.rollback().await.unwrap();
+        let restored: Vec<i64> =
+            sqlx::query_scalar("SELECT ordinal FROM application_job_order ORDER BY ordinal")
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(restored, original);
+        let mut tx = db.begin_write().await.unwrap();
+        db.record_job_order(&mut tx, "export", "new-job")
+            .await
+            .unwrap();
+        db.record_job_order(&mut tx, "export", "new-job")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM application_job_order")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 5);
+        let ordered: Vec<String> =
+            sqlx::query_scalar("SELECT job FROM application_job_order ORDER BY ordinal")
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ordered,
+            ["source-0", "source-1", "source-2", "source-3", "new-job"]
+        );
+    }
+    #[tokio::test]
+    async fn sqlite_derived_order_exhaustion_preserves_order_and_rolls_back() {
+        let db = ApplicationDatabase::open(DatabaseConfig::Sqlite(":memory:".into()))
+            .await
+            .unwrap();
+        order_exhaustion_contract(&db).await;
+        db.pool.close().await;
+    }
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL database; deployment CI runs this explicitly"]
+    async fn postgres_derived_order_exhaustion_preserves_order_and_rolls_back() {
+        let fixture = PgFixture::new().await;
+        order_exhaustion_contract(&fixture.db).await;
         fixture.close().await;
     }
 

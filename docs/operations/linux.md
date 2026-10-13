@@ -98,6 +98,37 @@ shutdown durable recovery marks unfinished work failed on restart rather than
 offering partial artifacts. Stop your service with `docker compose stop`; do not
 remove volumes when restarting.
 
+If the log reports `Lytronaut job <id>: owned cleanup is blocked`, the service is
+running but that export/restore job holds its files and staging quota because the
+application cannot prove it owns what remains (for example an unrelated file named
+like the job under `staging.exports`, a permission change, or a database object
+that depends on the job's private restore schema). Remove or fix the conflict
+yourself, then `DELETE /exports/<id>` or restart; the job's quota is released only
+after its owned files and schema are gone. A startup failure instead means the
+whole store is unavailable (export work directory or a restore journal unreadable,
+or the database unreachable, or a job's blocked/unverified state could not be
+recorded).
+
+If the log reports `Lytronaut job <id>: its published restore result failed
+verification and is no longer ready`, a previously completed restore copy no longer
+matches its ownership record. Startup checks only ownership, not the restored data
+itself: the restore journal must exist and record publication; the
+`staging.exports/<id>.restored` directory must exist with private permissions and
+contain the matching private `restore-owner` marker; and on PostgreSQL the job's
+`lytronaut_restore_*` schema must exist with a `restore_ownership` row naming this
+job and nonce. Typical causes are changed directory permissions, a work volume or
+database restored from an older snapshot, or a dropped or edited restore schema or
+marker row. Restored tables and rows are not re-checked at startup. The job now reads
+failed (`storage_unavailable`) and nothing it holds is deleted or released
+automatically. Inspect `staging.exports/<id>.restored`; if the copy is still wanted,
+take it out of the application's work area yourself, then `DELETE /exports/<id>`.
+DELETE removes the copy and schema only when ownership can still be proved; without
+a journal it refuses, and you remove the leftovers manually before deleting the job.
+
+`Lytronaut job <id>: a previously ready restore has no database record` means the
+database is older than the work volume. The job is re-created as failed
+(`storage_unavailable`) with its staging quota counted and is handled the same way.
+
 Use the workspace's **Back up originals and catalog** action and download its
 private bundle. Restore uploads into a separate store inside the work volume;
 verify that copy before choosing a stopped-service volume replacement. A bundle
