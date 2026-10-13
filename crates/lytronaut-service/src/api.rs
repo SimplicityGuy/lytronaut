@@ -118,6 +118,7 @@ fn api_error(code: ErrorCode) -> ApiError {
         version: WireVersion::V1,
         code,
         retryable: false,
+        shortfall: None,
     }
 }
 fn text_bounded(s: String, max: usize) -> (String, bool) {
@@ -298,6 +299,7 @@ pub async fn progress(
             version: WireVersion::V1,
             code: ErrorCode::StorageUnavailable,
             retryable: true,
+            shortfall: None,
         }),
     })
 }

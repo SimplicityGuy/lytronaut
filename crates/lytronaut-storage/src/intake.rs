@@ -669,6 +669,7 @@ impl Store {
                         r.get::<Option<String>, _>("error").as_deref(),
                         Some("invalid" | "quota" | "conflict")
                     ),
+                    shortfall: None,
                 })
             } else {
                 None
