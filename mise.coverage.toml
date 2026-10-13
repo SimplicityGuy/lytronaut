@@ -1,0 +1,6 @@
+# Coverage-only tools, loaded with MISE_ENV=coverage (`just coverage`, coverage.yml).
+# Kept out of mise.toml so ordinary check/build jobs do not install them.
+# The dated WASM coverage nightly is pinned in scripts/coverage.sh; it never
+# replaces the product toolchain in rust-toolchain.toml.
+[tools]
+"cargo:cargo-llvm-cov" = "0.9.1"
