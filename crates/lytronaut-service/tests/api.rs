@@ -1930,3 +1930,126 @@ async fn live_photo_unavailable_plane_fails_without_output_and_survives_restart(
     assert!(live_photo_files_removed(&s, &id));
     s.close().await;
 }
+#[tokio::test]
+async fn browse_queries_and_asset_requests_are_validated_before_storage() {
+    let s = Server::new().await;
+    let (headers, mutation) = s.request_headers().await;
+    let (job, _) = s.upload(&mutation, 23).await;
+    assert_eq!(
+        s.request("POST", &format!("/imports/{job}/finish"), &mutation, b"")
+            .await
+            .0,
+        204
+    );
+    let progress = s.get(&format!("/imports/{job}"), &headers).await;
+    assert_eq!(progress["catalog_state"], "ready");
+    let lib = progress["library"].as_str().unwrap().to_owned();
+    // Form-encoded search: '+' is a space and %XX bytes are UTF-8.
+    let found = s
+        .get(
+            &format!("/libraries/{lib}/captures?search=%E9%9B%AA+%F0%9F%8C%8C"),
+            &headers,
+        )
+        .await;
+    assert_eq!(found["items"].as_array().unwrap().len(), 1);
+    assert_eq!(found["items"][0]["name"], "雪 🌌");
+    let invalid = [
+        "/libraries?search=x".to_owned(),
+        "/libraries?sort=name".into(),
+        format!("/libraries/{lib}/albums?sort=rating"),
+        format!("/libraries/{lib}/files?search=x"),
+        format!("/libraries/{lib}/files?sort=name"),
+        format!("/libraries/{lib}/captures?search=%G1"),
+        format!("/libraries/{lib}/captures?search=%E9"),
+        format!("/libraries/{lib}/captures?search=%4"),
+        "/libraries/%FF/albums".into(),
+        "/assets/bad.identifier/manifest".into(),
+    ];
+    for path in &invalid {
+        let r = s.request("GET", path, &headers, b"").await;
+        assert_eq!(r.0, 400, "{path}");
+        let body: Value = serde_json::from_slice(&r.2).unwrap();
+        assert_eq!(body["code"], "invalid_input", "{path}");
+    }
+    // A well-formed identifier that names nothing is not found.
+    assert_eq!(
+        s.request("GET", "/assets/unknown-opaque-id/manifest", &headers, b"")
+            .await
+            .0,
+        404
+    );
+    // Pick the first capture's preserved originals by role.
+    let captures = s
+        .get(&format!("/libraries/{lib}/captures?sort=name"), &headers)
+        .await;
+    let capture = captures["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "雪 🌌")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let detail = s.get(&format!("/captures/{capture}"), &headers).await;
+    let original = |role: &str| {
+        detail["originals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["role"] == role)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let raw = original("raw");
+    let thumbnail = original("thumbnail");
+    // A raw original is not a focus stack and has no preview chunks to serve.
+    assert_eq!(
+        s.request("GET", &format!("/assets/{raw}/focus"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        s.request("GET", &format!("/assets/{raw}/chunks/0"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    // Chunks are whole verified ranges: no client Range, numeric indices only.
+    assert_eq!(
+        s.request(
+            "GET",
+            &format!("/assets/{thumbnail}/chunks/0"),
+            &format!("{headers}Range: bytes=0-1\r\n"),
+            b""
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        s.request(
+            "GET",
+            &format!("/assets/{thumbnail}/chunks/first"),
+            &headers,
+            b""
+        )
+        .await
+        .0,
+        400
+    );
+    let chunk = s
+        .request(
+            "GET",
+            &format!("/assets/{thumbnail}/chunks/0"),
+            &headers,
+            b"",
+        )
+        .await;
+    assert_eq!(chunk.0, 200);
+    assert!(lytronaut_format::decode_jpeg(&chunk.2, lytronaut_format::Limits::default()).is_ok());
+    s.close().await;
+}
