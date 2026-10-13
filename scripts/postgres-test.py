@@ -42,10 +42,12 @@ def main():
         # cancellation and failed-plane cases, each against PostgreSQL.
         ("live-photo-api", 4, ["-p", "lytronaut-service", "--test", "api", "live_photo_", "--", "--test-threads=1"]),
         ("http-uploads", 3, ["-p", "lytronaut-service", "--test", "uploads", "--", "--test-threads=1"]),
-        ("portable-matrix", 5, ["-p", "lytronaut-service", "--lib", "bundle::portable_bundle_tests::postgres_matrix_", "--", "--ignored", "--test-threads=1"]),
+        # Round trips, legacy forms and near-limit legacy files, plus a library
+        # beyond the single-upload budgets in both cross-backend directions.
+        ("portable-matrix", 7, ["-p", "lytronaut-service", "--lib", "bundle::portable_bundle_tests::postgres_matrix_", "--", "--ignored", "--test-threads=1"]),
         # Includes a real SIGKILL of a child test process mid-restore; the child's
         # output goes to its fixture log, so exactly one result line is parsed here.
-        ("restore-faults", 19, ["-p", "lytronaut-service", "--lib", "api::exports::restore_fault_tests::postgres_", "--", "--ignored", "--test-threads=1"]),
+        ("restore-faults", 22, ["-p", "lytronaut-service", "--lib", "api::exports::restore_fault_tests::postgres_", "--", "--ignored", "--test-threads=1"]),
     ]
     total = 0
     for name, expected, args in cases:

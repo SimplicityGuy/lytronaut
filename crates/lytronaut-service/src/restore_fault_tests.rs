@@ -6,7 +6,7 @@
 //! sentinels (including restore-named decoys) must survive every outcome, and
 //! the deployment's existing library must remain byte-for-byte intact.
 use super::*;
-use crate::bundle::portable_bundle_tests::{BLOB, Fixture, IDS, verify};
+use crate::bundle::portable_bundle_tests::{BLOB, Fixture, IDS, logical_tables, verify};
 use crate::restore_journal::{Journal, Phase};
 use lytronaut_storage::DatabaseConfig;
 use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
@@ -279,20 +279,52 @@ impl Env {
         )
     }
     async fn upload(&self, bytes: Vec<u8>) -> (StatusCode, Option<String>) {
+        let (status, body) = self.upload_json(bytes).await;
+        (status, body["id"].as_str().map(str::to_owned))
+    }
+    async fn upload_json(&self, bytes: Vec<u8>) -> (StatusCode, serde_json::Value) {
+        let length = bytes.len() as u64;
+        self.upload_body(Body::from(bytes), length).await
+    }
+    /// Stream a bundle file as the request body through the production
+    /// file body (64 KiB frames), never reading it into memory.
+    async fn upload_file(&self, path: &std::path::Path) -> (StatusCode, serde_json::Value) {
+        let file = fs::File::open(path).unwrap();
+        let length = file.metadata().unwrap().len();
+        let body = Body::new(FileBody {
+            file: Arc::new(file),
+            offset: 0,
+            remaining: length,
+            permit: None,
+            pending: None,
+        });
+        self.upload_body(body, length).await
+    }
+    async fn upload_body(&self, body: Body, length: u64) -> (StatusCode, serde_json::Value) {
         let response = restore_upload(
             Extension(self.api.clone()),
             Request::builder()
-                .header(header::CONTENT_LENGTH, bytes.len().to_string())
-                .body(Body::from(bytes))
+                .header(header::CONTENT_LENGTH, length.to_string())
+                .body(body)
                 .unwrap(),
         )
         .await;
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        let id = serde_json::from_slice::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v["id"].as_str().map(str::to_owned));
-        (status, id)
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+    /// Request a whole-library archive through the production handler.
+    async fn begin_archive(&self) -> (StatusCode, serde_json::Value) {
+        let response = begin(
+            Extension(self.api.clone()),
+            Ok(Json(ExportRequest::ArchiveOriginals {
+                version: WireVersion::V1,
+            })),
+        )
+        .await;
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
     }
     async fn delete(&self, id: &str) -> StatusCode {
         cancel(Extension(self.api.clone()), Ok(Path(id.to_owned())))
@@ -375,6 +407,15 @@ impl Env {
     }
     /// A ready restore is published, journaled and reopens with exact values.
     async fn assert_ready(&self, id: &str) -> Journal {
+        self.ready(id, true).await
+    }
+    /// A ready restore of a bundle this deployment archived itself: its logical
+    /// library equals the live one. Archive admission may compact auxiliary
+    /// job-order ordinals, so intake order is compared, not raw ordinals.
+    async fn assert_ready_as_live(&self, id: &str) -> Journal {
+        self.ready(id, false).await
+    }
+    async fn ready(&self, id: &str, exact_ordinals: bool) -> Journal {
         assert_eq!(self.wait_terminal(id).await, JobState::Succeeded);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let journal = loop {
@@ -396,7 +437,21 @@ impl Env {
             None => DatabaseConfig::Sqlite(result.join("catalog.db")),
         };
         let restored = Catalog::open(config).await.unwrap();
-        verify(&restored, &result.join("originals")).await;
+        if exact_ordinals {
+            verify(&restored, &result.join("originals")).await;
+        } else {
+            assert!(library(&restored).await == library(&self.fx.catalog).await);
+            let skip = ["application_job_order"];
+            assert!(
+                logical_tables(&restored, &skip).await
+                    == logical_tables(&self.fx.catalog, &skip).await
+            );
+            let digest = format!("{:x}", Sha256::digest(BLOB));
+            assert_eq!(
+                fs::read(result.join(format!("originals/{digest}-{}", BLOB.len()))).unwrap(),
+                BLOB
+            );
+        }
         restored.pool().close().await;
         self.sentinels.assert_intact(&self.fx).await;
         journal
@@ -426,6 +481,7 @@ async fn archive(bulk: i64) -> Vec<u8> {
         &source.catalog,
         &store,
         &path,
+        u64::MAX,
         &AtomicBool::new(false),
         &AtomicU64::new(0),
     )
@@ -457,7 +513,29 @@ async fn corrupt_archives_fail_closed_and_release(pg: bool) {
     let mut original = good.clone();
     let last = original.len() - 1;
     original[last] ^= 0x01;
-    for corrupt in [flipped, forged, original] {
+    // Hostile framing: lengths and counts are never used to size memory or
+    // disk. A declared original of u64::MAX bytes, a u32::MAX original count
+    // with no records, a u64::MAX catalog section and a repeated original all
+    // fail closed after bounded work and release everything.
+    let record = 60 + catalog_bytes;
+    let mut huge_original = good.clone();
+    huge_original[record + 32..record + 40].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut huge_count = good[..record].to_vec();
+    huge_count[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut huge_catalog = good.clone();
+    huge_catalog[20..28].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut repeated = good.clone();
+    repeated[16..20].copy_from_slice(&2u32.to_le_bytes());
+    repeated.extend_from_slice(&good[record..]);
+    for corrupt in [
+        flipped,
+        forged,
+        original,
+        huge_original,
+        huge_count,
+        huge_catalog,
+        repeated,
+    ] {
         let (status, id) = env.upload(corrupt).await;
         assert_eq!(status, StatusCode::OK);
         let id = id.unwrap();
@@ -473,12 +551,32 @@ async fn corrupt_archives_fail_closed_and_release(pg: bool) {
     env.finish().await;
 }
 
+/// A free-space refusal is a retryable `resource_limit` naming the required
+/// and available bytes, and nothing else: no path, no other field.
+fn assert_short_of_space(status: StatusCode, body: &serde_json::Value, env: &Env) {
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let error: ApiError = serde_json::from_value(body.clone()).unwrap();
+    assert_eq!(error.code, ErrorCode::ResourceLimit);
+    assert!(error.retryable);
+    let shortfall = error
+        .shortfall
+        .expect("free-space refusal names its numbers");
+    assert!(shortfall.required_bytes > shortfall.available_bytes);
+    assert!(shortfall.required_bytes >= env.store.limits().free_floor);
+    let text = body.to_string();
+    for private in [env.fx.root.to_str().unwrap(), env.root().to_str().unwrap()] {
+        assert!(!text.contains(private), "refusal leaked a path");
+    }
+}
+
 async fn quota_failures_fail_closed_and_release(pg: bool) {
-    // Admission: the reservation cannot fit, so no job, file or namespace exists.
+    // Admission is real free space: a free-space floor no volume can satisfy
+    // refuses archive and restore before any job, file or namespace exists,
+    // with a clear retryable shortfall.
     let env = Env::with_limits(
         pg,
         lytronaut_storage::Limits {
-            reserved_bytes: 1024 * 1024,
+            free_floor: i64::MAX as u64 / 4,
             ..limits()
         },
     )
@@ -487,9 +585,10 @@ async fn quota_failures_fail_closed_and_release(pg: bool) {
         .fetch_one(env.catalog().pool())
         .await
         .unwrap();
-    let (status, id) = env.upload(archive(0).await).await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-    assert!(id.is_none());
+    let (status, body) = env.upload_json(archive(0).await).await;
+    assert_short_of_space(status, &body, &env);
+    let (status, body) = env.begin_archive().await;
+    assert_short_of_space(status, &body, &env);
     let jobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
         .fetch_one(env.catalog().pool())
         .await
@@ -499,6 +598,145 @@ async fn quota_failures_fail_closed_and_release(pg: bool) {
         restore_schemas(env.catalog()).await,
         env.sentinels.restore_schemas
     );
+    assert!(fs::read_dir(env.root()).unwrap().all(|entry| {
+        let name = entry.unwrap().file_name();
+        !name.to_string_lossy().ends_with(".restore-journal")
+    }));
+    env.finish().await;
+    // The aggregate import/per-asset budget no longer bounds whole-library
+    // jobs: a 1 MiB `reserved_bytes` still archives and restores, while a
+    // per-asset export over that budget is refused without a shortfall.
+    let env = Env::with_limits(
+        pg,
+        lytronaut_storage::Limits {
+            reserved_bytes: 1024 * 1024,
+            ..limits()
+        },
+    )
+    .await;
+    let (status, id) = env.upload(archive(0).await).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = id.unwrap();
+    env.assert_ready(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    let (status, body) = env.begin_archive().await;
+    assert_eq!(status, StatusCode::OK);
+    let archived = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&archived).await, JobState::Succeeded);
+    assert_eq!(env.delete(&archived).await, StatusCode::OK);
+    assert_eq!(
+        create(&env.api, "flatten", 2 * 1024 * 1024)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // A body longer than its declared length is cut at the declaration:
+    // nothing past the admitted size is written, and the job is released.
+    let response = restore_upload(
+        Extension(env.api.clone()),
+        Request::builder()
+            .header(header::CONTENT_LENGTH, "64")
+            .body(Body::from(vec![7u8; 128]))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let overlong: String =
+        sqlx::query_scalar("SELECT id FROM export_jobs WHERE kind='restore' AND error='upload'")
+            .fetch_one(env.catalog().pool())
+            .await
+            .unwrap();
+    env.assert_released(&overlong).await;
+    // Imports and exports share the work volume and its writer admission:
+    // each admission counts the other's in-flight reservations, so neither
+    // can pass the free-space check on space the other already reserved.
+    sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,reserved) VALUES('synthetic-running-import','directory','running',1,1,1,1,$1)")
+        .bind(i64::MAX / 8)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    let (status, body) = env.begin_archive().await;
+    assert_short_of_space(status, &body, &env);
+    sqlx::query("DELETE FROM intake_jobs WHERE id='synthetic-running-import'")
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    let held = create(&env.api, "archive", 1).await.unwrap();
+    sqlx::query("UPDATE export_jobs SET state='failed',error='failed',reserved=$1 WHERE id=$2")
+        .bind(i64::MAX / 8)
+        .bind(&held)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    // A shortage is retryable and names its numbers (HTTP 429
+    // resource_limit); only a declaration beyond the upload budget is a
+    // permanent Quota (HTTP 413 invalid_input).
+    let import = |declared_bytes| ImportRequest {
+        version: WireVersion::V1,
+        kind: ImportKind::Directory,
+        declared_bytes,
+        declared_files: 1,
+    };
+    match env.store.begin(&import(1)).await {
+        Err(lytronaut_storage::StorageError::Space {
+            required_bytes,
+            available_bytes,
+        }) => assert!(required_bytes > available_bytes && required_bytes >= (i64::MAX / 8) as u64),
+        other => panic!("expected a space shortage, got {other:?}"),
+    }
+    assert_eq!(
+        env.store
+            .begin(&import(env.store.limits().upload_bytes + 1))
+            .await,
+        Err(lytronaut_storage::StorageError::Quota)
+    );
+    assert_eq!(env.delete(&held).await, StatusCode::OK);
+    env.assert_released(&held).await;
+    // Declarations: any positive size is admissible in principle; one no
+    // volume can hold is a free-space refusal, while zero, malformed and
+    // need-overflowing declarations are invalid input. No job is created.
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    let declared = |length: String| {
+        let api = env.api.clone();
+        async move {
+            let response = restore_upload(
+                Extension(api),
+                Request::builder()
+                    .header(header::CONTENT_LENGTH, length)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            let status = response.status();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+            )
+        }
+    };
+    let (status, body) = declared((i64::MAX as u64 / 4).to_string()).await;
+    assert_short_of_space(status, &body, &env);
+    for invalid in [
+        "0".to_owned(),
+        "abc".to_owned(),
+        u64::MAX.to_string(),
+        (i64::MAX as u64 / 2).to_string(),
+    ] {
+        let (status, body) = declared(invalid).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.get("shortfall").is_none());
+    }
+    let jobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    assert_eq!(jobs_before, jobs_after);
     env.finish().await;
     // Mid-restore: an original larger than the per-file quota fails after the
     // owned destination exists; cleanup removes it and releases the reservation.
@@ -515,6 +753,238 @@ async fn quota_failures_fail_closed_and_release(pg: bool) {
     let id = id.unwrap();
     assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
     env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// lytronaut-lbk: a library beyond every single-upload and aggregate budget is
+/// archived, downloaded in bounded frames, uploaded and restored losslessly
+/// through the production handlers and workers.
+async fn library_beyond_upload_budget_archives_and_restores_through_jobs(pg: bool) {
+    use crate::bundle::portable_bundle_tests::{
+        SPARSE_COUNT, SPARSE_SIZE, small_budgets, verify_sparse_originals,
+    };
+    let mut fx = Fixture::new(pg).await;
+    let store = fx.seed_with(small_budgets()).await;
+    let originals = fx.add_sparse_originals(SPARSE_COUNT, SPARSE_SIZE).await;
+    let limits = store.limits().clone();
+    let catalog_maximum = lytronaut_storage::portable::MAX_BYTES as u64;
+    assert!(originals > limits.upload_bytes + catalog_maximum);
+    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    let sentinels = Sentinels::plant(&mut fx, &store).await;
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    // Archive: admitted although its need far exceeds `reserved_bytes`.
+    let (status, body) = env.begin_archive().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let archived = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&archived).await, JobState::Succeeded);
+    let bundle = artifact(&env.api, &archived);
+    let size = fs::metadata(&bundle).unwrap().len();
+    assert!(size > originals);
+    assert!(size > limits.encoded_bytes + catalog_maximum);
+    // Download streams the whole artifact in frames of at most 64 KiB.
+    let response = download(Extension(env.api.clone()), Ok(Path(archived.clone()))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH].to_str().unwrap(),
+        size.to_string()
+    );
+    let mut stream = response.into_body();
+    let (mut streamed, mut largest, mut hash) = (0u64, 0usize, Sha256::new());
+    while let Some(frame) = stream.frame().await {
+        let data = frame.unwrap().into_data().unwrap();
+        largest = largest.max(data.len());
+        streamed += data.len() as u64;
+        hash.update(&data);
+    }
+    drop(stream);
+    assert_eq!(streamed, size);
+    assert!(largest <= crate::bundle::COPY_BUFFER);
+    let expected = {
+        let mut file = fs::File::open(&bundle).unwrap();
+        let (mut whole, mut chunk) = (Sha256::new(), vec![0; 1 << 20]);
+        loop {
+            let n = std::io::Read::read(&mut file, &mut chunk).unwrap();
+            if n == 0 {
+                break whole.finalize();
+            }
+            whole.update(&chunk[..n]);
+        }
+    };
+    assert_eq!(hash.finalize(), expected);
+    // Restore: the upload far exceeds the former transport ceiling.
+    let (status, body) = env.upload_file(&bundle).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let restored = body["id"].as_str().unwrap().to_owned();
+    let journal = env.assert_ready_as_live(&restored).await;
+    verify_sparse_originals(
+        &journal.result(&env.root()).join("store/originals"),
+        SPARSE_COUNT,
+        SPARSE_SIZE,
+    );
+    for id in [&archived, &restored] {
+        assert_eq!(env.delete(id).await, StatusCode::OK);
+    }
+    env.assert_released(&restored).await;
+    assert!(!bundle.exists());
+    assert_eq!(env.job(&archived).await.2, 0);
+    env.finish().await;
+}
+
+/// A logical catalog beyond the 288 MiB v2 section fails at backup time with
+/// a clear non-retryable `resource_limit`, before any artifact exists: never a
+/// partial or corrupt bundle. Its spools are removed and its quota released.
+async fn catalog_beyond_format_bound_fails_backup_cleanly(pg: bool) {
+    let mut fx = Fixture::new(pg).await;
+    let store = fx.seed_with(limits()).await;
+    // Ten 30 MiB opaque records: 300 MiB of logical catalog, each row within
+    // the 32 MiB row bound, together over the 288 MiB section bound.
+    let cell = vec![0x5a_u8; 30 * 1024 * 1024];
+    for ordinal in 0..10_i64 {
+        sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) VALUES($1,'over-format-bound',$2,$3)")
+            .bind(IDS[0])
+            .bind(ordinal)
+            .bind(&cell)
+            .execute(fx.catalog.pool())
+            .await
+            .unwrap();
+    }
+    drop(cell);
+    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    let sentinels = Sentinels::plant(&mut fx, &store).await;
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    let (status, body) = env.begin_archive().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+    let error = report(&env.api, &id).await.unwrap().error.unwrap();
+    assert_eq!(error.code, ErrorCode::ResourceLimit);
+    assert!(!error.retryable);
+    let text = serde_json::to_string(&public_report(&env.api, &id).await.unwrap()).unwrap();
+    assert!(!text.contains(env.fx.root.to_str().unwrap()));
+    let (state, label, reserved, retained) = env.job(&id).await;
+    assert_eq!(
+        (state.as_str(), label.as_deref(), reserved, retained),
+        ("failed", Some("bundle-limit"), 0, 0)
+    );
+    assert!(!artifact(&env.api, &id).exists());
+    assert_eq!(env.owned_entries(&id), Vec::<String>::new());
+    assert!(
+        !crate::transient_owner::Owner::directory(&env.root(), &id).exists(),
+        "spools and the owned transfer directory are removed"
+    );
+    env.finish().await;
+}
+
+/// Bytes free on the filesystem holding `path`, as the volume reports them.
+fn free_bytes(path: &std::path::Path) -> u64 {
+    let fs = rustix::fs::statvfs(path).unwrap();
+    fs.f_bavail
+        * if fs.f_frsize > 0 {
+            fs.f_frsize
+        } else {
+            fs.f_bsize
+        }
+}
+/// lytronaut-lbk B1: every file a job creates costs whole filesystem blocks.
+/// (a) A hostile bundle of very many tiny originals fits its upload-time
+/// reservation (payload bytes) but not its real block cost: the worker's
+/// re-admission refuses it as retryable `space` before extracting anything.
+/// (b) An archive whose library grew after admission stops before its
+/// artifact passes the reservation. Both leave nothing behind.
+async fn per_file_disk_cost_is_admitted_and_enforced(pg: bool) {
+    const TINY: usize = 200_000;
+    let (unit, _) = bundle::block_unit(&std::env::temp_dir()).unwrap();
+    assert!(
+        unit >= 4096,
+        "the scenario sizes its margins for 4 KiB blocks"
+    );
+    let good = archive(0).await;
+    let catalog_bytes = u64::from_le_bytes(good[20..28].try_into().unwrap()) as usize;
+    let mut tiny: Vec<([u8; 32], Vec<u8>)> = (0..TINY)
+        .map(|n| {
+            let payload = format!("tiny-{n:011}").into_bytes();
+            (Sha256::digest(&payload).into(), payload)
+        })
+        .collect();
+    tiny.sort();
+    let mut hostile = good[..60 + catalog_bytes].to_vec();
+    hostile[16..20].copy_from_slice(&(TINY as u32).to_le_bytes());
+    for (hash, payload) in &tiny {
+        hostile.extend_from_slice(hash);
+        hostile.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        hostile.extend_from_slice(payload);
+    }
+    drop(tiny);
+    let declared = hostile.len() as u64;
+    let upload_need = bundle::restore_need(declared).unwrap();
+    // A free-space floor that leaves 400 MiB beyond the upload reservation:
+    // the ~800 MiB of real block cost of 200,000 files cannot fit.
+    let probe = std::env::temp_dir();
+    let floor = free_bytes(&probe).saturating_sub(upload_need + 400 * 1024 * 1024);
+    let env = Env::with_limits(
+        pg,
+        lytronaut_storage::Limits {
+            free_floor: floor,
+            ..limits()
+        },
+    )
+    .await;
+    let (status, body) = env.upload_json(hostile).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+    let error = report(&env.api, &id).await.unwrap().error.unwrap();
+    assert_eq!(
+        (error.code, error.retryable),
+        (ErrorCode::ResourceLimit, true)
+    );
+    assert_eq!(env.job(&id).await.1.as_deref(), Some("space"));
+    env.assert_released(&id).await;
+    env.finish().await;
+
+    let mut fx = Fixture::new(pg).await;
+    let store = fx.seed_with(limits()).await;
+    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    // A reservation that covered the library when admitted (4 MiB here, so
+    // the test stays cheap: the real need also carries catalog headroom),
+    // then imports finishing after admission grow the library past it.
+    let job = create(&api, "archive", 4 * 1024 * 1024).await.unwrap();
+    fx.add_sparse_originals(2, 16 * 1024 * 1024).await;
+    let sentinels = Sentinels::plant(&mut fx, &store).await;
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    run(
+        env.api.clone(),
+        job.clone(),
+        ExportRequest::ArchiveOriginals {
+            version: WireVersion::V1,
+        },
+        None,
+    )
+    .await;
+    assert_eq!(env.job(&job).await.1.as_deref(), Some("space"));
+    let error = report(&env.api, &job).await.unwrap().error.unwrap();
+    assert_eq!(
+        (error.code, error.retryable),
+        (ErrorCode::ResourceLimit, true)
+    );
+    assert!(!artifact(&env.api, &job).exists());
+    assert_eq!(env.owned_entries(&job), Vec::<String>::new());
+    assert_eq!(env.job(&job).await.2, 0, "reservation released");
     env.finish().await;
 }
 
@@ -780,17 +1250,53 @@ async fn denied_cleanup_retains_ownership_and_quota_until_retry(pg: bool) {
     let observed = Journal::load(&env.root(), &id).unwrap().unwrap();
     assert_eq!(observed.phase(), Phase::CleanupPending);
     assert!(journal.result(&env.root()).exists());
-    // Admission keeps honouring the blocked job's retained bytes.
-    sqlx::query("UPDATE export_jobs SET retained=$1 WHERE id=$2")
-        .bind(env.store.limits().reserved_bytes as i64)
-        .bind(&id)
-        .execute(env.catalog().pool())
+    // The real retention mechanism: a once-ready restore holds no in-flight
+    // reservation; its bytes stay in `retained` and physically on the work
+    // volume, so free-space admission sees them through the filesystem
+    // (they are not counted a second time), and its report keeps one of the
+    // 128 retained-report slots, never evicted while blocked.
+    assert_eq!(env.job(&id).await.2, 0, "no in-flight reservation");
+    let originals = journal.result(&env.root()).join("store/originals");
+    let on_disk: u64 = fs::read_dir(&originals)
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    assert!(on_disk >= BLOB.len() as u64, "retained files stay on disk");
+    let available = env.store.available_staging_bytes().unwrap();
+    let need = available.saturating_add(1);
+    match admit(&env.api, "archive", need).await {
+        Err(Refusal::Space(shortfall)) => {
+            // Exactly the need plus the (zero) floor and reservations: the
+            // retained bytes are not added again; the filesystem has them.
+            assert_eq!(shortfall.required_bytes, need);
+            assert!(shortfall.available_bytes <= available + 64 * 1024 * 1024);
+        }
+        _ => panic!("an archive beyond free space must be refused for space"),
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
         .await
         .unwrap();
+    for n in rows..128 {
+        sqlx::query("INSERT INTO export_jobs(id,kind,state,retained,reserved) VALUES($1,'flatten','succeeded',1,0)")
+            .bind(format!("app-{n:064x}"))
+            .execute(env.catalog().pool())
+            .await
+            .unwrap();
+    }
     assert_eq!(
         create(&env.api, "archive", 1).await.unwrap_err().0,
         StatusCode::TOO_MANY_REQUESTS
     );
+    assert_eq!(
+        env.job(&id).await.3,
+        retained,
+        "the blocked job is never evicted"
+    );
+    sqlx::query("DELETE FROM export_jobs WHERE kind='flatten' AND id LIKE 'app-0000%'")
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
     // The service still starts; the job stays blocked while denied.
     assert!(
         env.restart().await,
@@ -1024,7 +1530,7 @@ async fn journal_fault_matrix_recovers_or_retains(pg: bool) {
             bundle::RestoreOwner {
                 root: &env.root(),
                 job: &id,
-                reserved: 4096,
+                reserved: 1 << 30,
             },
             env.store.limits(),
             &AtomicBool::new(false),
@@ -1086,7 +1592,7 @@ async fn journal_fault_matrix_recovers_or_retains(pg: bool) {
             bundle::RestoreOwner {
                 root: &env.root(),
                 job: &id,
-                reserved: 4096,
+                reserved: 1 << 30,
             },
             env.store.limits(),
             &AtomicBool::new(false),
@@ -1125,6 +1631,7 @@ async fn near_limit_source_cell_round_trips_and_over_limit_fails_cleanly(pg: boo
         &source.catalog,
         &store,
         &path,
+        u64::MAX,
         &AtomicBool::new(false),
         &AtomicU64::new(0),
     )
@@ -1143,6 +1650,7 @@ async fn near_limit_source_cell_round_trips_and_over_limit_fails_cleanly(pg: boo
             &source.catalog,
             &store,
             &over,
+            u64::MAX,
             &AtomicBool::new(false),
             &AtomicU64::new(0)
         )
@@ -1377,7 +1885,7 @@ async fn whole_store_failures_still_refuse_startup(pg: bool) {
             bundle::RestoreOwner {
                 root: &env.root(),
                 job: &id,
-                reserved: 4096,
+                reserved: 1 << 30,
             },
             env.store.limits(),
             &AtomicBool::new(false),
@@ -1647,6 +2155,9 @@ macro_rules! matrix {
 matrix! {
     corrupt_archives_fail_closed_and_release => sqlite_corrupt_archives, postgres_corrupt_archives;
     quota_failures_fail_closed_and_release => sqlite_quota_failures, postgres_quota_failures;
+    library_beyond_upload_budget_archives_and_restores_through_jobs => sqlite_library_beyond_upload_budget, postgres_library_beyond_upload_budget;
+    catalog_beyond_format_bound_fails_backup_cleanly => sqlite_catalog_beyond_format_bound, postgres_catalog_beyond_format_bound;
+    per_file_disk_cost_is_admitted_and_enforced => sqlite_per_file_disk_cost, postgres_per_file_disk_cost;
     cancel_and_shutdown_mid_restore_never_publish => sqlite_cancel_and_shutdown, postgres_cancel_and_shutdown;
     process_kill_mid_restore_then_restart_recovers => sqlite_process_kill, postgres_process_kill;
     successful_restore_publishes_and_delete_releases => sqlite_publish_and_delete, postgres_publish_and_delete;

@@ -36,6 +36,12 @@ postgres-parity:
 build:
     cargo build --locked --workspace --all-targets --all-features
 
+# Explicit >4 GiB portable bundle proof (CI job `large-bundle`): one original
+# over 4 GiB and stream offsets past 4 GiB, round-tripped with exact hashes.
+# Sparse sources; needs about 9 GiB free in TMPDIR. Exactly one test must run.
+large-bundle-test:
+    python3 scripts/large-bundle-test.py
+
 wasm-build:
     cargo check --locked -p lytronaut-format --target wasm32-unknown-unknown
     cargo build --locked -p lytronaut-client --target wasm32-unknown-unknown

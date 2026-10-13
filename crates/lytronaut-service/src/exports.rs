@@ -83,23 +83,35 @@ async fn begin(
                 a.descriptor(asset.as_str(), true).await?;
             }
         }
-        if let ExportRequest::LivePhoto{asset,..}=&request {
-            let (_,key)=a.lookup(asset.as_str(),"file",true).await?;
-            if role(&key)!=OriginalRole::JpegFocusStack {return Err(Failure(StatusCode::UNPROCESSABLE_ENTITY,ErrorCode::UnsupportedFormat));}
-            a.descriptor(asset.as_str(),false).await?;
+        if let ExportRequest::LivePhoto { asset, .. } = &request {
+            let (_, key) = a.lookup(asset.as_str(), "file", true).await?;
+            if role(&key) != OriginalRole::JpegFocusStack {
+                return Err(Failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    ErrorCode::UnsupportedFormat,
+                ));
+            }
+            a.descriptor(asset.as_str(), false).await?;
         }
-        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(length),0) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources").fetch_one(a.0.catalog.pool()).await?; u64::try_from(n).map_err(|_| Failure::invalid())?.checked_add(2 * lytronaut_storage::portable::MAX_BYTES as u64).and_then(|n| n.checked_add(bundle::archive_framing(a.0.store.limits().files).ok()?)).ok_or(Failure::invalid())?}else if matches!(request,ExportRequest::LivePhoto{..}){lytronaut_format::live_photo::BUNDLE_CAP as u64}else{OUTPUT_CAP as u64};
-        let id = create(
-            &a,
-            if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
-                "archive"
-            } else if matches!(request,ExportRequest::LivePhoto{..}) {
-                "live_photo"
-            } else {
-                "flatten"
-            }, need,
-        )
-        .await?;
+        let need = if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
+            archive_need(&a).await?
+        } else if matches!(request, ExportRequest::LivePhoto { .. }) {
+            lytronaut_format::live_photo::BUNDLE_CAP as u64
+        } else {
+            OUTPUT_CAP as u64
+        };
+        let kind = if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
+            "archive"
+        } else if matches!(request, ExportRequest::LivePhoto { .. }) {
+            "live_photo"
+        } else {
+            "flatten"
+        };
+        let id = match admit(&a, kind, need).await {
+            Ok(id) => id,
+            Err(Refusal::Space(shortfall)) => return Ok(short_of_space(shortfall)),
+            Err(Refusal::Failed(failure)) => return Err(failure),
+        };
         let worker = a.clone();
         let job = id.clone();
         tokio::spawn(async move {
@@ -110,7 +122,128 @@ async fn begin(
     .await;
     r.unwrap_or_else(Failure::response)
 }
+/// Real work-volume need of a whole-library archive: every unique original once,
+/// its framing and the bounded catalog twice (docs/design/007). Upper bound:
+/// it also counts sources of jobs that capture will skip.
+async fn archive_need(a: &Api) -> Result<u64> {
+    let row = sqlx::query("SELECT CAST(COALESCE(sum(length),0) AS BIGINT), CAST(count(*) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources")
+        .fetch_one(a.0.catalog.pool())
+        .await?;
+    let bytes = u64::try_from(row.try_get::<i64, _>(0)?).map_err(storage)?;
+    let files = u64::try_from(row.try_get::<i64, _>(1)?).map_err(storage)?;
+    bundle::archive_need(bytes, files)
+        .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))
+}
+/// A running job ran short of work space or inodes: retryable, reported as
+/// `resource_limit` with error `space` once its owned files are cleaned.
+fn short_of_work_space() -> Failure {
+    Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit)
+}
+fn job_failure(error: lytronaut_storage::StorageError) -> Failure {
+    match error {
+        lytronaut_storage::StorageError::Space { .. } | lytronaut_storage::StorageError::Inodes => {
+            short_of_work_space()
+        }
+        error => storage(error),
+    }
+}
+/// Re-admit a restore on its exact disk need before anything is extracted.
+/// Upload admission could only reserve payload bytes (`restore_need`); the
+/// uploaded framing now gives every file's real block cost and the count of
+/// files (inodes) the restore will create. The reservation grows to that need
+/// under the writer admission, counting other jobs and the free-space floor,
+/// or the job fails as retryable `space` before writing anything.
+async fn readmit_restore(
+    a: &Api,
+    job: &str,
+    input: &std::path::Path,
+    reserved: u64,
+    cancel: &AtomicBool,
+) -> Result<u64> {
+    let directory = root(&a.0.store);
+    let (unit, inodes) = bundle::block_unit(&directory).map_err(job_failure)?;
+    let (count, need) =
+        bundle::restore_disk_need(input, unit, a.0.store.limits().file_bytes, cancel)
+            .map_err(job_failure)?;
+    if inodes.is_some_and(|free| free < count.saturating_add(bundle::INODE_FLOOR)) {
+        return Err(short_of_work_space());
+    }
+    if need <= reserved {
+        return Ok(reserved);
+    }
+    let written = fs::metadata(input).map_err(storage)?.len();
+    let mut tx = a.0.catalog.begin_write().await?;
+    let others: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs WHERE id<>$1",
+    )
+    .bind(job)
+    .fetch_one(&mut *tx)
+    .await?;
+    let imports: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM intake_jobs WHERE state='running'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    // The upload is already on disk; only the rest of the need is still free.
+    let required = need
+        .saturating_sub(written)
+        .saturating_add(others as u64)
+        .saturating_add(imports as u64)
+        .saturating_add(a.0.store.limits().free_floor);
+    if a.0.store.available_staging_bytes().map_err(storage)? < required {
+        return Err(short_of_work_space());
+    }
+    sqlx::query("UPDATE export_jobs SET reserved=$1 WHERE id=$2")
+        .bind(i64::try_from(need).map_err(storage)?)
+        .bind(job)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(need)
+}
+/// Why admission refused a job. A free-space shortfall carries its numbers.
+enum Refusal {
+    Failed(Failure),
+    Space(SpaceShortfall),
+}
+impl From<Failure> for Refusal {
+    fn from(failure: Failure) -> Self {
+        Self::Failed(failure)
+    }
+}
+impl From<sqlx::Error> for Refusal {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Failed(error.into())
+    }
+}
+/// Retryable `resource_limit` naming the needed and available work-volume
+/// bytes; byte counts only, never a path.
+fn short_of_space(shortfall: SpaceShortfall) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(ApiError {
+            version: WireVersion::V1,
+            code: ErrorCode::ResourceLimit,
+            retryable: true,
+            shortfall: Some(shortfall),
+        }),
+    )
+        .into_response()
+}
+/// Whole-library jobs are bounded by real free space, never by the
+/// single-upload or aggregate import budgets (lytronaut-lbk).
+fn whole_library(kind: &str) -> bool {
+    matches!(kind, "archive" | "restore")
+}
+/// Test shorthand for `admit` with every refusal as a plain failure.
+#[cfg(test)]
 async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
+    admit(a, kind, need).await.map_err(|refusal| match refusal {
+        Refusal::Failed(failure) => failure,
+        Refusal::Space(_) => Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit),
+    })
+}
+async fn admit(a: &Api, kind: &str, need: u64) -> std::result::Result<String, Refusal> {
     // Reserve atomically before spawning; at most two pending jobs, including uploads.
     let mut tx = a.0.catalog.begin_write().await?;
     sqlx::query("DELETE FROM export_jobs WHERE id IN (SELECT id FROM export_jobs WHERE state IN ('cancelled','failed') AND retained=0 AND reserved=0 ORDER BY (SELECT ordinal FROM application_job_order WHERE kind='export' AND job=export_jobs.id) LIMIT (SELECT CASE WHEN count(*)>127 THEN count(*)-127 ELSE 0 END FROM export_jobs))").execute(&mut *tx).await?;
@@ -123,30 +256,43 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
         .fetch_one(&mut *tx)
         .await?;
     if active >= 2 || retained >= 128 {
-        return Err(Failure(
-            StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::ResourceLimit,
-        ));
+        return Err(Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit).into());
     }
-    let reserved: i64 = sqlx::query_scalar(
-        "SELECT CAST(COALESCE(sum(retained+reserved),0) AS BIGINT) FROM export_jobs",
+    // The aggregate budget bounds bounded per-asset exports; whole-library
+    // archives and restores neither count against it nor are bounded by it.
+    let budgeted: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(retained+reserved),0) AS BIGINT) FROM export_jobs WHERE kind NOT IN ('archive','restore')",
     )
     .fetch_one(&mut *tx)
     .await?;
+    if !whole_library(kind)
+        && need.saturating_add(budgeted as u64) > a.0.store.limits().reserved_bytes
+    {
+        return Err(Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit).into());
+    }
+    // Every job's in-flight reservation shares the work volume's real space.
     let active_reserved: i64 =
         sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs")
             .fetch_one(&mut *tx)
             .await?;
-    if need.saturating_add(reserved as u64) > a.0.store.limits().reserved_bytes
-        || a.0.store.available_staging_bytes().map_err(storage)?
-            < need
-                .saturating_add(active_reserved as u64)
-                .saturating_add(a.0.store.limits().free_floor)
-    {
-        return Err(Failure(
-            StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::ResourceLimit,
-        ));
+    // Running imports stage on the same work volume; counting them under the
+    // shared writer admission closes the check-then-reserve race between an
+    // import and an export (import admission counts export reservations).
+    let intake_reserved: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM intake_jobs WHERE state='running'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let required = need
+        .saturating_add(active_reserved as u64)
+        .saturating_add(intake_reserved as u64)
+        .saturating_add(a.0.store.limits().free_floor);
+    let available = a.0.store.available_staging_bytes().map_err(storage)?;
+    if available < required {
+        return Err(Refusal::Space(SpaceShortfall {
+            required_bytes: required,
+            available_bytes: available,
+        }));
     }
     let id = random_id()?;
     sqlx::query("INSERT INTO export_jobs(id,kind,state,reserved) VALUES($1,$2,'queued',$3)")
@@ -166,7 +312,7 @@ async fn create(a: &Api, kind: &str, need: u64) -> Result<String> {
             .execute(a.0.catalog.pool())
             .await?;
         // Persisted intent (if any) and quota survive initial marker/mkdir errors.
-        return Err(storage(error));
+        return Err(storage(error).into());
     }
     Ok(id)
 }
@@ -200,10 +346,12 @@ async fn report(a: &Api, id: &str) -> Result<JobReport> {
                 version: WireVersion::V1,
                 code: match r.try_get::<Option<String>, _>(3)?.as_deref() {
                     Some("unsupported") => ErrorCode::UnsupportedFormat,
+                    Some("bundle-limit" | "space") => ErrorCode::ResourceLimit,
                     Some("cleanup-blocked" | "unverified-result") => ErrorCode::StorageUnavailable,
                     _ => ErrorCode::CorruptAsset,
                 },
-                retryable: true,
+                retryable: r.try_get::<Option<String>, _>(3)?.as_deref() != Some("bundle-limit"),
+                shortfall: None,
             })
         } else {
             None
@@ -695,20 +843,31 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             .bind(&job)
                             .fetch_one(worker.0.catalog.pool())
                             .await?;
-                    let result = crate::bundle::restore_owned(
-                        &input,
-                        &worker.0.catalog,
-                        crate::bundle::RestoreOwner {
-                            root: &root(&worker.0.store),
-                            job: &job,
-                            reserved: u64::try_from(reserved).map_err(storage)?,
-                        },
-                        worker.0.store.limits(),
-                        &flag,
-                        &progress,
-                    )
-                    .await
-                    .map_err(storage);
+                    let result = async {
+                        let reserved = readmit_restore(
+                            &worker,
+                            &job,
+                            &input,
+                            u64::try_from(reserved).map_err(storage)?,
+                            &flag,
+                        )
+                        .await?;
+                        crate::bundle::restore_owned(
+                            &input,
+                            &worker.0.catalog,
+                            crate::bundle::RestoreOwner {
+                                root: &root(&worker.0.store),
+                                job: &job,
+                                reserved,
+                            },
+                            worker.0.store.limits(),
+                            &flag,
+                            &progress,
+                        )
+                        .await
+                        .map_err(job_failure)
+                    }
+                    .await;
                     let _ = fs::remove_file(input);
                     let result = result?;
                     stored.store(result.bytes, Ordering::Relaxed);
@@ -755,15 +914,30 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                         Ok(None)
                     }
                     ExportRequest::ArchiveOriginals { .. } => {
+                        let reserved: i64 =
+                            sqlx::query_scalar("SELECT reserved FROM export_jobs WHERE id=$1")
+                                .bind(&job)
+                                .fetch_one(worker.0.catalog.pool())
+                                .await?;
                         crate::bundle::backup(
                             &worker.0.catalog,
                             &worker.0.store,
                             &artifact(&worker, &job),
+                            u64::try_from(reserved).map_err(storage)?,
                             &flag,
                             &progress,
                         )
                         .await
-                        .map_err(storage)?;
+                        .map_err(|error| match error {
+                            // A format bound (the 288 MiB logical catalog,
+                            // its row/cell counts or the u32 original count)
+                            // fails before any artifact exists, never a
+                            // partial bundle; retrying cannot help.
+                            lytronaut_storage::StorageError::Quota => {
+                                Failure(StatusCode::INSUFFICIENT_STORAGE, ErrorCode::ResourceLimit)
+                            }
+                            error => job_failure(error),
+                        })?;
                         stored.store(
                             fs::metadata(artifact(&worker, &job))
                                 .map_err(storage)?
@@ -822,6 +996,10 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
             "failed",
             Some(if f.1 == ErrorCode::UnsupportedFormat {
                 "unsupported"
+            } else if f.0 == StatusCode::INSUFFICIENT_STORAGE {
+                "bundle-limit"
+            } else if f.0 == StatusCode::TOO_MANY_REQUESTS && f.1 == ErrorCode::ResourceLimit {
+                "space"
             } else {
                 "failed"
             }),
@@ -979,20 +1157,21 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))?;
+        // A bundle of any size is accepted; only free work space admits it.
         let declared = request
             .headers()
             .get(header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
-            .filter(|n| *n > 0 && bundle::archive_limit(a.0.store.limits()).is_ok_and(|maximum| *n <= maximum))
             .ok_or(Failure::invalid())?;
-        // Upload + extracted originals/catalog spool coexist. Reserve the v2
-        // spool separately; failed cleanup retains this reservation.
-        let reservation = declared.checked_mul(2)
-            .and_then(|n| n.checked_add(lytronaut_storage::portable::MAX_BYTES as u64))
-            .filter(|n| *n <= i64::MAX as u64)
-            .ok_or(Failure::invalid())?;
-        let id = create(&a, "restore", reservation).await?;
+        // Upload + extracted originals/catalog spool coexist; failed cleanup
+        // retains this reservation.
+        let reservation = bundle::restore_need(declared).map_err(|_| Failure::invalid())?;
+        let id = match admit(&a, "restore", reservation).await {
+            Ok(id) => id,
+            Err(Refusal::Space(shortfall)) => return Ok(short_of_space(shortfall)),
+            Err(Refusal::Failed(failure)) => return Err(failure),
+        };
         let path = crate::transient_owner::Owner::directory(&root(&a.0.store), &id).join("upload");
         let mut upload_created = false;
         let result = async {
@@ -1262,6 +1441,87 @@ mod tests {
         drop(a);
         c.pool().close().await;
         fs::remove_dir_all(dir).unwrap();
+    }
+    async fn request_archive(a: &Api) -> Response {
+        begin(
+            Extension(a.clone()),
+            Ok(Json(ExportRequest::ArchiveOriginals {
+                version: WireVersion::V1,
+            })),
+        )
+        .await
+    }
+    async fn declare_restore(a: &Api, length: &str) -> Response {
+        restore_upload(
+            Extension(a.clone()),
+            Request::builder()
+                .header(header::CONTENT_LENGTH, length)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+    async fn error_body(response: Response) -> ApiError {
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&body).unwrap()
+    }
+    /// Non-space refusals of whole-library jobs stay plain failures without a
+    /// shortfall: the two-job limit, and an unavailable database.
+    #[tokio::test]
+    async fn whole_library_refusals_other_than_space_carry_no_shortfall() {
+        let fixture = crate::bundle::portable_bundle_tests::Fixture::new(false).await;
+        let store = fixture.seed().await;
+        let a = Api::open(fixture.catalog.clone(), store).await.unwrap();
+        let hold = a.0.validation.clone().acquire_owned().await.unwrap();
+        create(&a, "flatten", 1).await.unwrap();
+        create(&a, "flatten", 1).await.unwrap();
+        for response in [request_archive(&a).await, declare_restore(&a, "4096").await] {
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            let error = error_body(response).await;
+            assert_eq!(error.code, ErrorCode::ResourceLimit);
+            assert_eq!(error.shortfall, None);
+        }
+        drop(hold);
+        fixture.catalog.pool().close().await;
+        for response in [request_archive(&a).await, declare_restore(&a, "4096").await] {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(error_body(response).await.shortfall, None);
+        }
+        drop(a);
+        fixture.finish().await;
+    }
+    /// An archive that fails for a reason other than a format bound (here an
+    /// original missing from the store) stays a retryable failure, not a
+    /// `bundle-limit`, and leaves no artifact.
+    #[tokio::test]
+    async fn archive_storage_failure_is_retryable_and_not_a_bundle_limit() {
+        let fixture = crate::bundle::portable_bundle_tests::Fixture::new(false).await;
+        let store = fixture.seed().await;
+        let blob = format!(
+            "{:x}-{}",
+            Sha256::digest(crate::bundle::portable_bundle_tests::BLOB),
+            crate::bundle::portable_bundle_tests::BLOB.len()
+        );
+        fs::remove_file(fixture.root.join("originals").join(blob)).unwrap();
+        let a = Api::open(fixture.catalog.clone(), store).await.unwrap();
+        let id = create(&a, "archive", 64 * 1024 * 1024).await.unwrap();
+        run(
+            a.clone(),
+            id.clone(),
+            ExportRequest::ArchiveOriginals {
+                version: WireVersion::V1,
+            },
+            None,
+        )
+        .await;
+        let report = report(&a, &id).await.unwrap();
+        assert_eq!(report.state, JobState::Failed);
+        let error = report.error.unwrap();
+        assert_eq!(error.code, ErrorCode::CorruptAsset);
+        assert!(error.retryable);
+        assert!(!artifact(&a, &id).exists());
+        drop(a);
+        fixture.finish().await;
     }
     #[tokio::test]
     async fn queued_cancel_never_publishes_and_limits_admit_two_only() {
