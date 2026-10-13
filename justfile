@@ -27,6 +27,12 @@ test:
 postgres-test:
     python3 scripts/postgres-test.py
 
+# Strict PostgreSQL parity against a disposable, task-owned container of the exact
+# pinned release (compose.postgres.yaml): restricted role, public sentinel, unique
+# container/volume names, removed afterwards. Needs only a local Docker engine.
+postgres-parity:
+    python3 scripts/postgres_fixture.py -- python3 scripts/postgres-test.py
+
 build:
     cargo build --locked --workspace --all-targets --all-features
 
@@ -90,3 +96,13 @@ container-bundle output archive:
     mkdir -p "{{output}}"
     tar -C "{{output}}" -czf "{{archive}}" .
     python3 -c 'import pathlib,sys; assert pathlib.Path(sys.argv[1]).stat().st_size <= 128*1024**2, "evidence archive exceeds 128 MiB"' "{{archive}}"
+
+# Synthetic JPEG fixtures generated inside the same cached Linux build.
+synthetic-fixtures architecture output:
+    docker build --platform "linux/{{architecture}}" --target synthetic-fixtures --output "type=local,dest={{output}}" --progress=plain .
+
+# Execute the documented SQLite, bundled-PostgreSQL and external-PostgreSQL Compose
+# deployments plus all four backup/restore combinations against a prebuilt image.
+# storage: `bind` (Linux host directories with documented UID/GID) or `volume`.
+deployment-test architecture image storage fixtures output:
+    python3 scripts/deployment-test.py "{{image}}" "{{architecture}}" "{{storage}}" "{{fixtures}}" "{{output}}"

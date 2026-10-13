@@ -15,6 +15,11 @@ COPY --from=build /src/target/release/lytronaut-service /native/lytronaut-servic
 COPY --from=build /src/target/wasm32-unknown-unknown/release/lytronaut_client.wasm /raw/lytronaut_client.wasm
 COPY --from=build /client /client
 COPY --from=build /src/Cargo.lock /Cargo.lock
+FROM build AS synthetic-fixture-build
+# Test input only: independently generated public JPEG pixels, never a capture.
+RUN cargo build --locked --release -p lytronaut-service --example synthetic_jpeg && mkdir /fixtures && target/release/examples/synthetic_jpeg /fixtures/synthetic.jpg
+FROM scratch AS synthetic-fixtures
+COPY --from=synthetic-fixture-build /fixtures /
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS runtime
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/SimplicityGuy/lytronaut" org.opencontainers.image.revision="${SOURCE_REVISION}"
