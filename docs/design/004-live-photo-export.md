@@ -632,6 +632,11 @@ evidence directory, not in the repository or CI.
 | Apple Photos recognition | **Not run** | See below |
 | VoiceOver | **Not run** | Cannot be automated |
 
+Bead `lytronaut-re8.3` tracks the four open gates: the counted budget,
+performance including GPU submit-to-present, Apple Photos recognition and
+VoiceOver. Epic `lytronaut-re8` cannot ship to `main` until each gate passes with
+evidence or the owner accepts it in writing.
+
 **Counted budget.** Owners recorded in the mounted-UI trace were summed per
 phase only when live at the same time. The three owner shapes had zero dropped
 events. The peak was PCM encoding: 24.63 MiB for 2048×1024 and 24.96 MiB for
