@@ -142,7 +142,15 @@ impl Builder {
         if cancel() {
             return Err(E::Codec);
         }
-        let frame = avc::frame(image, index, &cancel)?;
+        // Every picture is an IDR played in plan order; consecutive pictures in
+        // that order alternate idr_pic_id, independent of source plane parity.
+        let position = self
+            .plan
+            .planes
+            .iter()
+            .position(|plane| *plane == index)
+            .ok_or(E::Metadata)?;
+        let frame = avc::frame(image, (position % 2) as u32, &cancel)?;
         if index == self.plan.selected && self.jpeg.is_none() {
             let limits = Limits {
                 dimension: 2048,

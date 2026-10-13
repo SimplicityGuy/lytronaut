@@ -273,3 +273,72 @@ fn interrupted_picture_does_not_advance_or_leave_partial_movie() {
         Err(FormatError::Budget)
     );
 }
+/// Independent reader: the slice header's idr_pic_id of each movie sample, in
+/// decode (sample-table) order. Parses only this encoder's fixed IDR header:
+/// first_mb, slice_type, pps_id, frame_num u(4), idr_pic_id.
+fn decode_order_idr_pic_ids(movie: &[u8]) -> Vec<u32> {
+    let stco = movie.windows(4).position(|v| v == b"stco").unwrap();
+    let count = u32::from_be_bytes(movie[stco + 8..stco + 12].try_into().unwrap()) as usize;
+    (0..count)
+        .map(|i| {
+            let at = stco + 12 + 4 * i;
+            let offset = u32::from_be_bytes(movie[at..at + 4].try_into().unwrap()) as usize;
+            let length = u32::from_be_bytes(movie[offset..offset + 4].try_into().unwrap()) as usize;
+            assert_eq!(movie[offset + 4] & 0x1f, 5, "every sample is an IDR slice");
+            // Remove emulation-prevention bytes from the RBSP prefix.
+            let mut rbsp = Vec::new();
+            for &byte in &movie[offset + 5..offset + 4 + length.min(64)] {
+                if byte == 3 && rbsp.ends_with(&[0, 0]) {
+                    continue;
+                }
+                rbsp.push(byte);
+            }
+            let mut bit = 0usize;
+            let mut read = |n: usize| -> u32 {
+                (0..n).fold(0, |v, _| {
+                    let b = (rbsp[bit / 8] >> (7 - bit % 8)) & 1;
+                    bit += 1;
+                    (v << 1) | u32::from(b)
+                })
+            };
+            let ue = |read: &mut dyn FnMut(usize) -> u32| {
+                let mut zeros = 0;
+                while read(1) == 0 {
+                    zeros += 1;
+                }
+                (1u32 << zeros) - 1 + read(zeros)
+            };
+            assert_eq!(ue(&mut read), 0, "first_mb_in_slice");
+            assert_eq!(ue(&mut read) % 5, 2, "I slice");
+            assert_eq!(ue(&mut read), 0, "pps id");
+            assert_eq!(read(4), 0, "IDR frame_num");
+            ue(&mut read)
+        })
+        .collect()
+}
+#[test]
+fn consecutive_idr_pictures_have_distinct_idr_pic_id() {
+    // Ascending lambda order [-2, 0, 3] plays planes 2, 0, 1: two consecutive
+    // even source planes, which plane parity would give the same identifier.
+    for (lambdas, selected) in [
+        (vec![0.0, 3.0, -2.0], 0),
+        (vec![0.0, 2.0, 4.0, 6.0, -2.0], 2),
+        (vec![1.0, 0.0], 1),
+    ] {
+        let plan = Plan::new(geometry(), &lambdas, selected).unwrap();
+        let planes = plan.planes().to_vec();
+        let mut b = Builder::new(plan, ID).unwrap();
+        // Arrival order is archive order, not playback order.
+        let mut arrival = planes.clone();
+        arrival.sort_unstable();
+        for i in arrival {
+            b.push(i, &image([(i * 40) as u8, 0, 0]), || false).unwrap();
+        }
+        let ids = decode_order_idr_pic_ids(&b.finish().unwrap().movie);
+        assert_eq!(ids.len(), planes.len());
+        assert!(
+            ids.windows(2).all(|pair| pair[0] != pair[1]),
+            "planes {planes:?} idr_pic_id {ids:?}"
+        );
+    }
+}

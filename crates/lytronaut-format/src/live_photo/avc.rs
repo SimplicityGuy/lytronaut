@@ -123,9 +123,11 @@ fn yuv(r: u8, g: u8, b: u8) -> [u8; 3] {
     ]
     .map(|v| v.clamp(0, 255) as u8)
 }
+/// `idr_pic_id` must differ between consecutive IDR pictures in decode order
+/// (H.264 7.4.3); callers alternate it by the picture's playback position.
 pub(super) fn frame(
     image: &DecodedJpeg,
-    index: usize,
+    idr_pic_id: u32,
     cancel: &impl Fn() -> bool,
 ) -> Result<Vec<u8>> {
     let (w, h) = (image.geometry.width, image.geometry.height);
@@ -148,7 +150,7 @@ pub(super) fn frame(
     bits.ue(2);
     bits.ue(0);
     bits.n(0, 4);
-    bits.ue((index % 2) as u32);
+    bits.ue(idr_pic_id);
     bits.n(0, 1);
     bits.n(0, 1);
     bits.zero_se();
