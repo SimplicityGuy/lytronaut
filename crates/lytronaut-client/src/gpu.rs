@@ -52,6 +52,32 @@ mod web {
         atomic::{AtomicBool, Ordering},
     };
     use wasm_bindgen::JsCast;
+    thread_local! {
+        // Shared by every mounted owner; a timed-out native acquisition still
+        // owns this slot while its promise drains and late device is destroyed.
+        static ACQUIRING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[cfg(feature = "test-harness")]
+    pub(crate) fn acquisition_pending() -> bool {
+        ACQUIRING.with(std::cell::Cell::get)
+    }
+    struct Acquisition;
+    impl Acquisition {
+        fn take() -> Result<Self, &'static str> {
+            ACQUIRING.with(|active| {
+                if active.replace(true) {
+                    Err("GPU acquisition pending")
+                } else {
+                    Ok(Self)
+                }
+            })
+        }
+    }
+    impl Drop for Acquisition {
+        fn drop(&mut self) {
+            ACQUIRING.with(|active| active.set(false));
+        }
+    }
     async fn delay(ms: i32) {
         let promise = js_sys::Promise::new(&mut |resolve, _| {
             if let Some(window) = web_sys::window() {
@@ -77,6 +103,8 @@ mod web {
     }
     impl Renderer {
         pub async fn acquire(canvas: web_sys::HtmlCanvasElement) -> Result<Self, &'static str> {
+            // No browser entry point or future construction precedes admission.
+            let acquisition = Acquisition::take()?;
             if let Some(performance) = web_sys::window().and_then(|w| w.performance()) {
                 canvas
                     .set_attribute("data-acquisition-start-ms", &performance.now().to_string())
@@ -89,7 +117,10 @@ mod web {
                     // Do not abandon a requestDevice promise: a late acquired device
                     // must still be explicitly destroyed when its renderer drops.
                     wasm_bindgen_futures::spawn_local(async move {
+                        // Destroy can synchronously reenter the mounted UI. Keep
+                        // admission held until that callback has also returned.
                         drop(creating.await);
+                        drop(acquisition);
                     });
                     Err("GPU acquisition timed out")
                 }
@@ -377,6 +408,8 @@ mod web {
 }
 #[cfg(target_arch = "wasm32")]
 pub use web::Renderer;
+#[cfg(all(target_arch = "wasm32", feature = "test-harness"))]
+pub(crate) use web::acquisition_pending;
 #[cfg(test)]
 mod tests {
     use super::*;

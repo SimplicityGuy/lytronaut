@@ -213,6 +213,8 @@ fn lambda(v: &Value) -> Result<Option<f64>> {
 }
 pub fn processed_asset<'a>(c: &Container<'a>, limits: Limits) -> Result<Processed<'a>> {
     let original = c.directory(limits)?;
+    #[cfg(feature = "test-harness")]
+    crate::capacity_observations::metadata_json(&original);
     if !supported_directory(&original) {
         return Ok(Processed {
             original,
@@ -298,6 +300,8 @@ pub fn processed_asset<'a>(c: &Container<'a>, limits: Limits) -> Result<Processe
         }
     }
     let preserved_only = planes.is_empty() && maps.is_empty();
+    #[cfg(feature = "test-harness")]
+    crate::capacity_observations::metadata_planes(&planes, &maps);
     Ok(Processed {
         original,
         planes,
@@ -360,9 +364,10 @@ pub fn inspect_f32(bytes: &[u8], g: Geometry, limits: Limits) -> Result<FloatIns
     })
 }
 
-/// Independently preflight JPEG segment bounds and SOF dimensions before invoking
-/// even the codec header parser. No decompression runs before allocation admission.
-pub fn jpeg_geometry(bytes: &[u8], limits: Limits) -> Result<Geometry> {
+/// Bounded JPEG header inspection without decoding pixels or allocating codec scratch.
+/// This does not validate entropy data; platform callers must independently decode
+/// the generated image before publishing it as verified pixels.
+pub fn jpeg_metadata_geometry(bytes: &[u8], limits: Limits) -> Result<Geometry> {
     if bytes.len() > limits.jpeg_bytes {
         return Err(E::Budget);
     }
@@ -405,12 +410,6 @@ pub fn jpeg_geometry(bytes: &[u8], limits: Limits) -> Result<Geometry> {
                 return Err(E::Codec);
             }
             limits.extent(width, height, 4)?;
-            // Conservative admission for codec scratch/coefficient buffers, encoded
-            // copy and final RGBA. This is separate from image's best-effort max_alloc.
-            let working = u64::from(width) * u64::from(height) * 64 + (bytes.len() as u64) * 2;
-            if working > limits.decoder_working_bytes {
-                return Err(E::Budget);
-            }
             return Ok(Geometry { width, height });
         }
         if (195..=207).contains(&m) && ![196, 200, 204].contains(&m) {
@@ -419,6 +418,18 @@ pub fn jpeg_geometry(bytes: &[u8], limits: Limits) -> Result<Geometry> {
         p = end;
     }
     Err(E::Truncated)
+}
+/// JPEG geometry plus conservative admission for an actual Rust pixel decode.
+pub fn jpeg_geometry(bytes: &[u8], limits: Limits) -> Result<Geometry> {
+    let geometry = jpeg_metadata_geometry(bytes, limits)?;
+    // Codec scratch/coefficient buffers, encoded copy and final RGBA remain
+    // separately bounded from image's best-effort max_alloc.
+    let working =
+        u64::from(geometry.width) * u64::from(geometry.height) * 64 + (bytes.len() as u64) * 2;
+    if working > limits.decoder_working_bytes {
+        return Err(E::Budget);
+    }
+    Ok(geometry)
 }
 pub struct DecodedJpeg {
     pub geometry: Geometry,

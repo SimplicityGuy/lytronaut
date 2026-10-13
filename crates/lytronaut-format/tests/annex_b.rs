@@ -48,6 +48,8 @@ fn codec_dimensions_crop_and_idr_are_derived() {
     let b = stream();
     let parsed = AnnexB::parse(&b, &[0.0], 30, 30).unwrap();
     assert_eq!(parsed.sequence.codec, "avc1.42001e");
+    assert_eq!(parsed.sequence.reference_frames, 1);
+    assert!(!parsed.units[0].bidirectional);
     assert_eq!(
         (parsed.sequence.coded_width, parsed.sequence.coded_height),
         (32, 32)

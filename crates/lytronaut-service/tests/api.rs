@@ -3,7 +3,7 @@ use lytronaut_service::{AppState, SecurityConfig, api::Api, router_with_routes, 
 use lytronaut_storage::{Catalog, DatabaseConfig, Limits, Store};
 use serde_json::{Value, json};
 use sqlx::{
-    ConnectOptions, Connection, PgConnection, SqliteConnection, any::AnyConnectOptions,
+    ConnectOptions, Connection, PgConnection, Row, SqliteConnection, any::AnyConnectOptions,
     postgres::PgConnectOptions, sqlite::SqliteConnectOptions,
 };
 use std::{
@@ -138,23 +138,35 @@ impl Server {
             self.assert_public_sentinel().await;
             assert!(!self.root.join("catalog.db").exists());
         }
-        let store = Store::open(
-            catalog.clone(),
-            &self.root.join("originals"),
-            &self.root.join("staging"),
-            Limits {
-                upload_bytes: 4 * 1024 * 1024,
-                file_bytes: 2 * 1024 * 1024,
-                encoded_bytes: 4 * 1024 * 1024,
-                metadata_bytes: 64 * 1024,
-                files: 32,
-                free_floor: 0,
-                reserved_bytes: 2 * 1024 * 1024 * 1024,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        // An in-process restart races the previous server's detached job
+        // workers, which hold the store's exclusive lock until they finish
+        // their final status and cleanup. A real restart ends the process.
+        let mut attempts = 0;
+        let store = loop {
+            match Store::open(
+                catalog.clone(),
+                &self.root.join("originals"),
+                &self.root.join("staging"),
+                Limits {
+                    upload_bytes: 4 * 1024 * 1024,
+                    file_bytes: 2 * 1024 * 1024,
+                    encoded_bytes: 4 * 1024 * 1024,
+                    metadata_bytes: 64 * 1024,
+                    files: 32,
+                    free_floor: 0,
+                    reserved_bytes: 2 * 1024 * 1024 * 1024,
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                Err(lytronaut_storage::StorageError::Busy) if attempts < 500 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                result => break result.unwrap(),
+            }
+        };
         let api = Api::open(catalog.clone(), store.clone()).await.unwrap();
         self.assert_public_sentinel().await;
         let app = router_with_routes(
@@ -1589,5 +1601,332 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
         "interrupted restore upload must record a durable failed job"
     );
     // Close so a PostgreSQL run drops its disposable schema and re-checks the sentinel.
+    s.close().await;
+}
+
+fn live_focus_fixture() -> Vec<u8> {
+    use sha1::{Digest, Sha1};
+    let hash = |b: &[u8]| format!("sha1-{:x}", Sha1::digest(b));
+    let planes: Vec<Vec<u8>> = [[255u8, 0, 0], [0, 0, 255]]
+        .into_iter()
+        .map(|rgb| {
+            let mut bytes = Vec::new();
+            let pixels: Vec<_> = (0..32 * 16).flat_map(|_| rgb).collect();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
+                .encode(&pixels, 32, 16, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            bytes
+        })
+        .collect();
+    let directory=serde_json::to_vec(&json!({"version":{"major":1,"minor":0},"picture":{"recipe":{"cameraSerial":"invented-sensitive-note","sourcePath":"invented-private-path","orientation":8},"accelerationArray":[{"type":"com.lytro.acceleration.refocusStack","vendorContent":{"imageArray":[{"representation":"jpeg","width":32,"height":16,"lambda":-1,"imageRef":hash(&planes[0])},{"representation":"jpeg","width":32,"height":16,"lambda":1,"imageRef":hash(&planes[1])}]}}]}})).unwrap();
+    let mut bytes = b"\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0".to_vec();
+    for (directory, payload) in [
+        (true, directory.as_slice()),
+        (false, planes[0].as_slice()),
+        (false, planes[1].as_slice()),
+    ] {
+        bytes.extend(if directory {
+            b"\x89LFM\r\n\x1a\n"
+        } else {
+            b"\x89LFC\r\n\x1a\n"
+        });
+        bytes.extend([0; 4]);
+        bytes.extend((payload.len() as u32).to_be_bytes());
+        bytes.extend(hash(payload).as_bytes());
+        bytes.extend([0; 35]);
+        bytes.extend(payload);
+        while !bytes.len().is_multiple_of(16) {
+            bytes.push(0);
+        }
+    }
+    bytes
+}
+fn live_zip_entries(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut p = 0;
+    while &bytes[p..p + 4] == b"PK\x03\x04" {
+        let read32 = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+        let read16 = |i| u16::from_le_bytes(bytes[i..i + 2].try_into().unwrap()) as usize;
+        assert_eq!(read16(p + 8), 0);
+        let size = read32(p + 18) as usize;
+        assert_eq!(size, read32(p + 22) as usize);
+        let name = read16(p + 26);
+        let extra = read16(p + 28);
+        let start = p + 30 + name + extra;
+        let payload = &bytes[start..start + size];
+        assert_eq!(crc32fast::hash(payload), read32(p + 14));
+        let name = String::from_utf8(bytes[p + 30..p + 30 + name].to_vec()).unwrap();
+        assert!(out.insert(name, payload.to_vec()).is_none());
+        p = start + size;
+    }
+    assert_eq!(&bytes[p..p + 4], b"PK\x01\x02");
+    assert_eq!(out.len(), 3);
+    out
+}
+/// One imported synthetic JPEG focus stack. Runs on the configured backend
+/// (`LYTRONAUT_TEST_BACKEND`), so every Live Photo case also runs on PostgreSQL.
+async fn live_photo_server() -> (Server, String, String, String, Vec<u8>) {
+    let s = Server::new().await;
+    let (headers, mutation) = s.request_headers().await;
+    let body =
+        json!({"version":1,"kind":"directory","declared_bytes":4*1024*1024,"declared_files":32})
+            .to_string();
+    let response = s
+        .request("POST", "/imports", &mutation, body.as_bytes())
+        .await;
+    assert_eq!(response.0, 201);
+    let import = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let source = live_focus_fixture();
+    let db = s.source(23).await;
+    for (name, bytes) in [
+        ("lytrolibrary.db", db),
+        ("bin/synthetic-p1/stacklq.lfp", source.clone()),
+    ] {
+        let hex: String = name.bytes().map(|b| format!("{b:02x}")).collect();
+        let headers =
+            format!("{mutation}X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: {hex}\r\n");
+        assert_eq!(
+            s.request("PUT", &format!("/imports/{import}/file"), &headers, &bytes)
+                .await
+                .0,
+            204
+        );
+    }
+    assert_eq!(
+        s.request("POST", &format!("/imports/{import}/finish"), &mutation, b"")
+            .await
+            .0,
+        204
+    );
+    let library = s.get("/libraries", &headers).await["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let captures = s
+        .get(
+            &format!("/libraries/{library}/captures?sort=rating"),
+            &headers,
+        )
+        .await;
+    let capture = captures["items"][0]["id"].as_str().unwrap();
+    let detail = s.get(&format!("/captures/{capture}"), &headers).await;
+    let asset = detail["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["role"] == "jpeg_focus_stack")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let asset = asset.to_owned();
+    (s, headers, mutation, asset, source)
+}
+async fn live_photo_create(
+    s: &Server,
+    mutation: &str,
+    asset: &str,
+    plane: u32,
+    orientation: u8,
+) -> String {
+    let request = json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":plane,"orientation":orientation}).to_string();
+    let response = s
+        .request("POST", "/exports", mutation, request.as_bytes())
+        .await;
+    assert_eq!(response.0, 200, "{}", String::from_utf8_lossy(&response.2));
+    serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+/// Quota held by a job row; DELETE must release it on both engines.
+async fn live_photo_quota(s: &Server, id: &str) -> (i64, i64) {
+    let row = sqlx::query(
+        "SELECT CAST(retained AS BIGINT),CAST(reserved AS BIGINT) FROM export_jobs WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(s.catalog.as_ref().unwrap().pool())
+    .await
+    .unwrap();
+    (row.try_get(0).unwrap(), row.try_get(1).unwrap())
+}
+/// No owned job directory or artifact for `id` remains anywhere under the root.
+fn live_photo_files_removed(s: &Server, id: &str) -> bool {
+    fn walk(path: &std::path::Path, id: &str) -> bool {
+        fs::read_dir(path).unwrap().all(|entry| {
+            let entry = entry.unwrap();
+            !entry.file_name().to_string_lossy().contains(id)
+                && (!entry.file_type().unwrap().is_dir() || walk(&entry.path(), id))
+        })
+    }
+    walk(&s.root, id)
+}
+#[tokio::test]
+async fn live_photo_create_download_complete_private_metadata_free_pair() {
+    let (s, headers, mutation, asset, source) = live_photo_server().await;
+    for orientation in 1..=8 {
+        let id = live_photo_create(&s, &mutation, &asset, 1, orientation).await;
+        let done = wait_export(&s, &id, &headers).await;
+        assert_eq!(done["state"], "succeeded");
+        assert_eq!(done["kind"], "live_photo");
+        assert_eq!(
+            live_photo_quota(&s, &id).await.1,
+            0,
+            "success releases the reservation"
+        );
+        let download = s
+            .request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await;
+        assert_eq!(download.0, 200);
+        assert!(download.1.contains("application/zip"));
+        let entries = live_zip_entries(&download.2);
+        let jpg = &entries["focus.JPG"];
+        let movie = &entries["focus.MOV"];
+        let image = image::load_from_memory_with_format(jpg, image::ImageFormat::Jpeg)
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(
+            (image.width(), image.height()),
+            if orientation >= 5 { (16, 32) } else { (32, 16) }
+        );
+        assert!(image.pixels().all(|p| p[2] > 240 && p[0] < 10 && p[1] < 10));
+        assert!(
+            movie
+                .windows(b"com.apple.quicktime.still-image-time".len())
+                .any(|v| v == b"com.apple.quicktime.still-image-time")
+        );
+        let provenance: Value = serde_json::from_slice(&entries["provenance.json"]).unwrap();
+        assert_eq!(provenance["key_seconds"], 1.5);
+        assert_eq!(provenance["selected_stored_plane"], 1);
+        assert_eq!(provenance["orientation"], orientation);
+        assert_eq!(provenance["motion"], "generated_focus_animation");
+        assert_eq!(provenance["camera_recorded_temporal_motion"], false);
+        for forbidden in [
+            b"invented-sensitive-note".as_slice(),
+            b"invented-private-path",
+            asset.as_bytes(),
+        ] {
+            assert!(!download.2.windows(forbidden.len()).any(|v| v == forbidden));
+        }
+    }
+    assert_eq!(
+        s.request("GET", &format!("/assets/{asset}/download"), &headers, b"")
+            .await
+            .2,
+        source,
+        "originals are never modified"
+    );
+    s.close().await;
+}
+#[tokio::test]
+async fn live_photo_delete_succeeded_removes_pair_and_quota_across_restart() {
+    let (mut s, headers, mutation, asset, _) = live_photo_server().await;
+    let id = live_photo_create(&s, &mutation, &asset, 1, 1).await;
+    assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
+    assert!(
+        live_photo_quota(&s, &id).await.0 > 0,
+        "a ready pair counts against staging"
+    );
+    assert_eq!(
+        s.request("DELETE", &format!("/exports/{id}"), &mutation, b"")
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        s.get(&format!("/exports/{id}"), &headers).await["state"],
+        "cancelled"
+    );
+    assert_eq!(live_photo_quota(&s, &id).await, (0, 0));
+    assert!(live_photo_files_removed(&s, &id));
+    s.restart().await;
+    assert_eq!(
+        s.get(&format!("/exports/{id}"), &headers).await["state"],
+        "cancelled"
+    );
+    assert_eq!(
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    s.close().await;
+}
+#[tokio::test]
+async fn live_photo_cancel_in_flight_never_offers_a_half_pair() {
+    let (s, headers, mutation, asset, _) = live_photo_server().await;
+    for _ in 0..4 {
+        let id = live_photo_create(&s, &mutation, &asset, 1, 1).await;
+        let early = s
+            .request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await;
+        if early.0 == 200 {
+            assert_eq!(
+                live_zip_entries(&early.2).len(),
+                3,
+                "only a complete pair is offered"
+            );
+        } else {
+            assert_eq!(early.0, 404, "incomplete resources are unavailable");
+        }
+        assert_eq!(
+            s.request("DELETE", &format!("/exports/{id}"), &mutation, b"")
+                .await
+                .0,
+            200
+        );
+        // Whether the worker was running or had already finished, DELETE wins.
+        assert_eq!(wait_export(&s, &id, &headers).await["state"], "cancelled");
+        assert_eq!(
+            s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
+                .await
+                .0,
+            404
+        );
+        for _ in 0..400 {
+            if live_photo_quota(&s, &id).await == (0, 0) && live_photo_files_removed(&s, &id) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(live_photo_quota(&s, &id).await, (0, 0));
+        assert!(live_photo_files_removed(&s, &id));
+    }
+    s.close().await;
+}
+#[tokio::test]
+async fn live_photo_unavailable_plane_fails_without_output_and_survives_restart() {
+    let (mut s, headers, mutation, asset, source) = live_photo_server().await;
+    let id = live_photo_create(&s, &mutation, &asset, 63, 1).await;
+    assert_eq!(wait_export(&s, &id, &headers).await["state"], "failed");
+    assert_eq!(
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        s.request("GET", &format!("/assets/{asset}/download"), &headers, b"")
+            .await
+            .2,
+        source
+    );
+    s.restart().await;
+    assert_eq!(
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        s.request("DELETE", &format!("/exports/{id}"), &mutation, b"")
+            .await
+            .0,
+        200
+    );
+    assert_eq!(live_photo_quota(&s, &id).await, (0, 0));
+    assert!(live_photo_files_removed(&s, &id));
     s.close().await;
 }

@@ -474,3 +474,311 @@ mod derivative_integrity_tests {
         assert!(!verified_derivative(&corrupt, &derivative));
     }
 }
+
+/// Only currently available selected controls may supersede a capture request.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn selected_control_available(
+    video: bool,
+    focus_available: bool,
+    video_available: bool,
+) -> bool {
+    if video {
+        video_available
+    } else {
+        focus_available
+    }
+}
+
+/// One running browse operation and one overwritten, not-yet-started intent.
+/// The runner remains owned until its current promises settle, including abort.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) struct LatestRequest<T> {
+    pending: Option<T>,
+    running: bool,
+}
+#[cfg(any(target_arch = "wasm32", test))]
+impl<T> Default for LatestRequest<T> {
+    fn default() -> Self {
+        Self {
+            pending: None,
+            running: false,
+        }
+    }
+}
+#[cfg(any(target_arch = "wasm32", test))]
+impl<T> LatestRequest<T> {
+    /// True only for the activation which must schedule the single runner.
+    pub(crate) fn submit(&mut self, request: T) -> bool {
+        self.pending = Some(request);
+        if self.running {
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+    /// Called only after the previous operation settled; never replace its future.
+    pub(crate) fn take_after_settlement(&mut self) -> Option<T> {
+        let next = self.pending.take();
+        if next.is_none() {
+            self.running = false;
+        }
+        next
+    }
+    pub(crate) fn clear_pending(&mut self) {
+        self.pending = None;
+    }
+}
+
+/// Superseded cancellations, recorded synchronously and signalled later.
+///
+/// Native cancellation dispatches synchronous listeners. Signalling inside the
+/// DOM handler that superseded the work would let a listener re-dispatch an
+/// event to that same, still running handler, which the platform rejects, and
+/// the newer intent would be lost. Callers therefore queue the cancellation
+/// (so superseded work already observes itself cancelled) and drain the queue
+/// once, in FIFO order, after the originating handler has returned.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) struct DeferredCancellations<T> {
+    queued: std::collections::VecDeque<T>,
+    scheduled: bool,
+}
+#[cfg(any(target_arch = "wasm32", test))]
+impl<T> Default for DeferredCancellations<T> {
+    fn default() -> Self {
+        Self {
+            queued: std::collections::VecDeque::new(),
+            scheduled: false,
+        }
+    }
+}
+#[cfg(any(target_arch = "wasm32", test))]
+impl<T> DeferredCancellations<T> {
+    /// Queue once per identity. True only when the caller must schedule the
+    /// single drain; a cancellation queued during a drain joins that drain.
+    pub(crate) fn defer(&mut self, item: T, same: impl Fn(&T, &T) -> bool) -> bool {
+        if !self.queued.iter().any(|queued| same(queued, &item)) {
+            self.queued.push_back(item);
+        }
+        !std::mem::replace(&mut self.scheduled, true)
+    }
+    /// Next cancellation to signal. Removed before signalling, so listeners
+    /// observe the native state; `None` ends the drain.
+    pub(crate) fn next(&mut self) -> Option<T> {
+        let next = self.queued.pop_front();
+        if next.is_none() {
+            self.scheduled = false;
+        }
+        next
+    }
+    pub(crate) fn contains(&self, matches: impl Fn(&T) -> bool) -> bool {
+        self.queued.iter().any(matches)
+    }
+}
+
+#[cfg(test)]
+mod browse_lifetime_tests {
+    use super::{DeferredCancellations, LatestRequest, selected_control_available};
+    use std::{cell::Cell, rc::Rc};
+    struct Intent {
+        index: usize,
+        live: Rc<Cell<usize>>,
+    }
+    impl Intent {
+        fn new(index: usize, live: &Rc<Cell<usize>>) -> Self {
+            live.set(live.get() + 1);
+            Self {
+                index,
+                live: live.clone(),
+            }
+        }
+    }
+    impl Drop for Intent {
+        fn drop(&mut self) {
+            self.live.set(self.live.get() - 1);
+        }
+    }
+    #[test]
+    fn unavailable_focus_and_video_burst_preserves_pending_capture() {
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit("capture"));
+        for _ in 0..10000 {
+            if selected_control_available(false, false, false) {
+                lane.submit("focus");
+            }
+            if selected_control_available(true, false, false) {
+                lane.submit("video");
+            }
+        }
+        assert_eq!(lane.take_after_settlement(), Some("capture"));
+        assert!(lane.take_after_settlement().is_none());
+        assert!(selected_control_available(false, true, false));
+        assert!(selected_control_available(true, false, true));
+        assert!(!selected_control_available(false, false, true));
+        assert!(!selected_control_available(true, true, false));
+    }
+    #[test]
+    fn synchronous_burst_has_one_runner_and_drops_superseded_intents() {
+        let live = Rc::new(Cell::new(0));
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit(Intent::new(0, &live)));
+        for index in 1..10000 {
+            assert!(!lane.submit(Intent::new(index, &live)));
+            assert_eq!(live.get(), 1);
+        }
+        assert_eq!(lane.take_after_settlement().unwrap().index, 9999);
+        assert_eq!(live.get(), 0);
+        assert!(lane.take_after_settlement().is_none());
+        assert!(lane.submit(Intent::new(10000, &live)));
+    }
+    #[test]
+    fn stalled_active_operation_retains_only_latest_pending_until_settlement() {
+        let live = Rc::new(Cell::new(0));
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit(Intent::new(0, &live)));
+        let active = lane.take_after_settlement().unwrap();
+        for index in 1..10000 {
+            assert!(!lane.submit(Intent::new(index, &live)));
+            assert_eq!(live.get(), 2);
+        }
+        assert_eq!(active.index, 0);
+        drop(active);
+        let replacement = lane.take_after_settlement().unwrap();
+        assert_eq!(replacement.index, 9999);
+        drop(replacement);
+        assert!(lane.take_after_settlement().is_none());
+        assert_eq!(live.get(), 0);
+    }
+    #[test]
+    fn disposal_removes_pending_without_releasing_a_stalled_runner() {
+        let mut lane = LatestRequest::default();
+        assert!(lane.submit(1));
+        let active = lane.take_after_settlement();
+        assert_eq!(active, Some(1));
+        assert!(!lane.submit(2));
+        lane.clear_pending();
+        // A replacement mount reuses the same draining slot, not a fresh runner.
+        assert!(!lane.submit(3));
+        assert_eq!(lane.take_after_settlement(), Some(3));
+        assert!(lane.take_after_settlement().is_none());
+        assert!(lane.submit(4));
+    }
+    #[test]
+    fn deferred_cancellations_schedule_one_fifo_drain_per_identity() {
+        let mut queue = DeferredCancellations::default();
+        let same = |a: &u32, b: &u32| a == b;
+        assert!(queue.defer(1, same));
+        assert!(!queue.defer(2, same));
+        assert!(!queue.defer(1, same));
+        assert!(queue.contains(|id| *id == 1) && queue.contains(|id| *id == 2));
+        assert_eq!(queue.next(), Some(1));
+        assert!(!queue.contains(|id| *id == 1));
+        // Queued by a listener during the drain: joins it, no second drain.
+        assert!(!queue.defer(3, same));
+        assert_eq!(queue.next(), Some(2));
+        assert_eq!(queue.next(), Some(3));
+        assert_eq!(queue.next(), None);
+        assert!(!queue.contains(|_| true));
+        assert!(queue.defer(4, same));
+    }
+    /// Models the public `main-reentrant-abort` regression: a cancellation
+    /// listener re-dispatches a change to the control whose handler superseded
+    /// the request. The platform rejects a handler entered recursively.
+    struct ReentrantControl {
+        deferred: bool,
+        in_handler: bool,
+        rejected: usize,
+        generation: u64,
+        sort: &'static str,
+        lane: LatestRequest<(&'static str, u64)>,
+        queue: DeferredCancellations<u32>,
+        signalled: Vec<u32>,
+        active: Option<u32>,
+        reenter: Option<&'static str>,
+    }
+    impl ReentrantControl {
+        fn new(deferred: bool) -> Self {
+            Self {
+                deferred,
+                in_handler: false,
+                rejected: 0,
+                generation: 0,
+                sort: "order",
+                lane: LatestRequest::default(),
+                queue: DeferredCancellations::default(),
+                signalled: Vec::new(),
+                active: None,
+                reenter: None,
+            }
+        }
+        fn change(&mut self, sort: &'static str) {
+            if self.in_handler {
+                self.rejected += 1;
+                return;
+            }
+            self.in_handler = true;
+            self.sort = sort;
+            self.generation += 1;
+            if let Some(active) = self.active {
+                if self.deferred {
+                    self.queue.defer(active, |a, b| a == b);
+                } else {
+                    self.signal(active);
+                }
+            }
+            self.lane.submit((sort, self.generation));
+            self.in_handler = false;
+        }
+        fn signal(&mut self, id: u32) {
+            if !self.signalled.contains(&id) {
+                self.signalled.push(id);
+                if let Some(sort) = self.reenter.take() {
+                    self.change(sort);
+                }
+            }
+        }
+        fn drain(&mut self) {
+            while let Some(id) = self.queue.next() {
+                self.signal(id);
+            }
+        }
+        fn cancelled(&self, id: u32) -> bool {
+            self.signalled.contains(&id) || self.queue.contains(|queued| *queued == id)
+        }
+        fn run(deferred: bool) -> Self {
+            let mut control = Self::new(deferred);
+            control.change("name");
+            let (sort, generation) = control.lane.take_after_settlement().unwrap();
+            assert_eq!((sort, generation), ("name", 1));
+            control.active = Some(1);
+            control.reenter = Some("rating");
+            control.change("order");
+            // Superseded work is stale at once, whether or not signalled yet.
+            assert!(control.cancelled(1));
+            assert_ne!(generation, control.generation);
+            control.drain();
+            control
+        }
+    }
+    #[test]
+    fn deferred_cancellation_keeps_reentrant_same_control_intent() {
+        let mut control = ReentrantControl::run(true);
+        assert_eq!(control.rejected, 0);
+        assert_eq!(control.signalled, [1]);
+        assert_eq!(control.sort, "rating");
+        assert_eq!(
+            control.lane.take_after_settlement(),
+            Some(("rating", control.generation))
+        );
+        assert!(control.lane.take_after_settlement().is_none());
+    }
+    #[test]
+    fn signalling_inside_the_handler_loses_reentrant_intent() {
+        let mut control = ReentrantControl::run(false);
+        assert_eq!(control.rejected, 1);
+        assert_eq!(
+            control.lane.take_after_settlement(),
+            Some(("order", control.generation))
+        );
+    }
+}

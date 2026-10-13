@@ -1,5 +1,7 @@
 //! Durable deployment-protected export/isolated restore jobs. Shares viewer codec and transfer admission.
 use super::*;
+#[path = "exports/live_photo.rs"]
+mod live_photo;
 use crate::bundle;
 use axum::{Json, extract::Request, routing::post};
 use http_body_util::BodyExt;
@@ -81,11 +83,18 @@ async fn begin(
                 a.descriptor(asset.as_str(), true).await?;
             }
         }
-        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(length),0) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources").fetch_one(a.0.catalog.pool()).await?; u64::try_from(n).map_err(|_| Failure::invalid())?.checked_add(2 * lytronaut_storage::portable::MAX_BYTES as u64).and_then(|n| n.checked_add(bundle::archive_framing(a.0.store.limits().files).ok()?)).ok_or(Failure::invalid())?}else{OUTPUT_CAP as u64};
+        if let ExportRequest::LivePhoto{asset,..}=&request {
+            let (_,key)=a.lookup(asset.as_str(),"file",true).await?;
+            if role(&key)!=OriginalRole::JpegFocusStack {return Err(Failure(StatusCode::UNPROCESSABLE_ENTITY,ErrorCode::UnsupportedFormat));}
+            a.descriptor(asset.as_str(),false).await?;
+        }
+        let need=if matches!(request, ExportRequest::ArchiveOriginals{..}) {let n:i64=sqlx::query_scalar("SELECT CAST(COALESCE(sum(length),0) AS BIGINT) FROM (SELECT digest,length FROM intake_sources GROUP BY digest,length) AS unique_sources").fetch_one(a.0.catalog.pool()).await?; u64::try_from(n).map_err(|_| Failure::invalid())?.checked_add(2 * lytronaut_storage::portable::MAX_BYTES as u64).and_then(|n| n.checked_add(bundle::archive_framing(a.0.store.limits().files).ok()?)).ok_or(Failure::invalid())?}else if matches!(request,ExportRequest::LivePhoto{..}){lytronaut_format::live_photo::BUNDLE_CAP as u64}else{OUTPUT_CAP as u64};
         let id = create(
             &a,
             if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
                 "archive"
+            } else if matches!(request,ExportRequest::LivePhoto{..}) {
+                "live_photo"
             } else {
                 "flatten"
             }, need,
@@ -208,6 +217,7 @@ async fn public_report(a: &Api, id: &str) -> Result<ExportProgress> {
         .fetch_one(a.0.catalog.pool())
         .await?;
     let kind = match kind.as_str() {
+        "live_photo" => ExportKind::LivePhoto,
         "flatten" => ExportKind::Flatten,
         "archive" => ExportKind::Archive,
         "restore" => ExportKind::Restore,
@@ -554,12 +564,16 @@ async fn download(
         owner.verify(&root(&a.0.store)).map_err(storage)?;
         let f = fs::File::open(artifact(&a, &id)).map_err(storage)?;
         let length = f.metadata().map_err(storage)?.len();
-        let value: Option<String> =
-            sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
-                .bind(&id)
-                .fetch_one(a.0.catalog.pool())
-                .await?;
-        let (mime, ext) = if let Some(s) = value {
+        // Database-neutral `$n` placeholders: the catalog may be SQLite or PostgreSQL.
+        let row = sqlx::query("SELECT recipe,kind FROM export_jobs WHERE id=$1")
+            .bind(&id)
+            .fetch_one(a.0.catalog.pool())
+            .await?;
+        let value: Option<String> = row.try_get(0)?;
+        let kind: String = row.try_get(1)?;
+        let (mime, ext) = if kind == "live_photo" {
+            ("application/zip", "zip")
+        } else if let Some(s) = value {
             let recipe: ExportRecipe = serde_json::from_str(&s).map_err(storage)?;
             if recipe.format == ExportFormat::Png {
                 ("image/png", "png")
@@ -701,6 +715,45 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                     return Ok(None);
                 }
                 match request {
+                    ExportRequest::LivePhoto {
+                        asset,
+                        plane_index,
+                        orientation,
+                        ..
+                    } => {
+                        let output = live_photo::render(
+                            &worker,
+                            asset,
+                            plane_index,
+                            orientation,
+                            &job,
+                            &flag,
+                            &progress,
+                        )
+                        .await?;
+                        let mut f = OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .mode(0o600)
+                            .open(artifact(&worker, &job))
+                            .map_err(storage)?;
+                        for chunk in output.chunks(1024 * 1024) {
+                            if flag.load(Ordering::Acquire) {
+                                return Err(Failure::invalid());
+                            }
+                            f.write_all(chunk).map_err(storage)?;
+                            progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                        }
+                        f.sync_all().map_err(storage)?;
+                        // The artifact lives in the job's owned directory; persist its entry.
+                        let path = artifact(&worker, &job);
+                        fs::File::open(path.parent().ok_or_else(Failure::invalid)?)
+                            .map_err(storage)?
+                            .sync_all()
+                            .map_err(storage)?;
+                        stored.store(output.len() as u64, Ordering::Relaxed);
+                        Ok(None)
+                    }
                     ExportRequest::ArchiveOriginals { .. } => {
                         crate::bundle::backup(
                             &worker.0.catalog,
