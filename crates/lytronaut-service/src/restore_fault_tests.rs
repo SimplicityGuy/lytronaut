@@ -1168,13 +1168,56 @@ async fn near_limit_source_cell_round_trips_and_over_limit_fails_cleanly(pg: boo
 /// A large row import into the restore's private namespace must not hold the
 /// live deployment's writer admission: live export admission and plain writes
 /// complete promptly (well under the 5 s PostgreSQL lock_timeout) mid-import.
+/// True while the restore's row-import write transaction is open: PostgreSQL
+/// shows granted RowExclusiveLocks on the private namespace's tables; SQLite's
+/// private destination refuses a second writer immediately (busy_timeout 0).
+async fn import_in_flight(env: &Env, journal: &Journal) -> bool {
+    match journal.namespace() {
+        Some(namespace) => {
+            let held: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_catalog.pg_locks l JOIN pg_catalog.pg_class c ON l.relation=c.oid JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname=$1 AND l.mode='RowExclusiveLock' AND l.granted",
+            )
+            .bind(namespace.schema())
+            .fetch_one(env.catalog().pool())
+            .await
+            .unwrap();
+            held > 0
+        }
+        None => {
+            let database = journal.pending(&env.root()).join("store/catalog.db");
+            if !database.exists() {
+                return false;
+            }
+            let mut probe = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&database)
+                    .busy_timeout(std::time::Duration::ZERO),
+            )
+            .await
+            .unwrap();
+            let free = sqlx::query("BEGIN IMMEDIATE")
+                .execute(&mut probe)
+                .await
+                .is_ok();
+            if free {
+                sqlx::query("ROLLBACK").execute(&mut probe).await.unwrap();
+            }
+            probe.close().await.unwrap();
+            !free
+        }
+    }
+}
 async fn live_writes_proceed_during_restore_import(pg: bool) {
     let env = Env::new(pg).await;
     let (_, id) = env.upload(archive(BULK_ROWS).await).await;
     let id = id.unwrap();
     let journal = env.wait_restoring(&id).await;
-    // Originals are staged; the single row-import transaction is now running.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Positively observe the restore's open row-import write transaction.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !import_in_flight(&env, &journal).await {
+        assert!(std::time::Instant::now() < deadline, "import never started");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let started = std::time::Instant::now();
     let admitted = create(&env.api, "archive", 1).await.unwrap();
     let mut tx = env.catalog().begin_write().await.unwrap();
@@ -1185,6 +1228,10 @@ async fn live_writes_proceed_during_restore_import(pg: bool) {
         .unwrap();
     tx.commit().await.unwrap();
     let elapsed = started.elapsed();
+    assert!(
+        import_in_flight(&env, &journal).await,
+        "the import transaction must still be open after the live write"
+    );
     assert!(
         elapsed < std::time::Duration::from_secs(2),
         "live writers waited {elapsed:?} behind the restore import"
