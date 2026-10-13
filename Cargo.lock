@@ -1432,6 +1432,7 @@ dependencies = [
  "js-sys",
  "leptos",
  "lytronaut-contracts",
+ "lytronaut-coverage",
  "lytronaut-format",
  "serde",
  "serde_json",
@@ -1448,6 +1449,15 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lytronaut-coverage"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "minicov",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1552,6 +1562,16 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "minicov"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3aa3aa12b448ac225b3102217d1ac5cc717908f02722926524b0599c933c7a0"
+dependencies = [
+ "cc",
+ "walkdir",
+]
 
 [[package]]
 name = "miniz_oxide"

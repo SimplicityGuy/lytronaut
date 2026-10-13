@@ -73,6 +73,9 @@ fn boundaries() -> Result<()> {
                 "axum",
                 "ffmpeg-sys-next",
                 "opencv",
+                // Coverage tooling is reachable only through the opt-in feature.
+                "lytronaut-coverage",
+                "minicov",
             ][..],
         ),
     ] {
