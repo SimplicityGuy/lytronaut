@@ -375,6 +375,16 @@ impl Net {
                 continue;
             }
             if !response.ok() {
+                if response.status() == 429 && method != "GET" {
+                    // A free-space refusal names required and available bytes.
+                    let detail = read(response, 4096, abort)
+                        .await
+                        .ok()
+                        .and_then(|body| crate::model::refusal_message(&body));
+                    return Err(
+                        detail.unwrap_or_else(|| "Resource limit reached. Wait, then retry".into())
+                    );
+                }
                 let message = match response.status() {
                     401 => "Request rejected by deployment policy",
                     429 => "Resource limit reached. Wait, then retry",
@@ -1407,10 +1417,9 @@ impl Ui {
         }
         self.export_busy.set(true);
         let _busy = BusyGuard(self.export_busy);
-        if file.size() == 0.0
-            || file.size() > 21.0 * 1024.0 * 1024.0 * 1024.0 + 32.0 * 1024.0 * 1024.0
-        {
-            return Err("Bundle exceeds the server restore limit".into());
+        // Any bundle size is accepted; the server admits it on free work space.
+        if file.size() == 0.0 {
+            return Err("The selected bundle is empty".into());
         }
         self.export_job.set(None);
         self.status
