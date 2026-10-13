@@ -564,15 +564,13 @@ async fn download(
         owner.verify(&root(&a.0.store)).map_err(storage)?;
         let f = fs::File::open(artifact(&a, &id)).map_err(storage)?;
         let length = f.metadata().map_err(storage)?.len();
-        let value: Option<String> =
-            sqlx::query_scalar("SELECT recipe FROM export_jobs WHERE id=$1")
-                .bind(&id)
-                .fetch_one(a.0.catalog.pool())
-                .await?;
-        let kind: String = sqlx::query_scalar("SELECT kind FROM export_jobs WHERE id=?")
+        // Database-neutral `$n` placeholders: the catalog may be SQLite or PostgreSQL.
+        let row = sqlx::query("SELECT recipe,kind FROM export_jobs WHERE id=$1")
             .bind(&id)
             .fetch_one(a.0.catalog.pool())
             .await?;
+        let value: Option<String> = row.try_get(0)?;
+        let kind: String = row.try_get(1)?;
         let (mime, ext) = if kind == "live_photo" {
             ("application/zip", "zip")
         } else if let Some(s) = value {
@@ -747,7 +745,9 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                         }
                         f.sync_all().map_err(storage)?;
-                        fs::File::open(root(&worker.0.store))
+                        // The artifact lives in the job's owned directory; persist its entry.
+                        let path = artifact(&worker, &job);
+                        fs::File::open(path.parent().ok_or_else(Failure::invalid)?)
                             .map_err(storage)?
                             .sync_all()
                             .map_err(storage)?;
