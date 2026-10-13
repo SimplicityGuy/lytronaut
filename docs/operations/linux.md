@@ -376,8 +376,9 @@ migrate the catalog schema additively on startup on either backend.
 
 A portable bundle carries every unique original plus a logical catalog of at most
 288 MiB, in one `.lytronaut` file of any size (sizes are 64-bit; there is no 4 GiB
-boundary). Creating, downloading, uploading and restoring it stream through a
-fixed 64 KiB buffer, so memory use does not grow with the library. The
+boundary). Creating, downloading and restoring it stream through a fixed 64 KiB
+buffer, and an upload is written one HTTP frame (at most a few hundred KiB) at a
+time, so memory use does not grow with the library. The
 single-upload budgets (`LYTRONAUT_UPLOAD_BYTES`, `LYTRONAUT_ENCODED_BYTES`) and the
 aggregate `LYTRONAUT_RESERVED_BYTES` do not limit it; only free space in the work
 location does. For `N` bytes of unique originals:
@@ -388,13 +389,23 @@ location does. For `N` bytes of unique originals:
   `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose).
 - Restoring a bundle of `B` bytes needs about 2 x `B` + 288 MiB free (the upload
   and the extracted copy, plus room for a SQLite catalog), with the same additions.
+  Before extracting, the restore re-checks the exact need with every file rounded
+  up to whole filesystem blocks, and needs about one free inode per original; for
+  a normal library this adds well under 0.1%, while a bundle of very many tiny
+  files needs correspondingly more and fails as a retryable `resource_limit` job
+  error, with nothing extracted, if the space is not there.
+- Imports and exports share the work location: an import's admission counts the
+  space reserved by running backups and restores, and the reverse, so a refused
+  import is also a retryable `resource_limit` with a `shortfall`.
 - A refused job fails immediately with a retryable `resource_limit` error whose
   `shortfall` reports `required_bytes` and `available_bytes` (the browser shows
   both, for example "this needs 5.0 GiB and 1.0 GiB is available"); free space
   (or wait for other exports to finish) and retry. Nothing is created for a
   refused job.
 
-Each original must still be at most `LYTRONAUT_FILE_BYTES` (512 MiB with Compose),
+`LYTRONAUT_FILE_BYTES` must not exceed `LYTRONAUT_UPLOAD_BYTES` (startup refuses
+such a configuration), so raising the per-file limit may require raising the
+upload budget too. Each original must still be at most `LYTRONAUT_FILE_BYTES` (512 MiB with Compose),
 which the store also enforces when it reads an original; restore a bundle into a
 deployment configured at least as large as the one that created it. The number of
 unique originals is not limited by `LYTRONAUT_UPLOAD_FILES` or any other budget.

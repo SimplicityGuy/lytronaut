@@ -116,22 +116,51 @@ ZIP64) reads browser imports, legitimately bounded by the single-upload budget.
 Creation, download and restore each move bytes through one fixed 64 KiB buffer per
 transfer (`copy_checked`, the download body), hashing as they go; no step holds an
 original, the bundle or a size-proportional buffer in memory. A restore upload is
-written frame by frame to its owned file and never accumulated. Resuming an
+written one HTTP body frame at a time to its owned file and never accumulated;
+a frame is bounded by the HTTP server's read buffer (hyper's default allows up to
+about 408 KiB), not by the 64 KiB copy buffer, and is written before the next is
+read. Resuming an
 interrupted upload or download is not supported; the transfer is restarted.
 
 **Real disk needs.** For `O` bytes of unique originals, `n` of them, and the v2
 catalog maximum `C` = 288 MiB, creation keeps the logical spool (at most `C`), the
 inventory spool (`40n`) and the growing artifact (`60 + catalog + 40n + O`) on the
-work volume at once, so it reserves `O + 80n + 60 + 2C`. Doubling applies only to
-the bounded catalog and the 40-byte inventory records, never to originals. A restore of a `D`-byte upload keeps the upload, the extracted
-originals and logical spool (together at most `D`) and, on SQLite, the destination
-catalog file, so it reserves `2D + C`; the `C` is headroom for that SQLite catalog,
-not a proved bound (a PostgreSQL destination grows database storage instead). Both
-are upper bounds held for the whole job and released only by owned cleanup.
+work volume at once, so it reserves `O + 80n + 60 + 2C` plus 3 MiB of block
+rounding for its three files. Doubling applies only to the bounded catalog and the
+40-byte inventory records, never to originals. The library can still grow
+between admission and capture (imports finishing meanwhile), so creation charges
+the spools at their block cost and the artifact as it grows, and stops with a
+retryable `resource_limit` (job error `space`, artifact and spools removed,
+reservation released) before it would pass its reservation.
+
+A restore upload is admitted on its declared size `D` alone, reserving `2D + C`
+(the upload plus its extracted payload, and `C` of headroom for a SQLite
+destination catalog, which is not a proved bound; a PostgreSQL destination grows
+database storage instead). Payload bytes are not disk cost: every file occupies
+whole filesystem allocation units (`f_frsize` from `statvfs`), and an empty one
+at least one, so a bundle of very many tiny originals could otherwise create far
+more disk use and inodes than its size. Before extracting anything the worker
+therefore reads the uploaded framing (no hashing) and computes the exact need:
+the upload, `C`, sixteen units for job files, both spools and every original at
+its block cost. It also requires the volume's free inodes (`f_favail`, when the
+filesystem reports a finite count) to exceed the original count by 1,024. If the
+exact need is larger than the reservation, the reservation grows to it under the
+same writer admission, counting other jobs' reservations, running imports and
+the free-space floor; otherwise the job fails as retryable `space` with nothing
+extracted. While extracting, every file is charged at its block cost before it is
+written, and the job stops with `space` (owned cleanup, quota released) rather
+than pass its reservation. For a library-shaped bundle (about 33,800 captures,
+6.5 files each) block rounding adds under 0.1%. These are upper bounds held
+from admission until owned cleanup releases them.
 
 **Admission.** An archive or restore is admitted when the work volume's available
-space is at least its reservation plus every active export reservation plus
-`LYTRONAUT_FREE_FLOOR`. Otherwise it is refused before any job, file or schema
+space is at least its reservation plus every active export reservation plus every
+running import's reservation plus `LYTRONAUT_FREE_FLOOR`. Import admission in turn
+counts every export and restore reservation, under the same writer admission, so
+neither can pass the check on space the other already reserved; an import short
+of space is refused as retryable `429 resource_limit` with the same `shortfall`
+(only a declaration beyond `LYTRONAUT_UPLOAD_BYTES` remains a permanent
+`413 invalid_input`). Otherwise it is refused before any job, file or schema
 exists with `429 resource_limit`, retryable, carrying
 `shortfall {required_bytes, available_bytes}` (byte counts only, never a path).
 Restore accepts any positive `Content-Length` whose reservation fits a signed
@@ -223,7 +252,12 @@ ownership, lost reservation, or unjournaled successful-looking result is allowed
 Blocked cleanup is per job and does not stop the service. A job whose owned cleanup
 cannot be proved or completed is persisted as `failed` with error `cleanup-blocked`
 (reported as a retryable `storage_unavailable` error), logged loudly with its job id,
-and keeps its files, journal and quota; admission keeps counting that quota.
+and keeps its files, journal and quota. An in-flight reservation it still holds
+keeps counting in free-space admission; the bytes of an already published
+whole-library result are its `retained` quota, counted in no budget (archive and
+restore are exempt from `LYTRONAUT_RESERVED_BYTES`) but still physically on the
+work volume, so admission sees them through the filesystem's free space. Its report
+also keeps one of the 128 retained-report slots and is never evicted.
 `DELETE` and every startup retry the cleanup; once it succeeds the reservation is
 released and the job reads `interrupted`. A previously ready result that no longer
 verifies at startup (including a ready restore row whose journal is missing or never
@@ -327,8 +361,11 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
 - A library whose originals exceed the former `LYTRONAUT_UPLOAD_BYTES` + 288 MiB
   ceiling (sparse synthetic originals, small configured budgets) backed up and
   restored losslessly bundle-to-bundle and through the HTTP archive/download/
-  restore path, with the copy buffer asserted at 64 KiB, and free-space admission
-  refusals that name required and available bytes.
+  restore path (download frames asserted at most 64 KiB), free-space admission
+  refusals that name required and available bytes, per-file block cost enforced
+  on restore and archive (a 200,000-tiny-original bundle refused before extraction
+  on both engines), import/export reservations counted in each other's admission,
+  and a library with no originals.
 - `restore_fault_tests.rs`: corruption, admission and mid-restore quota, cancel,
   graceful shutdown, a real child-process SIGKILL with restart recovery,
   owner-revoked cleanup, dependency-restricted DROP, failing and ambiguous final

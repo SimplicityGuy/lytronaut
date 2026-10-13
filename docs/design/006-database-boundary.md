@@ -274,12 +274,14 @@ its case list:
   many small rows) restored onto PostgreSQL, and a library whose originals exceed
   the former single-upload bundle ceiling round-tripped SQLite→PostgreSQL and
   PostgreSQL→SQLite (`lytronaut-lbk`). SQLite-only counterparts run by default.
-- Twenty-one restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
+- Twenty-two restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
   archives, free-space admission refusals with their shortfall and mid-restore
   quota, a library beyond the single-upload budgets and file count archived,
   downloaded in bounded frames and restored through the production jobs, a
   logical catalog beyond the 288 MiB section failing at backup time without an
-  artifact, cancellation and shutdown, a
+  artifact, per-file disk cost (a bundle of 200,000 tiny originals refused at
+  re-admission before extraction; an archive stopped at its reservation),
+  cancellation and shutdown, a
   real SIGKILL of a restoring child process with restart recovery, publish and
   DELETE, owner-revoked (denied) cleanup, restricted DROP refused by an unrelated
   dependent object, failing and ambiguous final status UPDATE, late DELETE racing
