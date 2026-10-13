@@ -84,7 +84,12 @@ plus 1% compression expansion and twice the bounded metadata allowance plus
 one capped per-file publication temporary. Pathological ZIP header overhead
 beyond this explicit encoded budget is rejected. Reservations are summed across
 active jobs and checked conservatively on both volumes against actual available
-space. One encoded spool per job prevents concurrent requests exceeding that
+space; on the staging volume the in-flight reservations of export and restore jobs
+are added, under the same writer admission, so an import cannot claim space a
+backup or restore already reserved (export admission counts running imports in
+turn). A shortage is a retryable `StorageError::Space` naming the required and
+available bytes (HTTP 429 `resource_limit` with a `shortfall`); a declaration
+beyond the upload budget remains `Quota` (HTTP 413). One encoded spool per job prevents concurrent requests exceeding that
 reservation. Process-exclusive locks own both roots; reservation/terminal changes
 are durable SQLite updates serialized with intake operations. Other processes
 can still exhaust a volume; write failure produces an explicit retryable job,

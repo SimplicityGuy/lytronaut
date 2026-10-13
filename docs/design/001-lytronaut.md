@@ -80,7 +80,7 @@ the supported baseline when their runtime/release gate fails.
 | Preserve depth/confidence and recipe artifacts | GO | Preserve raw bytes/types; bounded finite-map inspection; no metric depth inference |
 | Depth picking, perspective/stereo/tilt, aperture synthesis | NO-GO | Coordinate/mapping/occlusion semantics and output quality unverified |
 | Imported legacy edit appearance parity | NO-GO | Matching stored values do not establish processing transfer functions; preserve unknown edits rather than silently render guesses |
-| Flattened verified derivative export / original bundle backup | GO to implement | Explicit plane/orientation/provenance and loss of refocus ability; byte-exact originals and album metadata survive restore |
+| Flattened verified derivative export / original bundle backup | GO to implement | Explicit plane/orientation/provenance and loss of refocus ability; byte-exact originals and album metadata survive restore. Bundles have no original size or count limit; this release's logical catalog section holds about 33,800 captures (measured, docs/design/007) and a larger catalog fails at backup time without a bundle |
 | Calibrated F01 synthesis | NO-GO | Four local data.C bundles have 195 valid sections, 191 references, 63 sensor payloads but 62 MOD records; 46-character trailers unverified; 31 lens-setting pairs have zero exact matches with 60 capture pairs |
 | Illum or other active Desktop schema semantic support | NO-GO | Zero authorized local samples, paired calibration or alternate active-schema fixtures |
 | Linux amd64/arm64 self-hosted operation | GO to implement, unverified now | CPU-only nonroot builds and actual startup/import/backup tests on both architectures required before claiming support |

@@ -125,6 +125,7 @@ fn error(status: StatusCode, code: ErrorCode) -> Response {
             code,
             retryable: status == StatusCode::SERVICE_UNAVAILABLE
                 || status == StatusCode::TOO_MANY_REQUESTS,
+            shortfall: None,
         }),
     )
         .into_response()

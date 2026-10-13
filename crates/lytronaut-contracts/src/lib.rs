@@ -86,6 +86,18 @@ pub struct ApiError {
     pub version: WireVersion,
     pub code: ErrorCode,
     pub retryable: bool,
+    /// Only on a `resource_limit` refusal caused by insufficient free work
+    /// space; omitted from the wire otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortfall: Option<SpaceShortfall>,
+}
+/// Byte counts only (never a path): what admission needed on the work volume,
+/// including active reservations and the free-space floor, and what was free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpaceShortfall {
+    pub required_bytes: u64,
+    pub available_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -510,6 +522,53 @@ mod tests {
             serde_json::from_str::<AssetManifest>(&serde_json::to_string(&asset).unwrap()).unwrap(),
             asset
         );
+    }
+    #[test]
+    fn api_error_shortfall_is_optional_numeric_and_strict() {
+        let plain = r#"{"version":1,"code":"resource_limit","retryable":true}"#;
+        let error: ApiError = serde_json::from_str(plain).unwrap();
+        assert_eq!(error.shortfall, None);
+        assert_eq!(serde_json::to_string(&error).unwrap(), plain);
+        let short = r#"{"version":1,"code":"resource_limit","retryable":true,"shortfall":{"required_bytes":18446744073709551615,"available_bytes":0}}"#;
+        let error: ApiError = serde_json::from_str(short).unwrap();
+        assert_eq!(
+            error.shortfall,
+            Some(SpaceShortfall {
+                required_bytes: u64::MAX,
+                available_bytes: 0
+            })
+        );
+        assert_eq!(serde_json::to_string(&error).unwrap(), short);
+        // Backward compatibility: a client built before the field existed and
+        // ignoring unknown fields still parses a shortfall refusal, and the
+        // former strict shape still parses every error that has no shortfall
+        // (job reports and all other refusals are byte-identical to before).
+        #[derive(Deserialize)]
+        struct OlderLenient {
+            code: ErrorCode,
+            retryable: bool,
+        }
+        let older: OlderLenient = serde_json::from_str(short).unwrap();
+        assert_eq!(
+            (older.code, older.retryable),
+            (ErrorCode::ResourceLimit, true)
+        );
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct OlderStrict {
+            version: WireVersion,
+            code: ErrorCode,
+            retryable: bool,
+        }
+        assert!(serde_json::from_str::<OlderStrict>(plain).is_ok());
+        for hostile in [
+            r#"{"version":1,"code":"resource_limit","retryable":true,"shortfall":{"required_bytes":1,"available_bytes":0,"path":"/x"}}"#,
+            r#"{"version":1,"code":"resource_limit","retryable":true,"shortfall":{"required_bytes":-1,"available_bytes":0}}"#,
+            r#"{"version":1,"code":"resource_limit","retryable":true,"message":"/srv/work"}"#,
+        ] {
+            assert!(serde_json::from_str::<ApiError>(hostile).is_err());
+        }
     }
     #[test]
     fn rejects_future_versions_paths_and_invalid_digests() {

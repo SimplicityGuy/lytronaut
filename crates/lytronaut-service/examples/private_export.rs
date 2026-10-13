@@ -59,7 +59,8 @@ async fn run() -> Result<(), ()> {
     let progress = AtomicU64::new(0);
     let archive = proof.join("originals.lytronaut");
     let expected = bundle::trusted_schema(&catalog).await.map_err(|_| ())?;
-    let report = bundle::backup(&catalog, &store, &archive, &cancel, &progress)
+    // Operator tooling checked free space above; no job reservation applies.
+    let report = bundle::backup(&catalog, &store, &archive, u64::MAX, &cancel, &progress)
         .await
         .map_err(|_| ())?;
     let restored = proof.join("restored");

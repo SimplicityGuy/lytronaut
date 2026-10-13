@@ -217,7 +217,14 @@ before encoder writes/allocations; source staging is released before encoding.
 No export overlaps a second native viewer decoder. Browser downloads and restore
 File uploads stream through platform APIs; WASM never accumulates bundle bytes.
 Existing 64 MiB transient/32 MiB persistent viewer admission remains separate.
-Jobs reserve configured disk bytes and the free-space floor before admission.
+Jobs reserve disk bytes and the free-space floor before admission. Whole-library
+archive and restore jobs are bounded only by free work space (not by the upload
+budgets or `LYTRONAUT_RESERVED_BYTES`, which keeps bounding imports and
+flatten/Live Photo exports); a refusal is a retryable 429 `resource_limit` whose
+optional, additive `shortfall` names the required and available bytes, shown
+by the browser as a sentence with binary units (docs/design/007). An archive
+whose logical catalog exceeds the 288 MiB v2 section fails before any artifact
+exists with a non-retryable `resource_limit` job error.
 At most 128 reports/artifacts remain; cancelled/failed reports are evicted oldest
 first when another job is admitted. Remove completed exports to make room.
 
@@ -231,7 +238,7 @@ A consistent snapshot is taken before selecting its blob inventory, so concurren
 new intake cannot create a catalog/blob mismatch. Export jobs and unfinished intake jobs are deleted from the generated snapshot.
 Application catalogs and current bundles contain no authentication state.
 
-`POST /restores` streams a private bundle with a bounded Content-Length into an
+`POST /restores` streams a private bundle of any declared Content-Length into an
 owned upload file, then validates/restores it as a durable cancellable job.
 Checks include V1 magic, sizes/counts, duplicate blobs, exact SHA256s, no trailing
 bytes, exact trusted current application schema (no views/triggers/virtual or

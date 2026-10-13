@@ -782,3 +782,55 @@ mod browse_lifetime_tests {
         );
     }
 }
+
+/// Human-readable byte count for status text (binary units, one decimal).
+pub fn byte_label(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if bytes < 1024 {
+        return format!("{bytes} bytes");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+/// Status text for a free-space refusal body; `None` for any other error.
+/// Only the server's byte counts are shown, never a path.
+pub fn refusal_message(body: &[u8]) -> Option<String> {
+    let error: lytronaut_contracts::ApiError = serde_json::from_slice(body).ok()?;
+    let shortfall = error.shortfall?;
+    Some(format!(
+        "Not enough free work space on the server: this needs {} and {} is available. Free space, then retry",
+        byte_label(shortfall.required_bytes),
+        byte_label(shortfall.available_bytes)
+    ))
+}
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    #[test]
+    fn shortfall_is_shown_in_binary_units_without_other_detail() {
+        assert_eq!(byte_label(0), "0 bytes");
+        assert_eq!(byte_label(1023), "1023 bytes");
+        assert_eq!(byte_label(1536), "1.5 KiB");
+        assert_eq!(byte_label(3 * 1024 * 1024 * 1024), "3.0 GiB");
+        assert_eq!(byte_label(u64::MAX), "16384.0 PiB");
+        let body = br#"{"version":1,"code":"resource_limit","retryable":true,"shortfall":{"required_bytes":5368709120,"available_bytes":1073741824}}"#;
+        assert_eq!(
+            refusal_message(body).unwrap(),
+            "Not enough free work space on the server: this needs 5.0 GiB and 1.0 GiB is available. Free space, then retry"
+        );
+        // Older-style errors, other errors and malformed bodies keep the
+        // generic message.
+        for other in [
+            br#"{"version":1,"code":"resource_limit","retryable":true}"#.as_slice(),
+            br#"{"version":1,"code":"invalid_input","retryable":false}"#,
+            b"not json",
+        ] {
+            assert_eq!(refusal_message(other), None);
+        }
+    }
+}
