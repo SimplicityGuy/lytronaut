@@ -618,3 +618,20 @@ async fn postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport
     .unwrap();
     admin.close().await.unwrap();
 }
+
+#[test]
+fn source_values_and_errors_never_print_catalog_contents() {
+    let value = TypedValue::Text(b"synthetic secret caption".to_vec());
+    assert_eq!(format!("{value:?}"), "TypedValue([redacted])");
+    let record = OriginalRecord {
+        fields: [("caption".to_owned(), value)].into_iter().collect(),
+    };
+    assert_eq!(format!("{record:?}"), "OriginalRecord([redacted])");
+    let error = desktop::CatalogError::from(std::io::Error::other("synthetic path /secret"));
+    assert_eq!(error, desktop::CatalogError::Unavailable);
+    assert_eq!(error.to_string(), "catalog Unavailable");
+    assert_eq!(
+        desktop::CatalogError::Invalid.to_string(),
+        "catalog Invalid"
+    );
+}

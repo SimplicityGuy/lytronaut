@@ -40,7 +40,7 @@ def main():
         ("http-api", 7, ["-p", "lytronaut-service", "--test", "api", "--", "--skip", "live_photo_", "--test-threads=1"]),
         # Live Photo export create/download, DELETE of a ready pair, in-flight
         # cancellation and failed-plane cases, each against PostgreSQL.
-        ("live-photo-api", 4, ["-p", "lytronaut-service", "--test", "api", "live_photo_", "--", "--test-threads=1"]),
+        ("live-photo-api", 5, ["-p", "lytronaut-service", "--test", "api", "live_photo_", "--", "--test-threads=1"]),
         ("http-uploads", 4, ["-p", "lytronaut-service", "--test", "uploads", "--", "--test-threads=1"]),
         # Round trips, legacy forms and near-limit legacy files, plus a library
         # beyond the single-upload budgets in both cross-backend directions.
