@@ -162,6 +162,8 @@ pub enum DatabaseError {
     Configuration,
     Connection,
     Migration,
+    /// The PostgreSQL server is not a supported release (PostgreSQL 18).
+    UnsupportedServer,
 }
 impl fmt::Display for DatabaseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -169,10 +171,18 @@ impl fmt::Display for DatabaseError {
             Self::Configuration => "invalid application database configuration; use a PostgreSQL connection URL or omit LYTRONAUT_DATABASE_URL for SQLite",
             Self::Connection => "application database unavailable; check deployment connectivity, credentials and database permissions",
             Self::Migration => "application database migration failed; check permissions, schema compatibility and concurrent writers",
+            Self::UnsupportedServer => "unsupported PostgreSQL server version; Lytronaut requires PostgreSQL 18",
         })
     }
 }
 impl std::error::Error for DatabaseError {}
+
+/// Supported application PostgreSQL releases, by `server_version_num`: major 18.
+pub fn supported_postgres_version(server_version_num: &str) -> bool {
+    server_version_num
+        .parse::<u32>()
+        .is_ok_and(|version| (180_000..190_000).contains(&version))
+}
 
 #[derive(Clone)]
 pub(crate) struct ApplicationDatabase {
@@ -290,6 +300,18 @@ impl ApplicationDatabase {
             .connect_with(options.disable_statement_logging())
             .await
             .map_err(|_| DatabaseError::Connection)?;
+        if backend == Backend::Postgres {
+            // Refuse an unsupported server before migrating anything into it.
+            let version: String =
+                sqlx::query_scalar("SELECT pg_catalog.current_setting('server_version_num')")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|_| DatabaseError::Connection)?;
+            if !supported_postgres_version(&version) {
+                pool.close().await;
+                return Err(DatabaseError::UnsupportedServer);
+            }
+        }
         Ok(Self {
             pool,
             backend,
@@ -564,6 +586,21 @@ mod tests {
     }
 
     #[test]
+    fn only_postgres_18_servers_are_supported() {
+        for supported in ["180000", "180006", "189999"] {
+            assert!(supported_postgres_version(supported));
+        }
+        for unsupported in ["170011", "190000", "90624", "", "18.6", "-180006"] {
+            assert!(!supported_postgres_version(unsupported));
+        }
+        let message = DatabaseError::UnsupportedServer.to_string();
+        assert_eq!(
+            message,
+            "unsupported PostgreSQL server version; Lytronaut requires PostgreSQL 18"
+        );
+    }
+
+    #[test]
     fn separate_password_is_exact_encoded_and_never_ambiguous() {
         fn decode(encoded: &str) -> String {
             let bytes = encoded.as_bytes();
@@ -585,7 +622,11 @@ mod tests {
         let configured = DatabaseConfig::Postgres(base.into())
             .with_password(password)
             .unwrap();
-        assert!(!format!("{configured:?}").contains("p%41"));
+        let debug = format!("{configured:?}");
+        assert_eq!(debug, "DatabaseConfig::Postgres(<redacted>)");
+        for form in ["p%41", "p%2541", "lytronaut@postgres", "%40"] {
+            assert!(!debug.contains(form));
+        }
         let DatabaseConfig::Postgres(url) = configured else {
             panic!("backend changed")
         };

@@ -125,7 +125,9 @@ mod tests {
                 Some("lytronaut".into()),
             )
             .unwrap();
-            assert!(!format!("{config:?}").contains("generated-secret"));
+            let debug = format!("{config:?}");
+            assert_eq!(debug, "DatabaseConfig::PostgresSchema(<redacted>)");
+            assert!(!debug.contains("generated-secret") && !debug.contains("generated%2Dsecret"));
             assert!(matches!(
                 &config,
                 DatabaseConfig::PostgresSchema { schema, .. } if schema == "lytronaut"
