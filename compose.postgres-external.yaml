@@ -1,0 +1,20 @@
+# Existing PostgreSQL server managed outside this Compose project. Use with
+# compose.yaml:
+#   docker compose -f compose.yaml -f compose.postgres-external.yaml up -d --no-build
+# Required settings (for example in a private .env file, never committed):
+#   LYTRONAUT_DATABASE_URL   credential-free URL, e.g.
+#                            postgres://lytronaut@db.example.internal:5432/lytronaut?sslmode=verify-full
+#   LYTRONAUT_SECRETS_DIR    private directory holding lytronaut-database-password
+# Prepare the role, database grants and schema as described in
+# docs/operations/linux.md; this file starts no database.
+services:
+  lytronaut:
+    environment:
+      LYTRONAUT_DATABASE_URL: ${LYTRONAUT_DATABASE_URL:?set LYTRONAUT_DATABASE_URL to a credential-free PostgreSQL URL}
+      LYTRONAUT_DATABASE_PASSWORD_FILE: /run/secrets/lytronaut_database_password
+      LYTRONAUT_DATABASE_SCHEMA: ${LYTRONAUT_DATABASE_SCHEMA:-lytronaut}
+    secrets:
+      - lytronaut_database_password
+secrets:
+  lytronaut_database_password:
+    file: ${LYTRONAUT_SECRETS_DIR:?set LYTRONAUT_SECRETS_DIR to the private secrets directory}/lytronaut-database-password

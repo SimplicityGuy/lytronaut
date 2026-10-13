@@ -52,6 +52,52 @@ impl DatabaseConfig {
             Self::Sqlite(_) => Err(DatabaseError::Configuration),
         }
     }
+    /// Supply the PostgreSQL password separately from a credential-free deployment
+    /// URL (for example from a mounted secret file), so the URL can live in
+    /// non-secret configuration. A URL that already carries a password is
+    /// ambiguous and rejected; neither value ever enters a diagnostic.
+    pub fn with_password(self, password: &str) -> Result<Self, DatabaseError> {
+        if password.is_empty() || password.len() > 1024 || password.chars().any(char::is_control) {
+            return Err(DatabaseError::Configuration);
+        }
+        let add = |url: String| -> Result<String, DatabaseError> {
+            let mut parsed = AnyConnectOptions::from_str(&url)
+                .map_err(|_| DatabaseError::Configuration)?
+                .database_url;
+            if parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.query_pairs().any(|(key, _)| key == "password")
+            {
+                return Err(DatabaseError::Configuration);
+            }
+            // The driver percent-decodes the userinfo password. Encode every byte
+            // except ASCII alphanumerics so `%`, `@`, `:` and `/` survive exactly.
+            let encoded: String = password
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() {
+                        char::from(b).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
+                .collect();
+            parsed
+                .set_password(Some(&encoded))
+                .map_err(|_| DatabaseError::Configuration)?;
+            let url = parsed.to_string();
+            Self::from_deployment(Path::new("unused"), Some(&url))?;
+            Ok(url)
+        };
+        match self {
+            Self::Postgres(url) => Ok(Self::Postgres(add(url)?)),
+            Self::PostgresSchema { url, schema } => Ok(Self::PostgresSchema {
+                url: add(url)?,
+                schema,
+            }),
+            Self::Sqlite(_) => Err(DatabaseError::Configuration),
+        }
+    }
     pub fn from_deployment(sqlite_path: &Path, url: Option<&str>) -> Result<Self, DatabaseError> {
         match url {
             None => Ok(Self::Sqlite(sqlite_path.to_owned())),
@@ -116,6 +162,8 @@ pub enum DatabaseError {
     Configuration,
     Connection,
     Migration,
+    /// The PostgreSQL server is not a supported release (PostgreSQL 18).
+    UnsupportedServer,
 }
 impl fmt::Display for DatabaseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -123,10 +171,27 @@ impl fmt::Display for DatabaseError {
             Self::Configuration => "invalid application database configuration; use a PostgreSQL connection URL or omit LYTRONAUT_DATABASE_URL for SQLite",
             Self::Connection => "application database unavailable; check deployment connectivity, credentials and database permissions",
             Self::Migration => "application database migration failed; check permissions, schema compatibility and concurrent writers",
+            Self::UnsupportedServer => "unsupported PostgreSQL server version; Lytronaut requires PostgreSQL 18",
         })
     }
 }
 impl std::error::Error for DatabaseError {}
+
+/// Supported application PostgreSQL releases, by `server_version_num`: major 18.
+pub fn supported_postgres_version(server_version_num: &str) -> bool {
+    server_version_num
+        .parse::<u32>()
+        .is_ok_and(|version| (180_000..190_000).contains(&version))
+}
+
+/// The startup decision for a connected server's reported `server_version_num`.
+fn require_supported_postgres(server_version_num: &str) -> Result<(), DatabaseError> {
+    if supported_postgres_version(server_version_num) {
+        Ok(())
+    } else {
+        Err(DatabaseError::UnsupportedServer)
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ApplicationDatabase {
@@ -244,6 +309,18 @@ impl ApplicationDatabase {
             .connect_with(options.disable_statement_logging())
             .await
             .map_err(|_| DatabaseError::Connection)?;
+        if backend == Backend::Postgres {
+            // Refuse an unsupported server before migrating anything into it.
+            let version: String =
+                sqlx::query_scalar("SELECT pg_catalog.current_setting('server_version_num')")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|_| DatabaseError::Connection)?;
+            if let Err(error) = require_supported_postgres(&version) {
+                pool.close().await;
+                return Err(error);
+            }
+        }
         Ok(Self {
             pool,
             backend,
@@ -515,6 +592,104 @@ mod tests {
             assert_eq!(error, DatabaseError::Configuration);
             assert!(!error.to_string().contains("secret"));
         }
+    }
+
+    #[test]
+    fn only_postgres_18_servers_are_supported() {
+        for supported in ["180000", "180006", "189999"] {
+            assert!(supported_postgres_version(supported));
+        }
+        for unsupported in ["170011", "190000", "90624", "", "18.6", "-180006"] {
+            assert!(!supported_postgres_version(unsupported));
+        }
+        // The startup refusal path for servers reporting another release.
+        assert_eq!(require_supported_postgres("180006"), Ok(()));
+        for reported in ["170011", "190000", "not-a-version"] {
+            assert_eq!(
+                require_supported_postgres(reported),
+                Err(DatabaseError::UnsupportedServer)
+            );
+        }
+        let message = DatabaseError::UnsupportedServer.to_string();
+        assert_eq!(
+            message,
+            "unsupported PostgreSQL server version; Lytronaut requires PostgreSQL 18"
+        );
+    }
+
+    #[test]
+    fn separate_password_is_exact_encoded_and_never_ambiguous() {
+        fn decode(encoded: &str) -> String {
+            let bytes = encoded.as_bytes();
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'%' {
+                    out.push(u8::from_str_radix(&encoded[i + 1..i + 3], 16).unwrap());
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            String::from_utf8(out).unwrap()
+        }
+        let password = "p%41@:/?#[] \\'\"雪+=&;x";
+        let base = "postgres://lytronaut@postgres:5432/lytronaut?sslmode=disable";
+        let configured = DatabaseConfig::Postgres(base.into())
+            .with_password(password)
+            .unwrap();
+        let debug = format!("{configured:?}");
+        assert_eq!(debug, "DatabaseConfig::Postgres(<redacted>)");
+        for form in ["p%41", "p%2541", "lytronaut@postgres", "%40"] {
+            assert!(!debug.contains(form));
+        }
+        let DatabaseConfig::Postgres(url) = configured else {
+            panic!("backend changed")
+        };
+        let parsed = AnyConnectOptions::from_str(&url).unwrap().database_url;
+        assert_eq!(decode(parsed.password().unwrap()), password);
+        assert_eq!(parsed.username(), "lytronaut");
+        assert_eq!(parsed.host_str(), Some("postgres"));
+        assert_eq!(parsed.port(), Some(5432));
+        assert_eq!(parsed.path(), "/lytronaut");
+        assert_eq!(parsed.query(), Some("sslmode=disable"));
+        PgConnectOptions::from_str(&url).unwrap();
+        let schema = DatabaseConfig::Postgres(base.into())
+            .with_schema("lytronaut")
+            .unwrap()
+            .with_password("generated")
+            .unwrap();
+        assert!(matches!(
+            schema,
+            DatabaseConfig::PostgresSchema { ref schema, .. } if schema == "lytronaut"
+        ));
+        for (url, password) in [
+            (
+                "postgres://lytronaut:inline@postgres/lytronaut",
+                "generated",
+            ),
+            ("postgres://postgres/lytronaut?user=lytronaut", "generated"),
+            (
+                "postgres://lytronaut@postgres/lytronaut?password=inline",
+                "generated",
+            ),
+            (base, ""),
+            (base, "line\nbreak"),
+            (base, &"x".repeat(1025)),
+        ] {
+            let error = DatabaseConfig::Postgres(url.into())
+                .with_password(password)
+                .unwrap_err();
+            assert_eq!(error, DatabaseError::Configuration);
+            assert!(!error.to_string().contains("inline"));
+            assert!(!error.to_string().contains("generated"));
+        }
+        assert!(
+            DatabaseConfig::Sqlite("catalog.db".into())
+                .with_password("generated")
+                .is_err()
+        );
     }
 
     async fn engine_contract(db: &ApplicationDatabase) {

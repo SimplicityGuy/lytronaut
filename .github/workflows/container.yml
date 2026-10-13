@@ -21,7 +21,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 100
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
@@ -47,6 +47,13 @@ jobs:
         run: mise exec -- just container-smoke "${{ matrix.arch }}" lytronaut:ci lytronaut:smoke-relay "$LYTRONAUT_TEST_REVISION" "$LYTRONAUT_EVIDENCE_DIRECTORY"
       - name: Verify native architecture, source and exercised programs
         run: mise exec -- just container-evidence "${{ matrix.arch }}" "$LYTRONAUT_TEST_REVISION" "$LYTRONAUT_EVIDENCE_DIRECTORY"
+      - name: Synthetic fixtures from the same cached build
+        run: mise exec -- just synthetic-fixtures "${{ matrix.arch }}" "$RUNNER_TEMP/lytronaut-fixtures"
+      - name: SQLite, PostgreSQL and external PostgreSQL Compose deployments with cross-backend restore
+        env:
+          LYTRONAUT_TEST_PREFIX: lytronaut-ci-deploy
+          LYTRONAUT_TEST_SCRATCH: ${{ runner.temp }}
+        run: mise exec -- just deployment-test "${{ matrix.arch }}" lytronaut:ci bind "$RUNNER_TEMP/lytronaut-fixtures" "$LYTRONAUT_EVIDENCE_DIRECTORY"
       - name: Preserve available evidence, including failed runs
         id: bundle
         if: always()

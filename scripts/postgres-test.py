@@ -2,7 +2,10 @@
 """Run actual PostgreSQL parity with exact counts; never silently skip a backend.
 
 Uses synthetic fixtures only. Every case runs on PostgreSQL with no exclusions;
-this focused recipe is not the full release/coverage gate.
+each group must report exactly its expected passes with zero failed, ignored or
+measured tests, and the total is computed from this case list. `just
+postgres-parity` supplies a disposable pinned server; this focused recipe is not
+the full release/coverage gate.
 """
 import os
 import re
@@ -13,6 +16,12 @@ from urllib.parse import unquote, urlsplit
 
 
 def main():
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        # Fault tests revoke file permissions (chmod 0o000 on ownership markers and
+        # journals) to prove fail-closed cleanup; root bypasses them, so a root run
+        # would fail for reasons unrelated to the code under test.
+        raise SystemExit("PostgreSQL parity must run as a non-root user: its restore "
+                         "fault cases rely on file permissions that root bypasses")
     url = os.environ.get("LYTRONAUT_TEST_POSTGRES_URL")
     if not url:
         raise SystemExit("LYTRONAUT_TEST_POSTGRES_URL must identify a disposable test database")
@@ -29,6 +38,7 @@ def main():
         ("storage", 7, ["-p", "lytronaut-storage", "--lib", "database::tests::postgres_", "--", "--ignored", "--test-threads=1"]),
         ("desktop", 1, ["-p", "lytronaut-storage", "--test", "desktop", "postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport_and_reopen", "--", "--exact", "--ignored", "--test-threads=1"]),
         ("http-api", 6, ["-p", "lytronaut-service", "--test", "api", "--", "--test-threads=1"]),
+        ("http-uploads", 3, ["-p", "lytronaut-service", "--test", "uploads", "--", "--test-threads=1"]),
         ("portable-matrix", 5, ["-p", "lytronaut-service", "--lib", "bundle::portable_bundle_tests::postgres_matrix_", "--", "--ignored", "--test-threads=1"]),
         # Includes a real SIGKILL of a child test process mid-restore; the child's
         # output goes to its fixture log, so exactly one result line is parsed here.
