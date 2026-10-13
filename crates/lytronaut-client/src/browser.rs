@@ -911,6 +911,8 @@ struct Ui {
     stage_generation: Rc<RefCell<u64>>,
     stage_abort: Rc<RefCell<Option<AbortController>>>,
     busy: RwSignal<bool>,
+    /// This mount's import action lane is occupied (upload, recovery or retry).
+    import_pending: RwSignal<bool>,
     job: RwSignal<String>,
     progress: RwSignal<u64>,
     total: RwSignal<u64>,
@@ -1026,6 +1028,7 @@ impl Ui {
             stage_generation: Rc::default(),
             stage_abort: Rc::default(),
             busy: RwSignal::new(false),
+            import_pending: RwSignal::new(false),
             job: RwSignal::new(String::new()),
             progress: RwSignal::new(0),
             total: RwSignal::new(1),
@@ -2616,10 +2619,14 @@ enum ActionLane {
 thread_local! {
     static ACTIONS: RefCell<[bool; 4]> = const { RefCell::new([false; 4]) };
 }
-struct ActionGuard(ActionLane);
+/// Releases the lane and, for imports, the launching mount's pending indicator.
+struct ActionGuard(ActionLane, Option<RwSignal<bool>>);
 impl Drop for ActionGuard {
     fn drop(&mut self) {
         ACTIONS.with(|owners| owners.borrow_mut()[self.0 as usize] = false);
+        if let Some(pending) = self.1 {
+            let _ = pending.try_set(false);
+        }
     }
 }
 fn launch<F, Fut>(ui: Ui, lane: ActionLane, factory: F)
@@ -2651,7 +2658,13 @@ where
     }
     // Acquire synchronously before creating a future. Accepted side effects are
     // never overwritten or cancelled by browse navigation or owner replacement.
-    let guard = ActionGuard(lane);
+    // Import controls stay disabled for exactly as long as their lane is held, so a
+    // selection is never offered and then rejected as still pending.
+    let pending = matches!(lane, ActionLane::Import).then_some(ui.import_pending);
+    if let Some(pending) = pending {
+        pending.set(true);
+    }
+    let guard = ActionGuard(lane, pending);
     let task = factory();
     spawn_local(async move {
         let _guard = guard;
@@ -2787,6 +2800,7 @@ fn Workspace() -> impl IntoView {
     let album_offset = s.album_offset;
     let album_target = s.album_target;
     let busy = s.busy;
+    let import_pending = s.import_pending;
     let job = s.job;
     let progress = s.progress;
     let total = s.total;
@@ -2802,12 +2816,12 @@ fn Workspace() -> impl IntoView {
                 <h2>"ALBUMS"</h2>
                 {move||albums.get().into_iter().map(|album|{let selected=ui().album;let id=album.id.as_str().to_owned();let click_id=id.clone();view!{<button class="rail-item album-item" aria-pressed=move||if selected.get().as_deref()==Some(&id){"true"}else{"false"} on:click=move |_|{let u=ui();u.album.set(Some(click_id.clone()));u.sort.set("order".into());u.request_page(0);}>{format!("{}{} · {}",album.name,if album.name_truncated{" [truncated]"}else{""},album.captures)}</button>}}).collect_view()}
                 <div class="sidebar-pagination" aria-label="Album pages"><button id="album-prev" disabled=move||album_target.get()==0 on:click=move |_|{let u=ui();u.request_albums(album_target.get_untracked().saturating_sub(PAGE_SIZE),None);}>"Previous albums"</button><span id="album-page">{move||format!("Page {}",album_offset.get()/PAGE_SIZE+1)}</span><button id="album-next" disabled=move||album_next.get().is_none() on:click=move |_|{let u=ui();u.request_albums(album_next.get_untracked().unwrap_or(0),None);}>"Next albums"</button></div>
-                <div class="import"><h2>"IMPORT LIBRARY"</h2><label for="directory">"Library directory"</label><input id="directory" type="file" multiple=true node_ref=directory_ref disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::Directory,files).await}});input.set_value("");}/>
-                    <label for="zip">"ZIP library archive"</label><input id="zip" type="file" accept=".zip,application/zip" disabled=move||busy.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::ZipLibrary,files).await}});input.set_value("");}/>
+                <div class="import"><h2>"IMPORT LIBRARY"</h2><label for="directory">"Library directory"</label><input id="directory" type="file" multiple=true node_ref=directory_ref disabled=move||busy.get()||import_pending.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::Directory,files).await}});input.set_value("");}/>
+                    <label for="zip">"ZIP library archive"</label><input id="zip" type="file" accept=".zip,application/zip" disabled=move||busy.get()||import_pending.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::ZipLibrary,files).await}});input.set_value("");}/>
                     <Show when=move||!job.get().is_empty()><label for="import-progress">"Upload / committed bytes"</label><progress id="import-progress" value=move||progress.get() max=move||total.get()></progress><span>{move||format!("{} / {} bytes",progress.get(),total.get())}</span>
                         <button disabled=move||!busy.get() || job.get().is_empty() on:click=move |_|{let u=ui();u.cancel_upload();let task=u.clone();launch(u,ActionLane::ImportCancel,move || async move{task.net.mutation(&format!("/imports/{}/cancel",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Cancel import"</button>
-                        <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.status_job().await});}>"Recover import status"</button>
-                        <button disabled=move||busy.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.net.mutation(&format!("/imports/{}/finish",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Retry catalog adaptation"</button>
+                        <button disabled=move||busy.get()||import_pending.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.status_job().await});}>"Recover import status"</button>
+                        <button disabled=move||busy.get()||import_pending.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.net.mutation(&format!("/imports/{}/finish",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Retry catalog adaptation"</button>
                         <p>"Interrupted uploads: recover status, then reselect the original directory or ZIP to start a new bounded import. Completed original bytes deduplicate."</p>
                     </Show>
                 </div>
