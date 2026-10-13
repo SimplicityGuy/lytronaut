@@ -113,18 +113,31 @@ browser() {
     # shellcheck source=/dev/null
     source "$cov/native-env.sh"
     npm ci --ignore-scripts --prefix scripts/browser
+    # Every suite runs even after an earlier failure so one CI pass yields complete
+    # evidence; the step still fails if any suite failed.
+    local failed=()
     run() {
         local name=$1; shift
         [[ -f $cov/wasm/$name/dist/lytronaut_client_bg.wasm ]] || die "run \"scripts/coverage.sh wasm\" first ($name)"
-        env -u LYTRONAUT_VIDEO_PRIVATE_ROOT -u LYTRONAUT_PRIVATE_SEALED_ROOT -u LYTRONAUT_PRIVATE_TEST \
-            LYTRONAUT_CLIENT="$cov/wasm/$name/dist" LYTRONAUT_COVERAGE_DIR="$cov/wasm/$name/profraw" "$@"
+        if ! env -u LYTRONAUT_VIDEO_PRIVATE_ROOT -u LYTRONAUT_PRIVATE_SEALED_ROOT -u LYTRONAUT_PRIVATE_TEST \
+            LYTRONAUT_CLIENT="$cov/wasm/$name/dist" LYTRONAUT_COVERAGE_DIR="$cov/wasm/$name/profraw" "$@"; then
+            failed+=("$name: $*")
+        fi
     }
     run client bash scripts/browser-test.sh
+    # Real WebGPU execution through Chrome's SwiftShader software adapter, plus the
+    # injected adapter/device/pipeline/device-loss faults. Not a physical-GPU result.
+    run client env LYTRONAUT_GPU_TEST=1 LYTRONAUT_GPU_ADAPTER=google/swiftshader \
+        LYTRONAUT_CHROME_ARGS=--enable-unsafe-webgpu LYTRONAUT_TEST_ORIGIN=http://127.0.0.1:3027 bash scripts/browser-test.sh
     run client node scripts/live-photo-test.cjs
     run client node scripts/video-test.cjs
     rm -rf "$cov/owner-evidence" && mkdir -p "$cov/owner-evidence"
     run harness env LYTRONAUT_TEST_REVISION="$(git rev-parse HEAD)" LYTRONAUT_OWNER_TEST=1 \
         LYTRONAUT_OWNER_EVIDENCE="$cov/owner-evidence" bash scripts/live-photo-owner-evidence.sh
+    if ((${#failed[@]})); then
+        printf 'coverage: browser suite failed: %s\n' "${failed[@]}" >&2
+        exit 1
+    fi
 }
 
 report() {
@@ -139,7 +152,14 @@ report() {
     for build in "${WASM_BUILDS[@]}"; do
         local name=${build%%:*} dir="$cov/wasm/${build%%:*}"
         local profiles=("$dir"/profraw/*.profraw)
-        [[ -e ${profiles[0]} ]] || die "no WASM profiles for $name"
+        if [[ ! -e ${profiles[0]} ]]; then
+            # Still report native/union numbers; the gate fails on the missing build.
+            echo "coverage: no WASM profiles for $name" >&2
+            : > "$dir/coverage.lcov"
+            record "wasm_${name}_profiles" 0 builds
+            args+=(--wasm "$name=$dir")
+            continue
+        fi
         "$tools/llvm-profdata" merge -sparse -failure-mode=all "${profiles[@]}" -o "$dir/merged.profdata" 2> "$dir/merge.stderr"
         "$tools/llvm-cov" export -format=lcov -instr-profile "$dir/merged.profdata" -object "$dir/application.wasm" > "$dir/coverage.lcov" 2> "$dir/export.stderr"
         if grep -iE 'warning|error|mismatch|malformed' "$dir/merge.stderr" "$dir/export.stderr"; then
