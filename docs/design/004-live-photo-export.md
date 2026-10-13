@@ -1,9 +1,12 @@
 # Portable Live Photo export
 
 Status: implementation in progress. Release CPU-mode focus interaction is **not met**
-on the merged tree (p95 138-150 ms against ≤100 ms). Apple Photos import, VoiceOver,
-the full counted memory budget and GPU submit-to-present latency remain unverified
-(see the final sections).
+on the merged tree (p95 138-150 ms against ≤100 ms). Apple Photos recognition is an
+owner-reported pass. VoiceOver is **not verified**; the owner signed it off as out of
+scope for the initial version. iOS is out of scope for this release. The counted
+memory budget (partial) and GPU submit-to-present latency (unverified) are accepted
+by the owner as known limitations; neither is proven (see
+[Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13)).
 
 A Live Photo is a still image plus a paired movie. Neither an ordinary JPEG nor
 an ordinary MOV alone is advertised as a Live Photo. Lytronaut packages the complete
@@ -335,8 +338,8 @@ production mux/encoder core was separately exercised with a test-only synthetic
 JPEG provider: ascending reordered blue/red/green playback and key time 1.0 s
 were read correctly; the ZIP passed an independent `unzip -t` check. These are
 format-spike results, not a substitute for final native/WASM/API/UI validation or
-an isolated Photos-library import with visible working motion. No iOS device
-verification is claimed.
+an isolated Photos-library import with visible working motion. iOS is not
+verified and not supported in this release (out of scope by owner sign-off).
 
 The feature-only shared-reader tests run before owner observation collection on
 public same-realm offset views, isolated same-origin cross-realm offset views and
@@ -634,15 +637,13 @@ evidence directory, not in the repository or CI.
 | Rust/WASM and native build | Pass | Debug native service and examples, production and `test-harness` WASM, release service and WASM; only the feature glue exports the GPU acquisition hook |
 | Real-GPU regression | Pass | Adapter `apple`/`metal-3`; `chrome://gpu` reports WebGPU hardware accelerated on ANGLE Metal, no software renderer. The GPU browser suite, `live-photo-gpu-owner-test`, `live-photo-test.cjs` and the CPU browser suite passed |
 | Automatic CPU/GPU selection | Pass | No renderer buttons; five injected faults fell back to CPU within 742 ms; device loss recovered in 52 ms; destroy-reentry kept the newer capture |
-| Counted 64 MiB transient / 32 MiB retained | **Partial** | See below |
-| Performance (design 001 targets) | **Not met** | Release CPU-mode focus interaction p95 is 138-150 ms on the merged tree (target ≤100 ms). GPU submit-to-present is not verified. Other targets: see below |
-| Apple Photos recognition | **Not run** | See below |
-| VoiceOver | **Not run** | Cannot be automated |
+| Counted 64 MiB transient / 32 MiB retained | **Partial; accepted as a known limitation, not proven** | See below and [Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13) |
+| Performance (design 001 targets) | **Not met** | Release CPU-mode focus interaction p95 is 138-150 ms on the merged tree (target ≤100 ms). GPU submit-to-present is not verified (accepted as a known limitation, not proven). Other targets: see below |
+| Apple Photos recognition | **Owner-reported pass** | Rebuilt pair `9fw-gate5-fbe615a`; see below |
+| VoiceOver | **Not verified** | Owner signed off as out of scope for the initial version (2026-10-13). The only accessibility evidence is the automated accessibility-tree (AXTree) inspection |
 
-Bead `lytronaut-re8.3` tracks the four open gates: the counted budget,
-performance including GPU submit-to-present, Apple Photos recognition and
-VoiceOver. Epic `lytronaut-re8` cannot ship to `main` until each gate passes with
-evidence or the owner accepts it in writing.
+Bead `lytronaut-re8.3` tracks these gates; their final state is in
+[Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13).
 
 **Counted budget.** Owners recorded in the mounted-UI trace were summed per
 phase only when live at the same time. The three owner shapes had zero dropped
@@ -671,7 +672,10 @@ submit to the second animation frame callback is only a proxy (headless p95 94.9
 and no presentation was correlated. A headful trace run failed exact pixel
 comparison at device scale 2; it is not counted.
 
-**Apple Photos is not verified.** The pair to import is the rebuilt synthetic pair
+**Apple Photos recognition is an owner-reported pass** (2026-10-13). The owner
+reported importing the rebuilt pair `9fw-gate5-fbe615a` (`focus.JPG` + `focus.MOV`)
+into an isolated Photos library, where it showed as a Live Photo. No further detail
+was recorded. The manual procedure used follows. The pair to import is the rebuilt synthetic pair
 in the local evidence folder `lytronaut-evidence/9fw-gate5-fbe615a/`. It was built
 by `just live-photo-apple` from `fbe615a` code; its `SHA256SUMS` and `README.md`
 there give hashes and exact steps. On that pair, the Apple resource loader decoded
@@ -692,11 +696,10 @@ before import. A person must do the following:
    and the motion plays.
 4. Reopen the usual library as the default and delete the test library.
 
-**VoiceOver is not verified.** A person must check that VoiceOver announces the
-Live Photo export, cancel and download controls with useful labels. It must also
-announce progress, cancellation, unsupported-capability and completion messages
-from the status region, and keep a logical focus order through export and
-cancellation.
+**VoiceOver is not verified.** The owner signed it off as out of scope for the
+initial version (2026-10-13). Labels, announcements and focus order are not
+claimed. The only accessibility evidence is the automated accessibility-tree
+(AXTree) inspection in the browser suite.
 
 ### Import-lane regression
 
@@ -757,5 +760,41 @@ but host load is not established as the cause. The merge changed no client or
 format code, but it did change the service, which is on the measured path. An
 A/B run of `623f2b9` and the merged code on a quiet host is required
 (`lytronaut-re8.3` item 10). No A/B run was possible here: load average was 8.5
-when it was attempted. Apple Photos, VoiceOver, the full counted
-budget and GPU submit-to-present remain unverified.
+when it was attempted. At the time of this run, Apple Photos, VoiceOver, the full
+counted budget and GPU submit-to-present were unverified; see
+[Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13)
+for their final state.
+
+## Owner results and accepted limitations (2026-10-13)
+
+Final state of the `lytronaut-re8.3` gates:
+
+| Gate | State |
+| --- | --- |
+| Apple Photos recognition | **Owner-reported pass.** The rebuilt pair `9fw-gate5-fbe615a` showed as a Live Photo in an isolated Photos library. No further detail recorded |
+| VoiceOver | **NOT VERIFIED.** Owner signed off as out of scope for the initial version (2026-10-13). Only automated AXTree inspection exists |
+| iOS | **Out of scope** for this release (owner sign-off). Not verified and not supported |
+| Counted 64 MiB / 32 MiB budget | **Accepted limitation (written), not proven** |
+| GPU submit-to-present ≤16.7 ms | **Accepted limitation (written), not proven** |
+
+The owner accepted the two limitations in writing: "Memory and GPU gates: accept
+the partial memory budget and unverified GPU submit-to-present". The scope is
+exactly:
+
+- **Counted 64 MiB transient / 32 MiB retained accounting:** stays **partial** as
+  documented above. Observed peaks were 24.96 MiB transient and about 22.7 KB
+  retained owners plus the 3.75 MiB Blob bound. These are not measured: an 8 MiB
+  admitted source, canvas/VideoFrame backing, JS string/Blob storage, allocator
+  overlap, opaque decoder pools and the native Live Photo render peak. It is
+  **not** claimed as full proof.
+- **GPU submit-to-present ≤16.7 ms:** stays **unverified**. Only a proxy exists
+  (headless p95 94.9 ms, `physicalPresentationMeasured=false`). It is **not**
+  claimed as met.
+
+Neither limitation is upgraded to passed. Still **open**:
+
+- Focus latency under grid-image load.
+- A private-corpus export rerun at the current source.
+- Checking the 1138×1842 first frame against the H.264 Level 5 per-frame limits.
+- Live Photo export on PostgreSQL end to end.
+- Release CPU-mode focus interaction p95: **not met** (target ≤100 ms).

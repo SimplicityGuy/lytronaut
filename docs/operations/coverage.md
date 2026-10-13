@@ -53,6 +53,23 @@ recomputed module signature differs, or a main-frame navigation without a
 preceding dump fails the suite. `browser-test.cjs` awaits the service's
 graceful SIGINT exit so the native profile is written.
 
+## Browser suites in the coverage run
+
+`just coverage-browser` runs every suite even after one fails, then fails the
+step if any did, so one CI pass yields complete evidence. It runs:
+
+- the synthetic browser suite (including `scripts/sidebar-test.cjs` and the
+  fault-injection flows in `scripts/flows/`);
+- the same suite in GPU mode against Chrome's SwiftShader software WebGPU
+  adapter (`--enable-unsafe-webgpu`, `LYTRONAUT_GPU_ADAPTER=google/swiftshader`),
+  with the injected adapter, device, pipeline and device-loss faults;
+- the Live Photo and video codec suites;
+- the owner suite against the `coverage,test-harness` build.
+
+The SwiftShader run is real WebGPU API execution for coverage only. It is never
+a physical-GPU or hardware result; physical-GPU evidence comes only from the
+separate reference-host runs.
+
 ## What is excluded
 
 Only code that cannot run in a product build, each range itemised in the report:
