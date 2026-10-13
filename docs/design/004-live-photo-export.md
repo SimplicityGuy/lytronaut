@@ -65,8 +65,9 @@ the actual Rust-WASM path with the existing public synthetic AVC fixture and a
 test-only independently generated 2048×1024 all-key color fixture, including
 cancellation, unsupported codecs, actual software retry and complete pair
 download. It records WASM memory high water, declared references/coded geometry,
-maximum strip-copy bytes and decoder/frame closure. These programs still require execution against the final build;
-their presence alone is not compatibility evidence.
+maximum strip-copy bytes and decoder/frame closure. `live-photo-test.cjs` passed locally at `623f2b9`
+(macOS, Chrome 155) and in the Linux browser job of CI run 38425987841 at `a697acc`. The Apple
+verifier passed locally at `35c7770` and again with the `5896bfc` encoder.
 
 ## Repeatable validation recipes
 
@@ -101,7 +102,7 @@ The 30-capture catalog, 24-item pages and JPEG baseline are preserved in each ru
 the actual name-sort UI selects the target deterministically. CI preserves its synthetic
 aggregate, source archive, raw WASM and generated glue in a bounded 128 MiB evidence
 archive. Feature identity and hashes are distinct from production artifacts. This
-source addition still requires actual browser validation; pagehide is not owner
+harness passed locally at `623f2b9` and in CI run 38425987841 at `a697acc`; pagehide is not owner
 disposal. These tests do not prove the counted application allocation budget or
 Photos GUI recognition. Optional whole-browser observations are separate; opaque
 codec/driver memory and RSS are not a whole-process acceptance limit.
@@ -279,8 +280,8 @@ small mounted-UI trace. The three-case `f995ced` source then passed all five CI/
 120/242/382 events for small/large/padded, sources 992/32,208/33,408 bytes,
 13 stages and zero drops in each case, with eight decoders closed, 40 frames closed
 and three downloads per case. Concurrent thumbnail/detail fetches are included;
-these events are not exclusively export fetches. The new reader fast path still
-awaits runtime verification. Private traces, parse/string/copy attribution and
+these events are not exclusively export fetches. The reader fast path has since
+run in the owner suites locally at `623f2b9` and in CI run 38425987841 at `a697acc`. Private traces, parse/string/copy attribution and
 the full counted application budget proof remain pending.
 
 Current export metadata admission inherits format defaults (2 MiB JSON,
@@ -339,7 +340,7 @@ The feature-only shared-reader tests run before owner observation collection on
 public same-realm offset views, isolated same-origin cross-realm offset views and
 custom arrays. They preserve absent/incorrect Content-Length behavior and assert
 oversize header/chunk rejection, stream interruption and actual aborted-signal
-mapping. The fast path and these new tests still await runtime evidence; reader
+mapping. These reader tests passed in the owner suites locally at `623f2b9` and in CI run 38425987841 at `a697acc`; reader
 cleanup behavior and source/metadata admission are unchanged.
 
 Pinned Rust 1.99.0 source audit is recorded in the external receipt
@@ -358,10 +359,10 @@ All nine public reader checks passed; small/large/padded traces had 98/212/396
 events, source lengths 992/32,160/33,360 bytes, zero drops and observed copied JS
 backing maxima zero. Each case retained eight closed decoders, 40 closed frames
 and three downloads. The new pre-rejection/platform/array/category observations
-remain source-only until a fresh actual run; these prior traces do not prove the
+were collected in the owner suites locally at `623f2b9` and in CI run 38425987841 at `a697acc`; these traces do not prove the
 full counted budget.
 
-### Public real-encoder JPEG rejection experiment (source-only candidate)
+### Public real-encoder JPEG rejection experiment
 
 The owner recipe builds its feature program once, runs the unchanged three-shape
 owner suite, then a separate public experiment. The standalone
@@ -407,8 +408,9 @@ reports even after test failure, marks them partial with the original test exit
 status, checks a temporary archive against 128MiB, then atomically renames it.
 Packaging failure also fails successful tests; incomplete/stale archives are
 removed. The existing private CI artifact uploads on failure only when a finished
-archive exists. No Photos/private runtime or empirical rejection result is
-claimed by this source-only candidate.
+archive exists. Run locally at `623f2b9`, both fixed trials (32 and 64 Mbps) reached
+`proven_rejection` and the experiment was accepted; it also passes in the CI owner
+job. No Photos or private-corpus result is claimed.
 
 Before this candidate, `d03fc195` passed all five checks: CI `38232888965` and
 containers `38232888971`. Its three geometry reports had 16 Rust stages and zero
@@ -417,7 +419,7 @@ case included eleven concurrent 128×128 canvas observations alongside the
 2048×1024 selected export; matching observations remain partial logical capacity
 evidence, not full counted-memory proof.
 
-### Feature-only retained UI inventory (source candidate)
+### Feature-only retained UI inventory
 
 The `test-harness` build borrows the actual mounted `Ui` synchronously at browser
 Live Photo export entry and after complete-download status. The hook has no await,
@@ -462,18 +464,18 @@ Existing JS Blob observations give logical sizes, not physical sharing. The fixe
 
 The existing `just live-photo-owner-test` recipe runs the scoped native command
 `cargo test --locked -p lytronaut-client --features test-harness retained_observations::tests`
-before the single feature WASM build. Five native feature tests (execution/count
-pending) cover reserved capacity greater than length, distinct owners
+before the single feature WASM build. Five native feature tests (5 passed locally at
+`35c7770`; also run by the CI owner job) cover reserved capacity greater than length, distinct owners
 with equal contents, empty options with reserved empty vectors, UTF16 accounting,
 private-wrapper capacity access and arithmetic overflow. The existing three UI
 cases require both complete snapshots and numeric target-layout receipts; they
-add no geometry/codec workload. This source candidate has not run yet and provides
+add no geometry/codec workload. It ran locally at `623f2b9` and in CI run 38425987841 at `a697acc`, and provides
 **partial retained evidence only**, never total 32MiB/64MiB acceptance. The sidebar
 list accumulation and parsed-JSON phase bounds identified in the historical
 `0f2fba4` audit remain unresolved; no admissions or navigation changed here.
 
 
-### Bounded sidebar ownership (source candidate)
+### Bounded sidebar ownership
 
 Library and album sidebars retain one 24-item page each. Previous/Next controls
 preserve access to all pages; library labels use the absolute page offset. Paging
@@ -495,11 +497,11 @@ public capture/source fixture. It exercises two-page navigation, absolute labels
 off-page selections, delayed responses after Previous/library changes, capture
 selection during pending album paging and failed-page retry. All traffic stays
 on the existing loopback service; no fixture mutations or private intake are
-used. The ordinary stale-page reload test remains intact. These new source tests
-have not run; CI account startup and local build headroom remain blocked.
+used. The ordinary stale-page reload test remains intact. The sidebar case passed
+in the CPU browser suite locally at `623f2b9` and in CI run 38425987841 at `a697acc`.
 
 
-### Feature-only completed metadata inventories (source candidate)
+### Feature-only completed metadata inventories
 
 The observer's constant-time `enabled()` guard runs before any metadata/string
 walk. Inactive feature builds perform no metadata traversal. The hook borrows
@@ -550,8 +552,9 @@ overflow. `just live-photo-owner-test` runs
 `cargo test --locked -p lytronaut-format --features test-harness capacity_observations::metadata_tests`
 before the existing single feature WASM build. The same three public mounted UI
 cases require the five phase rows, five plane descriptors and source-length
-correspondence. Tests and observations are source-only candidates; their execution
-and the remaining 64MiB transient/32MiB retained acceptance are pending.
+correspondence. The six native tests passed locally at `35c7770` (and in the CI owner
+job); the observations were collected locally at `623f2b9` and in CI run 38425987841 at `a697acc`. The
+64MiB transient/32MiB retained acceptance is still pending (`lytronaut-re8.3`).
 
 ### Display-only Blob ownership regression candidate
 
@@ -591,9 +594,11 @@ reentrant Main/Selected/library cancellation, pre-first-poll action disposal,
 and an actually accepted backup mutation followed by mounted recovery. Main
 results are compared with an independent rating endpoint, and library tests
 assert the issued Main/Albums alias as well as selected DOM state. Native Image
-constructor/decode failures must actually be observed. All new tests remain
-unexecuted. The absent-GPU page explicitly reports renderer-destroy reentry as
-pending; it cannot stand in for an actually acquired device test.
+constructor/decode failures must actually be observed. All of these tests passed
+in the owner suites locally at `623f2b9` and in CI run 38425987841 at `a697acc`.
+The import-lane remount case was added at `b81e689`. The absent-GPU page
+explicitly reports renderer-destroy reentry as pending; it cannot stand in for an
+actually acquired device test.
 
 The GPU acquisition guard is shared by mounted owners. A timed-out adapter or
 request-device bridge keeps its admission slot until creation settles and any
@@ -611,8 +616,8 @@ generated WASM and glue hashes. Actual GPU absence fails this recipe; the Linux
 CPU owner suite and its three geometry cases remain separate. The ordinary GPU
 browser path also tests a real acquired device's synchronous destroy callback
 selecting a newer capture during AVC adoption, independently of its existing
-successful AVC adoption test. These new tests are source-only and unexecuted;
-they do not establish physical memory, counted 64/32 MiB, performance or Photos
+successful AVC adoption test. Both passed locally on the real Apple GPU at
+`623f2b9`; the GPU owner recipe does not run in Linux CI. They do not establish physical memory, counted 64/32 MiB, performance or Photos
 acceptance.
 
 ## Local reference-host validation (2026-10-13, source `623f2b9`)
@@ -659,8 +664,8 @@ submit to the second animation frame callback is only a proxy (headless p95 94.9
 and no presentation was correlated. A headful trace run failed exact pixel
 comparison at device scale 2; it is not counted.
 
-**Apple Photos is not verified.** For the current synthetic pair, the resource
-loader recognizes it (`livePhotoResourceRecognized=true`) and rejects a mismatched
+**Apple Photos is not verified.** The synthetic pair passed the resource loader
+at `35c7770`, and again with the `5896bfc` encoder. The loader recognizes it (`livePhotoResourceRecognized=true`) and rejects a mismatched
 pair. Automation could not create an isolated library: PhotoKit library creation
 needs a private entitlement and UI scripting is unavailable. A guarded launch
 pointed at an isolated library still opened system libraries, so it was stopped
@@ -687,5 +692,43 @@ without the upload busy flag. The directory and ZIP inputs stayed enabled, and a
 new selection was cleared and rejected as "Previous operation still pending."
 This was the intermittent preserved-import timeout. The browser test now holds
 the real recovery response and requires the inputs and Recover button to be
-disabled while it is pending; it failed before the fix. Import controls now stay
-disabled for exactly as long as their mount holds the lane.
+disabled while it is pending; it failed before the fix. The import lane is
+page-global, so a mount created while another mount's import action is pending
+must also disable its controls. The first fix (`623f2b9`) tracked only the
+launching mount; `b81e689` makes every mount follow the page-global lane, and
+the owner lifetime test checks this across a remount. Another tab and
+server-side jobs are not covered; launch still rejects a busy lane with a message.
+
+### Review fixes
+
+- **PostgreSQL:** the download handler read the job kind with a SQLite-only `?`
+  placeholder, so every Live Photo download failed on PostgreSQL (`6046bf6`). Four
+  Live Photo API cases (create/download, DELETE, in-flight cancel, failed plane)
+  are now a separate exact-count group in `just postgres-parity` (`48bcc66`).
+  Admission uses the epic's reserved-space, free-floor and job-ordering accounting
+  with the 18 MiB bundle reservation.
+- **H.264 `idr_pic_id`:** it was derived from source plane parity, so consecutive
+  IDR pictures could share an identifier (planes 2, 0, 1 gave 0, 0, 1). It now
+  alternates by playback position (`5896bfc`), and a slice-header test enforces
+  H.264 7.4.3. The JPEG is unchanged; the MOV bytes change only in
+  those slice headers. No golden hashes are committed.
+
+### Merged-tree validation (`4761d42`, epic `7e65524` incorporated)
+
+The tree was validated locally after merging the SQLite/PostgreSQL epic. Code is
+identical to `b81e689`; the only later change is documentation.
+
+| Check | Result |
+| --- | --- |
+| `just check` | Passed: 170 tests passed, 0 failed; 33 opt-in PostgreSQL/private tests ignored by default |
+| `just postgres-parity` (pinned PostgreSQL, disposable container removed) | 45 passed, 0 failed, 0 ignored, including the 4 Live Photo cases |
+| CPU browser suite, GPU browser suite (`apple`/`metal-3`), `live-photo-gpu-owner-test`, `live-photo-test.cjs` | Passed |
+| Owner suite (3 shapes, JPEG rejection experiment, import-lane remount) | Passed; counted peaks unchanged (24.96 MiB padded, 24.63 MiB large) |
+| Release focus interaction, GPU mode | p95 83.9 ms (≤100 ms) |
+| Release focus interaction, CPU mode | **Failed the 100 ms target**: p95 145 ms then 138 ms on two runs |
+
+The CPU-mode runs happened under host load from unrelated processes (load average
+about 7). The same check measured 88.6 ms at `623f2b9`, and the merge changed no
+client or format code. This is not counted as a pass, and it stays in the open
+performance gate (`lytronaut-re8.3`). Apple Photos, VoiceOver, the full counted
+budget and GPU submit-to-present remain unverified.
