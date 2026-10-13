@@ -268,12 +268,18 @@ its case list:
   restart; DELETE immediately after create (the job may already have finished),
   which never offers a half-pair; and an out-of-range plane index failing without
   output and surviving restart. Follow-up `lytronaut-0f6` strengthens the last two.
-- Five portable backup cases with a PostgreSQL destination or source:
+- Seven portable backup cases with a PostgreSQL destination or source:
   SQLite→PostgreSQL, PostgreSQL→SQLite and PostgreSQL→PostgreSQL round trips, the
-  four exact version-1 legacy forms, and near-32 MiB legacy files (one large cell;
-  many small rows) restored onto PostgreSQL. SQLite-only counterparts run by default.
-- Nineteen restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
-  archives, quota admission and mid-restore quota, cancellation and shutdown, a
+  four exact version-1 legacy forms, near-32 MiB legacy files (one large cell;
+  many small rows) restored onto PostgreSQL, and a library whose originals exceed
+  the former single-upload bundle ceiling round-tripped SQLite→PostgreSQL and
+  PostgreSQL→SQLite (`lytronaut-lbk`). SQLite-only counterparts run by default.
+- Twenty-one restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
+  archives, free-space admission refusals with their shortfall and mid-restore
+  quota, a library beyond the single-upload budgets and file count archived,
+  downloaded in bounded frames and restored through the production jobs, a
+  logical catalog beyond the 288 MiB section failing at backup time without an
+  artifact, cancellation and shutdown, a
   real SIGKILL of a restoring child process with restart recovery, publish and
   DELETE, owner-revoked (denied) cleanup, restricted DROP refused by an unrelated
   dependent object, failing and ambiguous final status UPDATE, late DELETE racing

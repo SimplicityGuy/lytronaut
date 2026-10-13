@@ -87,19 +87,100 @@ pool, intake/adaptation work and database/container overhead. No smaller implici
 legacy cell/row cap is introduced to simplify that accounting. Near-limit fixtures
 and measured concurrent memory are still required validation gates.
 
-Version-2 transport admission includes 288 MiB catalog bytes, a 60-byte header and
-40 bytes for each admitted original, in addition to configured encoded payload.
-Archive reservation includes both the logical spool and its archive copy plus
-framing and original bytes. Restore reservation includes two declared archive
-sizes plus the maximum logical spool. These staging reservations are deliberately
-fixed upper bounds, not measured sizes: an archive job reserves its unique original
-bytes plus 2 x 288 MiB (spool and archive copy at the v2 catalog maximum) plus
-framing, and a restore reserves 2 x the declared upload plus 288 MiB, even for a
-small catalog. Admission therefore needs that much free staging space. SQL database/index storage is deployment
+Staging reservations are deliberately fixed upper bounds, not measured sizes; see
+[Bundle size and admission](#bundle-size-and-admission) for what they are and why
+no library-size ceiling applies. SQL database/index storage is deployment
 storage too; these application reservations are not a physical bound on PostgreSQL
 WAL/index growth. Cleanup retains reservations until every owned filesystem and
 SQL namespace removal succeeds. Failed uploads use that same cleanup path rather
 than releasing quota after a best-effort unlink.
+
+## Bundle size and admission
+
+Decision (`lytronaut-lbk`, owner, 2026-10-13): a lossless backup and its restore
+work for a library of any size. There is no documented library-size limit; the
+only refusal is that the work volume genuinely lacks the space the job needs.
+The single-upload budgets (`LYTRONAUT_UPLOAD_BYTES`, `LYTRONAUT_ENCODED_BYTES`)
+protect one browser import and no longer bound a bundle; the aggregate import and
+per-asset export budget (`LYTRONAUT_RESERVED_BYTES`) no longer bounds a whole-library
+archive or restore either.
+
+**One stream file, not a ZIP.** The bundle stays a single `.lytronaut` file in the
+framed format above: a 60-byte header, the catalog section, then for each unique
+original a 40-byte (SHA-256, little-endian u64 length) record and its bytes. Every
+length is a u64 and nothing in the format stores a 32-bit size or offset, so there
+is no 4 GiB boundary and no ZIP64 question; the format is not meant to be opened
+with `unzip`, Archive Utility or any other tool. The only ZIP writer (the Live
+Photo pair) is capped well below 4 GiB, and the intake ZIP reader (which accepts
+ZIP64) reads browser imports, legitimately bounded by the single-upload budget.
+Creation, download and restore each move bytes through one fixed 64 KiB buffer per
+transfer (`copy_checked`, the download body), hashing as they go; no step holds an
+original, the bundle or a size-proportional buffer in memory. A restore upload is
+written frame by frame to its owned file and never accumulated. Resuming an
+interrupted upload or download is not supported; the transfer is restarted.
+
+**Real disk needs.** For `O` bytes of unique originals, `n` of them, and the v2
+catalog maximum `C` = 288 MiB, creation keeps the logical spool (at most `C`), the
+inventory spool (`40n`) and the growing artifact (`60 + catalog + 40n + O`) on the
+work volume at once, so it reserves `O + 80n + 60 + 2C`. Doubling applies only to
+the bounded catalog and the 40-byte inventory records, never to originals. A restore of a `D`-byte upload keeps the upload, the extracted
+originals and logical spool (together at most `D`) and, on SQLite, the destination
+catalog file, so it reserves `2D + C`; the `C` is headroom for that SQLite catalog,
+not a proved bound (a PostgreSQL destination grows database storage instead). Both
+are upper bounds held for the whole job and released only by owned cleanup.
+
+**Admission.** An archive or restore is admitted when the work volume's available
+space is at least its reservation plus every active export reservation plus
+`LYTRONAUT_FREE_FLOOR`. Otherwise it is refused before any job, file or schema
+exists with `429 resource_limit`, retryable, carrying
+`shortfall {required_bytes, available_bytes}` (byte counts only, never a path).
+Restore accepts any positive `Content-Length` whose reservation fits a signed
+64-bit count (anything larger is invalid input); a declaration the volume cannot
+hold simply fails admission. Archive and restore
+rows are not counted against `LYTRONAUT_RESERVED_BYTES`, which keeps bounding
+imports and flatten/Live Photo exports. Space consumed by other processes after
+admission still surfaces as an ordinary retryable job failure with owned cleanup.
+
+**Any number of originals, at constant memory.** The capture snapshot streams the
+unique originals in bytewise ascending (SHA-256, length) order (PostgreSQL sorts
+with the `"C"` collation, so database locale cannot change it) to an on-disk
+inventory spool, and the bundle writes its records in that order. Restore accepts
+only strictly ascending records, rejecting a repeat or disorder while remembering
+just the previous record, spools them, and after the row import compares them
+with the restored catalog's own ascending inventory in one streamed pass. Neither
+side keeps a per-original structure in memory, and `LYTRONAUT_UPLOAD_FILES` (a
+per-upload count) no longer bounds a bundle. The header's u32 count (about
+4.29 billion unique originals) is the format's only count bound. Bundles written
+before this change already carry ascending records. Version-1 bundles keep their
+in-memory check, bounded by their 32 MiB catalog file (each original needs at
+least its 64-character digest there), not by any deployment budget.
+
+**Bounds that remain, and why they are not library-size limits.** Each original
+must be at most `LYTRONAUT_FILE_BYTES`, the same per-file policy the store applies
+when it verifies a blob for reading. The v2 logical catalog section is at most
+288 MiB (codec bound), accepted as this release's format bound. Measured through
+the real Desktop intake, adaptation and API mapping on a deliberately generous
+synthetic library (21 picture and 30 metadata columns, seven companion files per
+capture, album membership, events, bins, picture lists and import history per
+capture; `logical_catalog_capacity_measured_on_realistic_library`), a capture
+costs about 8.9 KB (8,937 bytes: 1,000 captures produced 8,936,813 catalog
+bytes, fixed overhead included), so the section holds about 33,800 captures.
+Seven files per capture is above the surveyed corpus's average of about 6.7, so a
+real library likely fits slightly more. Owner decision (2026-10-13): this bound is
+accepted for this release; splitting the catalog into chunks is a possible later
+format change, not part of this release. The test fails if capacity drops below
+30,000 captures. Exceeding the section fails
+at backup time, before any artifact exists, with a non-retryable `resource_limit`
+job error (`bundle-limit`), never a partial or corrupt bundle; its spools are
+removed and its quota released. The version-1 compatibility path keeps its 32 MiB
+catalog-file cap but no longer caps its originals.
+
+**Proof beyond 4 GiB.** `just large-bundle-test` (CI job `large-bundle`) runs one
+ignored test explicitly and requires exactly one pass: a sparse original of
+4 GiB + 64 KiB plus two smaller originals are backed up and restored, so both a
+single length and the stream offsets pass 4 GiB, and every restored original's
+SHA-256 is recomputed. It needs about 9 GiB of real scratch space, so it is not
+in the default suite.
 
 ## Destination ownership and publication
 
@@ -243,6 +324,11 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   SHA-256) and reopening the result through normal startup.
 - The four exact version-1 legacy forms with synthetic credential rows (never
   restored) and near-32 MiB legacy files (one large cell; many small rows).
+- A library whose originals exceed the former `LYTRONAUT_UPLOAD_BYTES` + 288 MiB
+  ceiling (sparse synthetic originals, small configured budgets) backed up and
+  restored losslessly bundle-to-bundle and through the HTTP archive/download/
+  restore path, with the copy buffer asserted at 64 KiB, and free-space admission
+  refusals that name required and available bytes.
 - `restore_fault_tests.rs`: corruption, admission and mid-restore quota, cancel,
   graceful shutdown, a real child-process SIGKILL with restart recovery,
   owner-revoked cleanup, dependency-restricted DROP, failing and ambiguous final

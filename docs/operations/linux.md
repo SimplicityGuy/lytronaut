@@ -92,10 +92,10 @@ Compose caps CPU at 2, memory at 2 GiB and PIDs at 128; logs rotate after three
 individual file, 3 GiB encoded input and an 8 GiB aggregate reservation. At least
 2 GiB must remain free. These are application admission budgets, not filesystem
 quotas: use server volume quotas and capacity monitoring for durable originals
-and catalog growth. Increase budgets deliberately for larger libraries. The same
-budgets bound the portable backup bundle; with these defaults a library with more
-than about 2.3 GiB of original files cannot be backed up as a bundle (see
-[Backup bundle size limits](#backup-bundle-size-limits)).
+and catalog growth. Increase budgets deliberately for larger imports. These
+budgets do not bound the portable backup bundle: a library of any size can be
+backed up and restored when the work location has the free space it needs (see
+[Backup bundle size and free space](#backup-bundle-size-and-free-space)).
 Resource exhaustion rejects requests while preserving already stored originals.
 No GPU device or hardware acceleration runtime mount is required.
 
@@ -315,10 +315,10 @@ backend restores into either backend.
 ### PostgreSQL backup, recovery and upgrades
 
 The portable bundle is the backend-independent backup and the way to move a
-library between SQLite and PostgreSQL or between PostgreSQL major versions,
-within the [size limits](#backup-bundle-size-limits) below; a larger PostgreSQL
-library moves between major versions with `pg_dump`/`pg_restore` plus its file
-locations instead. For an operational backup of a PostgreSQL deployment, stop the
+library between SQLite and PostgreSQL or between PostgreSQL major versions, for a
+library of any size given the [free work space](#backup-bundle-size-and-free-space)
+it needs; `pg_dump`/`pg_restore` plus the file locations remains an alternative
+between PostgreSQL major versions. For an operational backup of a PostgreSQL deployment, stop the
 application (leave PostgreSQL running), then take a consistent dump and snapshot
 originals and work together:
 
@@ -367,47 +367,61 @@ release and digest after verifying them from the official sources, then
 `docker compose ... up -d --no-build`. A new major release cannot open an older
 cluster directory, and the application refuses a server other than PostgreSQL 18
 until a release supports it. Upgrade by creating a new deployment with an empty
-PostgreSQL location and restoring a portable bundle (within its size limits) or a
+PostgreSQL location and restoring a portable bundle or a
 `pg_dump` into it;
 keep the old location until the new deployment is verified. Application upgrades
 migrate the catalog schema additively on startup on either backend.
 
-### Backup bundle size limits
+### Backup bundle size and free space
 
 A portable bundle carries every unique original plus a logical catalog of at most
-288 MiB. The current implementation bounds it by the single-upload budgets:
+288 MiB, in one `.lytronaut` file of any size (sizes are 64-bit; there is no 4 GiB
+boundary). Creating, downloading, uploading and restoring it stream through a
+fixed 64 KiB buffer, so memory use does not grow with the library. The
+single-upload budgets (`LYTRONAUT_UPLOAD_BYTES`, `LYTRONAUT_ENCODED_BYTES`) and the
+aggregate `LYTRONAUT_RESERVED_BYTES` do not limit it; only free space in the work
+location does. For `N` bytes of unique originals:
 
-- Creating a bundle fails when the unique originals exceed
-  `LYTRONAUT_UPLOAD_BYTES` + 288 MiB.
-- Admission of a backup job reserves originals + 2 x 288 MiB + 60 bytes + 40 bytes
-  per original. It is refused (`resource_limit`) unless that fits within
-  `LYTRONAUT_RESERVED_BYTES` minus other jobs' reservations, and unless free work
-  space is at least that amount plus all active reservations plus
-  `LYTRONAUT_FREE_FLOOR` (2 GiB).
-- Restoring requires the uploaded bundle to be at most `LYTRONAUT_ENCODED_BYTES` +
-  288 MiB + framing, each original at most `LYTRONAUT_FILE_BYTES`, the originals at
-  most `LYTRONAUT_UPLOAD_BYTES` + 288 MiB, and it reserves 2 x the bundle size +
-  288 MiB under the same reservation and free-space rules.
+- Creating a bundle needs about `N` + 576 MiB free, plus 80 bytes per unique
+  original (the bundle itself plus the catalog and inventory spools beside it),
+  in addition to the reservations of other running exports and
+  `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose).
+- Restoring a bundle of `B` bytes needs about 2 x `B` + 288 MiB free (the upload
+  and the extracted copy, plus room for a SQLite catalog), with the same additions.
+- A refused job fails immediately with a retryable `resource_limit` error whose
+  `shortfall` reports `required_bytes` and `available_bytes` (the browser shows
+  both, for example "this needs 5.0 GiB and 1.0 GiB is available"); free space
+  (or wait for other exports to finish) and retry. Nothing is created for a
+  refused job.
 
-With the default Compose budgets (2 GiB upload, 3 GiB encoded, 512 MiB per file,
-8 GiB reserved) a library with more than about 2.3 GiB of original files cannot be
-backed up as a bundle, and no original over 512 MiB can be restored from one. For
-a library of `N` bytes of originals, set `LYTRONAUT_UPLOAD_BYTES` >= `N`,
-`LYTRONAUT_ENCODED_BYTES` >= `N`, `LYTRONAUT_FILE_BYTES` >= the largest
-original, `LYTRONAUT_RESERVED_BYTES` >= 2 x (`N` + 288 MiB) + 288 MiB, and keep at
-least that much plus 2 GiB free in the work location. Raising the upload budgets
-also raises what a single browser upload may send, so prefer stopped-service
-volume snapshots (SQLite) or `pg_dump` plus file snapshots (PostgreSQL) for large
-libraries. Decoupling the bundle ceiling from the single-upload limit is tracked as
-a known limitation in `lytronaut-lbk`.
+Each original must still be at most `LYTRONAUT_FILE_BYTES` (512 MiB with Compose),
+which the store also enforces when it reads an original; restore a bundle into a
+deployment configured at least as large as the one that created it. The number of
+unique originals is not limited by `LYTRONAUT_UPLOAD_FILES` or any other budget.
+The logical catalog (every capture's records, albums, memberships and source
+paths) must fit the bundle's 288 MiB catalog section: about 33,800 captures,
+measured by backing up a generous synthetic Desktop library of 1,000 captures
+with seven files each through the real import (about 8.9 KB per capture). A
+larger catalog fails when the backup job runs, with a non-retryable
+`resource_limit` job error and no bundle file, never a partial one; use
+stopped-service volume snapshots (SQLite) or `pg_dump` plus file snapshots
+(PostgreSQL) for such a library. Splitting the catalog into chunks is a possible
+later change. A ready bundle or restore keeps its space until you `DELETE` it.
+Interrupted transfers are not resumed; start the download or upload again.
 
 ### Limitations
 
+- A single Lytro Desktop library database is read semantically only up to
+  100,000 table cells (about 1,700 captures with the Desktop schema's usual
+  columns); a larger one is preserved byte-exact but imported as preserved-only.
+  This is a known limit of the Desktop adapter, tracked separately.
+- A portable bundle's logical catalog holds about 33,800 captures; see
+  [Backup bundle size and free space](#backup-bundle-size-and-free-space).
 - One application instance per catalog: do not run two services against the same
   SQLite location or PostgreSQL schema.
-- Portable bundles are limited by the single-upload budgets (about 2.3 GiB of
-  originals with the defaults); see [Backup bundle size limits](#backup-bundle-size-limits)
-  and `lytronaut-lbk`.
+- A portable bundle needs free work space of about its own size to create, and
+  about twice its size to restore; see
+  [Backup bundle size and free space](#backup-bundle-size-and-free-space).
 - No application accounts or login: protect access at your proxy; database
   credentials are not user accounts.
 - Application reservations bound staging files, not PostgreSQL storage: monitor
