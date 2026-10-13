@@ -262,6 +262,11 @@ its case list:
   unsupported input/cancellation, ZIP publication, concurrent publication polling,
   PNG/JPEG export/cancellation/restart, and the lossless portable bundle
   backup/restore/tamper/conflict/interruption scenario (owned-schema restore).
+- Four Live Photo export scenarios (run separately from the six HTTP scenarios
+  above): create and download complete private-metadata-free pairs in all eight
+  orientations; DELETE of a ready pair releasing its files and quota across
+  restart; in-flight cancellation that never offers a half-pair; and an
+  unavailable plane failing without output and surviving restart.
 - Five portable backup cases with a PostgreSQL destination or source:
   SQLite→PostgreSQL, PostgreSQL→SQLite and PostgreSQL→PostgreSQL round trips, the
   four exact version-1 legacy forms, and near-32 MiB legacy files (one large cell;

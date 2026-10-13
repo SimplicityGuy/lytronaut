@@ -3,7 +3,7 @@ use lytronaut_service::{AppState, SecurityConfig, api::Api, router_with_routes, 
 use lytronaut_storage::{Catalog, DatabaseConfig, Limits, Store};
 use serde_json::{Value, json};
 use sqlx::{
-    ConnectOptions, Connection, PgConnection, SqliteConnection, any::AnyConnectOptions,
+    ConnectOptions, Connection, PgConnection, Row, SqliteConnection, any::AnyConnectOptions,
     postgres::PgConnectOptions, sqlite::SqliteConnectOptions,
 };
 use std::{
@@ -138,23 +138,35 @@ impl Server {
             self.assert_public_sentinel().await;
             assert!(!self.root.join("catalog.db").exists());
         }
-        let store = Store::open(
-            catalog.clone(),
-            &self.root.join("originals"),
-            &self.root.join("staging"),
-            Limits {
-                upload_bytes: 4 * 1024 * 1024,
-                file_bytes: 2 * 1024 * 1024,
-                encoded_bytes: 4 * 1024 * 1024,
-                metadata_bytes: 64 * 1024,
-                files: 32,
-                free_floor: 0,
-                reserved_bytes: 2 * 1024 * 1024 * 1024,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        // An in-process restart races the previous server's detached job
+        // workers, which hold the store's exclusive lock until they finish
+        // their final status and cleanup. A real restart ends the process.
+        let mut attempts = 0;
+        let store = loop {
+            match Store::open(
+                catalog.clone(),
+                &self.root.join("originals"),
+                &self.root.join("staging"),
+                Limits {
+                    upload_bytes: 4 * 1024 * 1024,
+                    file_bytes: 2 * 1024 * 1024,
+                    encoded_bytes: 4 * 1024 * 1024,
+                    metadata_bytes: 64 * 1024,
+                    files: 32,
+                    free_floor: 0,
+                    reserved_bytes: 2 * 1024 * 1024 * 1024,
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                Err(lytronaut_storage::StorageError::Busy) if attempts < 500 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                result => break result.unwrap(),
+            }
+        };
         let api = Api::open(catalog.clone(), store.clone()).await.unwrap();
         self.assert_public_sentinel().await;
         let app = router_with_routes(
@@ -1651,9 +1663,10 @@ fn live_zip_entries(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>>
     assert_eq!(out.len(), 3);
     out
 }
-#[tokio::test]
-async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retains_originals() {
-    let mut s = Server::new().await;
+/// One imported synthetic JPEG focus stack. Runs on the configured backend
+/// (`LYTRONAUT_TEST_BACKEND`), so every Live Photo case also runs on PostgreSQL.
+async fn live_photo_server() -> (Server, String, String, String, Vec<u8>) {
+    let s = Server::new().await;
     let (headers, mutation) = s.request_headers().await;
     let body =
         json!({"version":1,"kind":"directory","declared_bytes":4*1024*1024,"declared_files":32})
@@ -1708,19 +1721,61 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
         .unwrap()["id"]
         .as_str()
         .unwrap();
+    let asset = asset.to_owned();
+    (s, headers, mutation, asset, source)
+}
+async fn live_photo_create(
+    s: &Server,
+    mutation: &str,
+    asset: &str,
+    plane: u32,
+    orientation: u8,
+) -> String {
+    let request = json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":plane,"orientation":orientation}).to_string();
+    let response = s
+        .request("POST", "/exports", mutation, request.as_bytes())
+        .await;
+    assert_eq!(response.0, 200, "{}", String::from_utf8_lossy(&response.2));
+    serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+/// Quota held by a job row; DELETE must release it on both engines.
+async fn live_photo_quota(s: &Server, id: &str) -> (i64, i64) {
+    let row = sqlx::query(
+        "SELECT CAST(retained AS BIGINT),CAST(reserved AS BIGINT) FROM export_jobs WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(s.catalog.as_ref().unwrap().pool())
+    .await
+    .unwrap();
+    (row.try_get(0).unwrap(), row.try_get(1).unwrap())
+}
+/// No owned job directory or artifact for `id` remains anywhere under the root.
+fn live_photo_files_removed(s: &Server, id: &str) -> bool {
+    fn walk(path: &std::path::Path, id: &str) -> bool {
+        fs::read_dir(path).unwrap().all(|entry| {
+            let entry = entry.unwrap();
+            !entry.file_name().to_string_lossy().contains(id)
+                && (!entry.file_type().unwrap().is_dir() || walk(&entry.path(), id))
+        })
+    }
+    walk(&s.root, id)
+}
+#[tokio::test]
+async fn live_photo_create_download_complete_private_metadata_free_pair() {
+    let (s, headers, mutation, asset, source) = live_photo_server().await;
     for orientation in 1..=8 {
-        let request=json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":1,"orientation":orientation}).to_string();
-        let response = s
-            .request("POST", "/exports", &mutation, request.as_bytes())
-            .await;
-        assert_eq!(response.0, 200);
-        let id = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let id = live_photo_create(&s, &mutation, &asset, 1, orientation).await;
         let done = wait_export(&s, &id, &headers).await;
         assert_eq!(done["state"], "succeeded");
         assert_eq!(done["kind"], "live_photo");
+        assert_eq!(
+            live_photo_quota(&s, &id).await.1,
+            0,
+            "success releases the reservation"
+        );
         let download = s
             .request("GET", &format!("/exports/{id}/download"), &headers, b"")
             .await;
@@ -1755,75 +1810,96 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
         ] {
             assert!(!download.2.windows(forbidden.len()).any(|v| v == forbidden));
         }
+    }
+    assert_eq!(
+        s.request("GET", &format!("/assets/{asset}/download"), &headers, b"")
+            .await
+            .2,
+        source,
+        "originals are never modified"
+    );
+    s.close().await;
+}
+#[tokio::test]
+async fn live_photo_delete_succeeded_removes_pair_and_quota_across_restart() {
+    let (mut s, headers, mutation, asset, _) = live_photo_server().await;
+    let id = live_photo_create(&s, &mutation, &asset, 1, 1).await;
+    assert_eq!(wait_export(&s, &id, &headers).await["state"], "succeeded");
+    assert!(
+        live_photo_quota(&s, &id).await.0 > 0,
+        "a ready pair counts against staging"
+    );
+    assert_eq!(
+        s.request("DELETE", &format!("/exports/{id}"), &mutation, b"")
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        s.get(&format!("/exports/{id}"), &headers).await["state"],
+        "cancelled"
+    );
+    assert_eq!(live_photo_quota(&s, &id).await, (0, 0));
+    assert!(live_photo_files_removed(&s, &id));
+    s.restart().await;
+    assert_eq!(
+        s.get(&format!("/exports/{id}"), &headers).await["state"],
+        "cancelled"
+    );
+    assert_eq!(
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    s.close().await;
+}
+#[tokio::test]
+async fn live_photo_cancel_in_flight_never_offers_a_half_pair() {
+    let (s, headers, mutation, asset, _) = live_photo_server().await;
+    for _ in 0..4 {
+        let id = live_photo_create(&s, &mutation, &asset, 1, 1).await;
+        let early = s
+            .request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await;
+        if early.0 == 200 {
+            assert_eq!(
+                live_zip_entries(&early.2).len(),
+                3,
+                "only a complete pair is offered"
+            );
+        } else {
+            assert_eq!(early.0, 404, "incomplete resources are unavailable");
+        }
         assert_eq!(
             s.request("DELETE", &format!("/exports/{id}"), &mutation, b"")
                 .await
                 .0,
             200
         );
+        // Whether the worker was running or had already finished, DELETE wins.
+        assert_eq!(wait_export(&s, &id, &headers).await["state"], "cancelled");
         assert_eq!(
             s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
                 .await
                 .0,
             404
         );
+        for _ in 0..400 {
+            if live_photo_quota(&s, &id).await == (0, 0) && live_photo_files_removed(&s, &id) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(live_photo_quota(&s, &id).await, (0, 0));
+        assert!(live_photo_files_removed(&s, &id));
     }
-    let cancel_request =
-        json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":1,"orientation":1})
-            .to_string();
-    let response = s
-        .request("POST", "/exports", &mutation, cancel_request.as_bytes())
-        .await;
-    assert_eq!(response.0, 200);
-    let cancel_id = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let early = s
-        .request(
-            "GET",
-            &format!("/exports/{cancel_id}/download"),
-            &headers,
-            b"",
-        )
-        .await;
-    if early.0 == 200 {
-        assert_eq!(
-            live_zip_entries(&early.2).len(),
-            3,
-            "completion race still publishes a complete pair"
-        );
-    } else {
-        assert_eq!(early.0, 404, "incomplete resources are unavailable");
-    }
-    assert_eq!(
-        s.request("DELETE", &format!("/exports/{cancel_id}"), &mutation, b"")
-            .await
-            .0,
-        200
-    );
-    assert_eq!(
-        s.request(
-            "GET",
-            &format!("/exports/{cancel_id}/download"),
-            &headers,
-            b""
-        )
-        .await
-        .0,
-        404
-    );
-    let request =
-        json!({"kind":"live_photo","version":1,"asset":asset,"plane_index":63,"orientation":1})
-            .to_string();
-    let response = s
-        .request("POST", "/exports", &mutation, request.as_bytes())
-        .await;
-    assert_eq!(response.0, 200);
-    let id = serde_json::from_slice::<Value>(&response.2).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    s.close().await;
+}
+#[tokio::test]
+async fn live_photo_unavailable_plane_fails_without_output_and_survives_restart() {
+    let (mut s, headers, mutation, asset, source) = live_photo_server().await;
+    let id = live_photo_create(&s, &mutation, &asset, 63, 1).await;
     assert_eq!(wait_export(&s, &id, &headers).await["state"], "failed");
     assert_eq!(
         s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
@@ -1844,4 +1920,13 @@ async fn live_photo_job_publishes_complete_private_metadata_free_pair_and_retain
             .0,
         404
     );
+    assert_eq!(
+        s.request("DELETE", &format!("/exports/{id}"), &mutation, b"")
+            .await
+            .0,
+        200
+    );
+    assert_eq!(live_photo_quota(&s, &id).await, (0, 0));
+    assert!(live_photo_files_removed(&s, &id));
+    s.close().await;
 }
