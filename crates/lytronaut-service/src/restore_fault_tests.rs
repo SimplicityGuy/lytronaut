@@ -1179,9 +1179,6 @@ async fn near_limit_source_cell_round_trips_and_over_limit_fails_cleanly(pg: boo
     env.finish().await;
 }
 
-/// A large row import into the restore's private namespace must not hold the
-/// live deployment's writer admission: live export admission and plain writes
-/// complete promptly (well under the 5 s PostgreSQL lock_timeout) mid-import.
 /// True while the restore's row-import write transaction is open: PostgreSQL
 /// shows granted RowExclusiveLocks on the private namespace's tables; SQLite's
 /// private destination refuses a second writer immediately (busy_timeout 0).
@@ -1209,18 +1206,31 @@ async fn import_in_flight(env: &Env, journal: &Journal) -> bool {
             )
             .await
             .unwrap();
-            let free = sqlx::query("BEGIN IMMEDIATE")
-                .execute(&mut probe)
-                .await
-                .is_ok();
-            if free {
-                sqlx::query("ROLLBACK").execute(&mut probe).await.unwrap();
-            }
+            // Only SQLITE_BUSY / SQLITE_LOCKED (primary codes 5 and 6) mean another
+            // writer holds the destination; any other error is a test failure.
+            let busy = match sqlx::query("BEGIN IMMEDIATE").execute(&mut probe).await {
+                Ok(_) => {
+                    sqlx::query("ROLLBACK").execute(&mut probe).await.unwrap();
+                    false
+                }
+                Err(sqlx::Error::Database(error))
+                    if error
+                        .code()
+                        .and_then(|code| code.parse::<i32>().ok())
+                        .is_some_and(|code| matches!(code & 0xff, 5 | 6)) =>
+                {
+                    true
+                }
+                Err(error) => panic!("unexpected SQLite probe error: {error}"),
+            };
             probe.close().await.unwrap();
-            !free
+            busy
         }
     }
 }
+/// A large row import into the restore's private namespace must not hold the
+/// live deployment's writer admission: live export admission and plain writes
+/// complete promptly (well under the 5 s PostgreSQL lock_timeout) mid-import.
 async fn live_writes_proceed_during_restore_import(pg: bool) {
     let env = Env::new(pg).await;
     let (_, id) = env.upload(archive(BULK_ROWS).await).await;
