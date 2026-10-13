@@ -375,8 +375,18 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    page.on('request',recoveryStarted);page.on('requestfinished',recoveryEnded);page.on('requestfailed',recoveryErrored);
    try{
     await page.evaluate(()=>{window.__importBusyObserved=false;window.__importStatusObserver=new MutationObserver(()=>{if(document.querySelector('.status')?.textContent.includes('Previous operation still pending'))window.__importBusyObserved=true;});window.__importStatusObserver.observe(document.querySelector('.status'),{subtree:true,childList:true,characterData:true});});
-    await click('Recover import status');
+    // The cancel lane reports first; then hold the actual recovery response so a
+    // pending recovery is observable instead of racing an already-true status.
     await page.waitForFunction(()=>document.querySelector('.status').textContent.toLowerCase().includes('cancelled'));
+    let holdRecovery=null;const holdRecoveryRequest=request=>{if(!holdRecovery&&request.method()==='GET'&&new URL(request.url()).pathname==='/imports/'+priorImport){holdRecovery=request;return;}request.continue().catch(()=>{});};
+    await page.setRequestInterception(true);page.on('request',holdRecoveryRequest);
+    try{
+     await click('Recover import status');
+     for(let i=0;i<500&&!holdRecovery;i++)await delay(10);assert(holdRecovery,'recovery request issued');
+     checkpoint='recovery-pending-controls';
+     assert.deepEqual(await page.evaluate(()=>({directory:document.querySelector('#directory').disabled,zip:document.querySelector('#zip').disabled,recover:[...document.querySelectorAll('button')].find(b=>b.textContent==='Recover import status').disabled})),{directory:true,zip:true,recover:true},'import controls stay disabled while recovery is pending');
+    }finally{page.off('request',holdRecoveryRequest);if(holdRecovery)await holdRecovery.continue().catch(()=>{});await page.setRequestInterception(false);}
+    await page.waitForFunction(()=>document.querySelector('.status').textContent.toLowerCase().includes('cancelled')&&!document.querySelector('#directory').disabled);
     checkpoint='preserved-only';
     // Unknown schema stays useful through preserved-only original links.
     await (await page.$('#directory')).uploadFile(path.join(root,'Preserved.lytrolibrary'));
