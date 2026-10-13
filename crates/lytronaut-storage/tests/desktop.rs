@@ -295,6 +295,15 @@ async fn malformed_or_hostile_inputs_preserve_all_originals_without_semantic_vis
         "ALTER TABLE future_table ADD COLUMN generated BLOB GENERATED ALWAYS AS (zeroblob(4096)) VIRTUAL",
         "CREATE VIRTUAL TABLE hostile_unknown USING fts5(body)",
         "UPDATE picture SET caption=zeroblob(1048577) WHERE uuid='p1'",
+        // Structural identity and cardinality rules of the schema-23 catalog.
+        "ALTER TABLE picture DROP COLUMN imagebin_uuid",
+        "UPDATE picture_metadata SET uuid='other' WHERE uuid='p2'",
+        "INSERT INTO event VALUES(2,'ev2','another-library','Event 2')",
+        "UPDATE event SET library_uuid=''",
+        "INSERT INTO library_metadata VALUES(2,23)",
+        "UPDATE album SET uuid='' WHERE id=1",
+        "UPDATE album SET uuid='a' WHERE id=2",
+        "UPDATE picture_list SET uuid=NULL",
     ] {
         let f = Fixture::new().await;
         let db = f.source(change).await;
@@ -409,6 +418,27 @@ async fn schema_admission_and_check_expressions_are_bounded() {
             .state,
         CatalogState::PreservedOnly
     );
+    // Wide tables and oversized schemas are refused before any row is read.
+    let wide = (0..129)
+        .map(|i| format!("c{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let many = (0..1025)
+        .map(|i| format!("CREATE VIEW extra_{i} AS SELECT {i}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    for change in [format!("CREATE TABLE wide({wide})"), many] {
+        let f = Fixture::new().await;
+        let db = f.source(&change).await;
+        let id = f.intake(db, false, false).await;
+        assert_eq!(
+            desktop::import_desktop(&f.catalog, &f.store, &id)
+                .await
+                .unwrap()
+                .state,
+            CatalogState::PreservedOnly
+        );
+    }
     let f = Fixture::new().await;
     // This false CHECK is deliberately present without evaluating it at creation.
     // If source CHECK expressions ran during quick_check it would fail import.
