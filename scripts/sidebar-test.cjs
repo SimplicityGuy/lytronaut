@@ -10,7 +10,7 @@ module.exports=async({browser,origin})=>{
   const page=await browser.newPage();page.setDefaultTimeout(30000);
   let held=null,holdKind=null,failKind=null,handlerFailure=false,heldReplies=0,heldCancelled=0,heldCompleted=0,captureItems=[];
   let phase='setup',observedHeld=null;
-  page.on('requestfinished',request=>{if(observedHeld?.request===request)observedHeld.finished=true;});
+  page.on('requestfinished',request=>{if(observedHeld?.request===request){observedHeld.finished=true;observedHeld.onFinished?.();}});
   page.on('requestfailed',request=>{if(observedHeld?.request===request){observedHeld.failed=true;observedHeld.aborted=request.failure()?.errorText==='net::ERR_ABORTED';observedHeld.settle({kind:'failed'});}});
   page.on('response',response=>{if(observedHeld?.request===response.request()){observedHeld.response=true;observedHeld.settle({kind:'response',response});}});
   const reply=async(request,payload)=>{try{await request.respond({status:200,contentType:'application/json',body:JSON.stringify(payload)});}catch{handlerFailure=true;if(observedHeld?.request===request)observedHeld.replyFailed=true;}};
@@ -60,6 +60,7 @@ module.exports=async({browser,origin})=>{
     // Fence each real select before clicking: shared fixture pixels need not change URL.
     const selectComplete=async(interact,index,mappedPath=null)=>{
       const expected=captureItems[index];assert(expected,'bounded mapped capture required');
+      // Status only: the app may cancel a response stream once it has what it needs.
       const detailResponse=page.waitForResponse(response=>new URL(response.url()).pathname===`/captures/${expected.id}`);
       const mappedResponse=mappedPath?page.waitForResponse(response=>new URL(response.url()).pathname===mappedPath):null;
       await page.evaluate(()=>{
@@ -74,8 +75,12 @@ module.exports=async({browser,origin})=>{
       let focus=false,geometry={width:0,height:0};
       try{
         await interact();
-        if(mappedResponse){const response=await mappedResponse;assert(response.ok());const bytes=await response.buffer();assert(bytes.length<=256*1024);assert.equal(JSON.parse(bytes).items[0].id,expected.id,'mapped page selected expected first capture');}
-        const response=await detailResponse;assert(response.ok());const bytes=await response.buffer();assert(bytes.length<=256*1024);const detail=JSON.parse(bytes);assert.equal(detail.capture.id,expected.id);
+        // Never read bodies back through CDP: the app may cancel a superseded or
+        // completed response stream, after which Chrome discards its data. The
+        // mapped page body is the one this test served; the detail is fetched
+        // independently from the service for the exact finished request's id.
+        if(mappedResponse){const response=await mappedResponse;assert(response.ok());assert.equal(captureItems[0]?.id,expected.id,'mapped page selected expected first capture');}
+        const response=await detailResponse;assert(response.ok());const independent=await fetch(origin+`/captures/${expected.id}`,{signal:AbortSignal.timeout(10000)});assert(independent.ok);const bytes=Buffer.from(await independent.arrayBuffer());assert(bytes.length<=256*1024);const detail=JSON.parse(bytes);assert.equal(detail.capture.id,expected.id);
         focus=detail.originals.some(file=>file.role==='jpeg_focus_stack');
         geometry=focus?{width:360,height:240}:{width:640,height:360};
         await page.waitForFunction((expected,focus,geometry)=>{
@@ -107,7 +112,9 @@ module.exports=async({browser,origin})=>{
         assert.equal(old.lifecycle.finished,false);heldCancelled++;
       }else{
         assert.equal(expected,'completed');assert.equal(outcome.kind,'response');
-        assert.equal(outcome.response.status(),200);assert((await outcome.response.buffer()).length<=256*1024,'bounded current response completed');
+        // Read the exact held request's body only after it finished loading.
+        let finishTimer;await new Promise((resolve,reject)=>{finishTimer=setTimeout(()=>reject(Error('held sidebar body never finished')),page.getDefaultTimeout());if(old.lifecycle.finished)resolve();else old.lifecycle.onFinished=resolve;}).finally(()=>clearTimeout(finishTimer));
+        assert.equal(outcome.response.status(),200);assert(Buffer.byteLength(JSON.stringify(old.payload))<=256*1024,'bounded current response completed');
         assert.equal(old.lifecycle.failed,false);assert.equal(old.lifecycle.aborted,false);heldCompleted++;
       }
       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
