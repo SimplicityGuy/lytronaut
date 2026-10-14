@@ -93,6 +93,12 @@ coverage-browser:
     bash scripts/coverage.sh browser
 
 # Export LCOV, merge per target, write JSON/Markdown and enforce the floors.
+# Runnable local demo: synthetic library + fresh app state (no private data).
+# LYTRONAUT_DEMO_VIDEO=1 also generates a synthetic H.264 focus stack (needs Chrome).
+demo: wasm-build
+    cargo build --locked -p lytronaut-service --bin lytronaut-service --example synthetic_jpeg
+    bash scripts/demo.sh
+
 coverage-report:
     bash scripts/coverage.sh report
 
