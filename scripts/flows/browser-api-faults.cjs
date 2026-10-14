@@ -126,7 +126,9 @@ module.exports = async ({ browser, origin }) => {
     }
     assert.equal(imports, 0, 'no import is created when the selection cannot be read');
 
-    // 2. A transfer the browser cannot start is reported, not shown as progress.
+    // 2. A transfer the browser cannot start is reported, not shown as progress,
+    //    and the import it created is cancelled so it does not keep holding one
+    //    of the service's import admission slots.
     const folder = path.join(scratch, 'Synthetic transfer');
     fs.mkdirSync(folder);
     fs.writeFileSync(path.join(folder, 'synthetic.bin'), 'synthetic transfer payload');
@@ -134,6 +136,10 @@ module.exports = async ({ browser, origin }) => {
     for (const [name, breakIt, message] of [
       ['open-throws', () => window.__break(XMLHttpRequest.prototype, 'open', () => { throw Error('injected'); }), 'Upload unavailable'],
       ['header-throws', () => window.__break(XMLHttpRequest.prototype, 'setRequestHeader', () => { throw Error('injected'); }), 'Upload unavailable'],
+      ['path-header-throws', () => { let calls = 0; const set = XMLHttpRequest.prototype.setRequestHeader; window.__break(XMLHttpRequest.prototype, 'setRequestHeader', function (...a) { if (++calls === 2) throw Error('injected'); return set.apply(this, a); }); }, 'Upload unavailable'],
+      ['entry-header-throws', () => { let calls = 0; const set = XMLHttpRequest.prototype.setRequestHeader; window.__break(XMLHttpRequest.prototype, 'setRequestHeader', function (...a) { if (++calls === 3) throw Error('injected'); return set.apply(this, a); }); }, 'Upload unavailable'],
+      // Without a relative path the file name is used; the transfer still cannot start.
+      ['no-relative-path', () => { window.__break(XMLHttpRequest.prototype, 'send', () => { throw Error('injected'); }); const original = Object.getOwnPropertyDescriptor(File.prototype, 'webkitRelativePath'); Object.defineProperty(File.prototype, 'webkitRelativePath', { configurable: true, get: () => undefined }); window.__restore.push(() => Object.defineProperty(File.prototype, 'webkitRelativePath', original)); }, 'Upload could not start'],
       ['send-throws', () => window.__break(XMLHttpRequest.prototype, 'send', () => { throw Error('injected'); }), 'Upload could not start'],
     ]) {
       await page.waitForFunction(() => !document.querySelector('#directory').disabled);
@@ -141,7 +147,10 @@ module.exports = async ({ browser, origin }) => {
       await (await page.$('#directory')).uploadFile(folder);
       await statusIncludes(message);
       await page.evaluate(() => window.__undo());
-      proof.transfers.push(name);
+      const job = await page.evaluate(() => sessionStorage.getItem('lytronaut-import'));
+      assert(job && !proof.transfers.some(t => t.job === job), `${name}: a new import was created`);
+      await page.waitForFunction(async job => (await (await fetch(`/imports/${job}`)).json()).state === 'cancelled', { polling: 200 }, job);
+      proof.transfers.push({ name, job, state: 'cancelled' });
     }
 
     // 3. While canvas contexts cannot be created, grid thumbnails cannot be

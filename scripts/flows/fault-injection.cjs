@@ -245,6 +245,8 @@ module.exports = async ({ browser, origin }) => {
       await statusIncludes('Upload failed. Inspect status, then select the original files again to retry');
       await page.waitForFunction(() => !document.querySelector('#directory').disabled);
       rule = null;
+      // The abandoned import is cancelled so it releases its admission slot.
+      await page.waitForFunction(async () => (await (await fetch('/imports/' + sessionStorage.getItem('lytronaut-import'))).json()).state === 'cancelled', { polling: 200 });
       proof.rejectedUpload = true;
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
