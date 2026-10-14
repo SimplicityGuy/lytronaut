@@ -1,4 +1,4 @@
-# Private Linux operation
+# Self-hosted Linux operation
 
 Build locally for your server architecture; no registry publication is configured:
 
@@ -373,6 +373,26 @@ PostgreSQL location and restoring a portable bundle or a
 `pg_dump` into it;
 keep the old location until the new deployment is verified. Application upgrades
 migrate the catalog schema additively on startup on either backend.
+
+### Application upgrades and rollback
+
+1. Keep the running image under a second tag, for example
+   `docker tag lytronaut:local lytronaut:previous`.
+2. Stop the service and take an operational backup: with SQLite, snapshot the
+   three locations together; with PostgreSQL, the `pg_dump` and file snapshots
+   above. A portable bundle made beforehand is an additional, backend-independent
+   copy.
+3. Build the new revision as `lytronaut:local` and run
+   `docker compose ... up -d --no-build`. Startup migrates the catalog, rehashes
+   sealed originals and only then reports healthy (see the start period above).
+   Browse the library and check a capture's originals before relying on it.
+
+To roll back, stop the service, put back the step-2 snapshots (or `pg_restore`
+the dump onto an empty schema as described above), retag `lytronaut:previous` as
+`lytronaut:local` and start it. Do not run an older image against a catalog that a
+newer release has already opened: migrations are forward-only and that
+combination is not tested. Restoring the pre-upgrade snapshot is the supported
+rollback.
 
 ### Backup bundle size and free space
 
