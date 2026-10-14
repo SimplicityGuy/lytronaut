@@ -195,9 +195,31 @@ const EXPECTED_DRIVERS: &[(&str, &[&str])] = &[
     ("harness", &["browser-test", "live-photo-jpeg-stress-test"]),
 ];
 
-/// Recorded floors of instrumented lines each browser script covers on its own
-/// (build, script, minimum). A suite that silently stops part-way drops below.
-const SCRIPT_LINE_FLOORS: &[(&str, &str, u64)] = &[];
+/// Reviewed per-script baseline (build, script, client lines); see the file.
+const SCRIPT_BASELINE: &str = include_str!("../coverage-script-baseline.txt");
+
+fn script_baseline() -> Result<Vec<(String, String, u64)>> {
+    let mut entries = Vec::new();
+    for line in SCRIPT_BASELINE.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        match fields.as_slice() {
+            [build, script, lines] => {
+                entries.push(((*build).to_owned(), (*script).to_owned(), lines.parse()?))
+            }
+            _ => return Err(format!("malformed coverage script baseline line: {line}").into()),
+        }
+    }
+    Ok(entries)
+}
+
+/// Allowed drop below a recorded per-script count: max(3 lines, 0.25%).
+fn script_tolerance(recorded: u64) -> u64 {
+    (recorded / 400).max(3)
+}
 
 /// Per-script profile counts from the coverage driver summaries in `dir`.
 /// Script name -> (profiles written, pages that loaded the client).
@@ -592,6 +614,8 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
     }
+    let baseline = script_baseline()?;
+    let mut notices: Vec<String> = Vec::new();
     let mut builds = Vec::new();
     for (name, dir, map, external) in &wasm_builds {
         let mut client = Tally::default();
@@ -607,14 +631,54 @@ pub fn run(args: &[String]) -> Result<()> {
         for failure in driver_failures {
             failures.push(format!("WASM build {name}: {failure}"));
         }
-        for (build, script, floor) in SCRIPT_LINE_FLOORS {
-            if build == name {
-                let key = format!("wasm_{name}_script_{script}_lines");
-                match meta.get(&key).and_then(|v| v.parse::<u64>().ok()) {
-                    Some(lines) if lines >= *floor => {}
-                    Some(lines) => failures.push(format!("WASM build {name}: browser script {script} covered {lines} lines, below its recorded floor {floor}")),
-                    None => failures.push(format!("WASM build {name}: no per-script line count for {script}")),
+        // Per-script WASM(client) lines, filtered exactly like the gate (client
+        // sources, minus test/harness exclusions and the GPU exemption), from
+        // each script's own LCOV.
+        let mut script_lines = BTreeMap::new();
+        let scripts_dir = dir.join("scripts");
+        if scripts_dir.is_dir() {
+            for entry in fs::read_dir(&scripts_dir)? {
+                let path = entry?.path();
+                if let Some(script) = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_suffix(".lcov"))
+                {
+                    let (map, _) = parse_lcov(&path, &root)?;
+                    let mut covered = Tally::default();
+                    for (file_path, lines) in &map {
+                        if let Some(file) = inventory
+                            .iter()
+                            .find(|f| &f.path == file_path && WASM_GATE.contains(&f.krate.as_str()))
+                        {
+                            let exempt = gpu_exempt.get(file_path).cloned().unwrap_or_default();
+                            let kept: BTreeMap<usize, u64> =
+                                keep(Some(lines), &excluded_lines(file))
+                                    .into_iter()
+                                    .filter(|(n, _)| !exempt.contains(n))
+                                    .collect();
+                            covered.add(tally(&kept));
+                        }
+                    }
+                    script_lines.insert(script.to_owned(), covered.covered as u64);
                 }
+            }
+        }
+        for (build, script, recorded) in &baseline {
+            if build == name {
+                match script_lines.get(script) {
+                    Some(lines) if *lines + script_tolerance(*recorded) < *recorded => failures.push(format!("WASM build {name}: browser script {script} covered {lines} client lines, more than {} below its recorded {recorded}; a suite ended early or lost coverage", script_tolerance(*recorded))),
+                    Some(lines) if lines != recorded => notices.push(format!("WASM build {name}: browser script {script} covered {lines} client lines (recorded {recorded})")),
+                    Some(_) => {}
+                    None => failures.push(format!("WASM build {name}: no per-script coverage for {script}")),
+                }
+            }
+        }
+        for script in script_lines.keys() {
+            if !baseline.iter().any(|(b, s, _)| b == name && s == script) {
+                notices.push(format!(
+                    "WASM build {name}: browser script {script} has no recorded baseline count"
+                ));
             }
         }
         for (build, expected) in EXPECTED_DRIVERS {
@@ -634,7 +698,7 @@ pub fn run(args: &[String]) -> Result<()> {
         builds.push(
             json!({"name": name, "application_wasm_sha256": sha256(&dir.join("application.wasm"))?,
             "external_files_dropped": external, "lytronaut_client": client.json(),
-            "scripts": scripts.iter().map(|(s, (profiles, pages))| json!({"script": s, "profiles": profiles, "pages_with_client": pages})).collect::<Vec<_>>()}),
+            "scripts": scripts.iter().map(|(s, (profiles, pages))| json!({"script": s, "profiles": profiles, "pages_with_client": pages, "client_lines": script_lines.get(s)})).collect::<Vec<_>>()}),
         );
     }
     let head = git(&["rev-parse", "HEAD"])?;
@@ -645,6 +709,7 @@ pub fn run(args: &[String]) -> Result<()> {
         "failures": failures.clone(),
         "source": {"git_head": head, "worktree_dirty": dirty, "cargo_lock_sha256": sha256(&root.join("Cargo.lock"))?},
         "floors": {"native": NATIVE_FLOOR, "wasm": WASM_FLOOR, "union": UNION_FLOOR},
+        "script_notices": notices,
         "totals": {"native": native_total.json(), "wasm_client": wasm_total.json(), "union": union_total.json(),
             "informational": {"client_native": client_native.json(), "shared_crates_wasm": shared_wasm.json()},
             "without_gpu_exemption": {"wasm_client": with_exempt(wasm_total, exempt_wasm).json(), "union": with_exempt(union_total, exempt_union).json()}},
@@ -814,6 +879,9 @@ pub fn run(args: &[String]) -> Result<()> {
         with_exempt(wasm_total, exempt_wasm).cell(),
         with_exempt(union_total, exempt_union).cell()
     );
+    for notice in &notices {
+        println!("coverage note: {notice}");
+    }
     if failures.is_empty() {
         Ok(())
     } else {
@@ -826,5 +894,23 @@ pub fn run(args: &[String]) -> Result<()> {
             args.out.join("coverage.md").display()
         )
         .into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_baseline_parses_and_tolerates_small_drops_only() {
+        let baseline = script_baseline().unwrap();
+        assert!(
+            baseline
+                .iter()
+                .any(|(b, s, _)| b == "client" && s == "browser-test")
+        );
+        assert_eq!(script_tolerance(100), 3);
+        assert_eq!(script_tolerance(2587), 6);
+        assert_eq!(script_tolerance(4000), 10);
     }
 }

@@ -48,7 +48,9 @@ async function trial(index,bitrate){
     browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile'),timeout:30000});
     const page=await browser.newPage();page.setDefaultTimeout(30000);page.setDefaultNavigationTimeout(30000);
     let requestFailed=false,pageFailed=false;
-    await page.setRequestInterception(true);page.on('request',request=>{try{const url=new URL(request.url());const localImage=url.protocol==='data:'&&request.url().startsWith('data:image/jpeg;base64,')&&request.url().length<=2*1024*1024;const operation=url.origin===origin||localImage?request.continue():request.abort();operation.catch(()=>{requestFailed=true;});}catch{requestFailed=true;request.abort().catch(()=>{});}});
+    // A capture listing can be held so a newer listing deterministically supersedes it.
+    let holdCaptures=false,heldCaptures=null;
+    await page.setRequestInterception(true);page.on('request',request=>{try{const url=new URL(request.url());if(holdCaptures&&!heldCaptures&&url.origin===origin&&/^\/libraries\/[^/]+\/captures$/.test(url.pathname)){heldCaptures=request;return;}const localImage=url.protocol==='data:'&&request.url().startsWith('data:image/jpeg;base64,')&&request.url().length<=2*1024*1024;const operation=url.origin===origin||localImage?request.continue():request.abort();operation.catch(()=>{requestFailed=true;});}catch{requestFailed=true;request.abort().catch(()=>{});}});
     page.on('pageerror',()=>{pageFailed=true;});
     await page.evaluateOnNewDocument(()=>Object.defineProperty(navigator,'gpu',{value:undefined}));
     await page.goto(origin);await page.waitForSelector('#directory');
@@ -92,7 +94,12 @@ async function trial(index,bitrate){
       report.importPhase='select';
       await click('Library '+(selected.index+1));
       await page.waitForFunction(index=>[...document.querySelectorAll('.rail-item')].some(button=>button.textContent==='Library '+(index+1)&&button.getAttribute('aria-pressed')==='true'),{},selected.index);
-      await click('All captures');await page.select('#sort','name');
+      // Hold one listing so the sort change always supersedes an in-flight request
+      // (otherwise whether it does depends on how fast the first listing returns).
+      heldCaptures=null;holdCaptures=true;await click('All captures');
+      for(let i=0;i<1000&&!heldCaptures;i++)await wait(10);assert(heldCaptures,'capture listing held');
+      holdCaptures=false;await page.select('#sort','name');
+      const stale=heldCaptures;heldCaptures=null;await stale.continue().catch(()=>{});
       const expectedDigest=directory===stressCatalog?stressDigest:crypto.createHash('sha256').update(retryBytes).digest('hex');
       report.importPhase='source';
       const verified=await page.evaluate(async({library,expectedDigest})=>{

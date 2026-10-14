@@ -63,6 +63,44 @@ step if any did, so one CI pass yields complete evidence. It runs:
 - the Live Photo and video codec suites;
 - the owner suite against the `coverage,test-harness` build.
 
+### Keeping the WASM measurement repeatable
+
+Line coverage of the WASM client only counts what the browser suites actually
+ran, so a suite that stops early silently lowers it. That is what made early CI
+results swing by up to 4.7 points: when one flow failed (a changed status message,
+or a test that assumed a capture was on the first page), the rest of
+`browser-test` was skipped, and the run reported fewer covered lines without
+any coverage-specific error. Three guards now make the result repeatable or loud:
+
+- Flows locate captures through the real search control instead of assuming a
+  page layout, and every page waits for in-flight work to settle before its
+  counters are dumped.
+- `EXPECTED_DRIVERS` in `crates/xtask/src/coverage.rs` lists the scripts that
+  must write profiles for each instrumented build; a missing one fails the gate.
+- `crates/xtask/coverage-script-baseline.txt` is a reviewed baseline of the
+  WASM(client) lines each browser script covers on its own, counted like the
+  gate (client sources only, minus test/harness exclusions and the GPU
+  exemption). The gate fails, naming the script, if a script covers more than
+  max(3 lines, 0.25%) fewer lines than recorded: that is what a suite ending
+  early looks like. A smaller drop or any growth is printed as a note, so
+  one-line timing jitter does not fail the gate. Each script's own LCOV
+  (`wasm/<build>/scripts/<script>.lcov`) is kept in the evidence so two runs can
+  be compared line by line. Update the baseline in the change that changes the
+  suites.
+- Tests never race the client's own requests for coverage: where a newer
+  listing must supersede an in-flight one, the suite holds that request so the
+  supersede always happens.
+
+Repeated runs of one commit give identical WASM client totals. The native total
+can differ by two lines: `lytronaut-storage/src/desktop.rs`, where the second of
+two concurrent imports of one library (`tokio::join!` in the PostgreSQL desktop
+test) finds the first already installed only if both passed the early
+fingerprint check before either committed. That race is the behaviour under
+test; it moves the native total by 0.02 points, far inside the margin above the
+95% floor.
+
+### GPU suite
+
 The GPU suite is not part of this run. On the CI runner, Chrome 154's SwiftShader
 software adapter renders offscreen but loses the device on canvas presentation in
 headless mode. A headful browser on Xvfb with Vulkan SwiftShader presents

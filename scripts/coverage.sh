@@ -168,6 +168,9 @@ report() {
         for script in $(for f in "${profiles[@]}"; do basename "$f" | sed -E 's/-[0-9]+-[0-9]{4}-.*$//'; done | sort -u); do
             "$tools/llvm-profdata" merge -sparse -failure-mode=all "$dir"/profraw/"$script"-[0-9]*.profraw -o "$dir/script.profdata" 2>> "$dir/merge.stderr"
             record "wasm_${name}_script_${script}_lines" "$("$tools/llvm-cov" export -summary-only -instr-profile "$dir/script.profdata" -object "$dir/application.wasm" 2>> "$dir/export.stderr" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["totals"]["lines"]["covered"])')" builds
+            # Kept as evidence so two runs can be compared line by line per script.
+            mkdir -p "$dir/scripts"
+            "$tools/llvm-cov" export -format=lcov -instr-profile "$dir/script.profdata" -object "$dir/application.wasm" > "$dir/scripts/$script.lcov" 2>> "$dir/export.stderr"
         done
         rm -f "$dir/script.profdata"
         args+=(--wasm "$name=$dir")

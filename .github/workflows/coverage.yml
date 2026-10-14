@@ -56,7 +56,7 @@ jobs:
         run: |
           cd target/coverage || exit 0
           files=()
-          for path in report meta native.lcov wasm/*/coverage.lcov wasm/*/*.stderr wasm/*/profraw/driver-*.json; do
+          for path in report meta native.lcov wasm/*/coverage.lcov wasm/*/scripts/*.lcov wasm/*/*.stderr wasm/*/profraw/driver-*.json; do
             if [[ -e $path ]]; then files+=("$path"); fi
           done
           [[ ${#files[@]} -gt 0 ]] || exit 0
