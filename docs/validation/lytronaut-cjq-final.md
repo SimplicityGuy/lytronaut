@@ -63,12 +63,27 @@ required checks yet.
 
 ## Private library
 
-Not rerun at this source. The earlier protected runs remain the latest
-private evidence: 109 captures, 3 albums and 109 ordered memberships, 58 focus
-stacks with 420 JPEG planes, and 728 logical originals unchanged through import,
-export and isolated restore ([export report](lytronaut-u8i-export.md),
-[focus report](lytronaut-m5h-focus.md)). A rerun at the final source needs the
-operator's authorised sealed copy and is listed as open below.
+Run locally on 2026-10-14 at `30800deb642d94c3bdcc7dc6956043829eb7202d` with
+release native service and release Rust/WASM client, against the operator's
+library opened read-only. Only aggregate numbers leave the machine; every
+derived catalog, export, bundle and restored copy was deleted afterwards. The
+host was a shared Apple M1 Pro (MacBookPro18,1) with a load average of about
+13 to 17 from unrelated work, so the timings are contended upper bounds.
+
+| Check | Result |
+|---|---|
+| Source files / bytes / unique contents | 728 / 2,001,830,074 / 638 |
+| Directory import through the HTTP upload protocol | catalog ready in 51.6 s |
+| Pictures, albums, album memberships | 109, 3, 109 |
+| Previews, JPEG focus stacks, JPEG planes | 109, 58, 420 |
+| Preserved files / bytes in the catalog | 728 / 2,001,830,074 |
+| Restart (release; rehashes every sealed original) to healthy | 7.4 s; all counts identical |
+| Flattened PNG export | succeeded |
+| Live Photo pair export (3 stacks) | 3 succeeded, 0.5 to 0.6 s each |
+| Portable bundle (any-size backup) | succeeded in 17.8 s, 2,001,887,237 bytes |
+| Restore into SQLite, served from the restored copy | succeeded in 29.4 s; all counts identical; 728 of 728 originals downloaded byte-identical to the source |
+| Restore into PostgreSQL 18.6 (disposable container), served from the restored schema | succeeded in 26.0 s; all counts identical; 728 of 728 originals byte-identical |
+| Source library afterwards | 728 of 728 files unchanged (hash, size and modification time) |
 
 ## Not met or not verified
 
@@ -76,8 +91,7 @@ These stay visible; none is claimed:
 
 - CPU focus p95 at most 100 ms on the release reference host: **not met** (last
   integrated release measurements 104.7 to 150.7 ms).
-- Performance under grid load, and the private-library import, restart,
-  export and restore rerun at the current source: open.
+- Performance under grid load: open.
 - H.264 Level 5 frame-size check (1138 x 1842) and Live Photo export end to end
   on PostgreSQL: open.
 - Counted 64/32 MiB Live Photo memory budget: partly proven (accepted

@@ -106,10 +106,13 @@ bounded local TCP request. Readiness requires a live application database pool;
 startup must finish storage recovery, catalog/API migration and loading generated
 client assets before the listener opens. Recovery rehashes sealed originals; it
 does not skip integrity verification to meet a readiness deadline. Docker checks
-every 10 seconds, with a 30-second initial grace period. Increase
-`healthcheck.start_period` in your Compose override if measured recovery of your
-existing library takes longer; synthetic smoke timings do not establish a bound
-for a large library.
+every 10 seconds, with a 30-second initial grace period. Measured with release
+builds on a 109-capture library (728 originals, 2.0 GB) on an Apple M1 Pro
+under heavy unrelated load, a restart reached healthy in 7.4 seconds, so the
+default leaves about four times headroom for a library of that size. Recovery
+time grows with the bytes of sealed originals and the speed of their disk: for
+a much larger library or slower storage, time one restart and set
+`healthcheck.start_period` in your Compose override to at least twice that.
 `LYTRONAUT_LISTEN` is a numeric IPv4/IPv6 socket address; wildcard probes use the
 matching loopback family. SIGTERM stops admission, cancels intake and background
 exports/restores, then drains accepted HTTP work and closes the database pool. Drain and

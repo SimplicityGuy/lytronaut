@@ -798,7 +798,7 @@ reference-host runs. Optional software-adapter runs stay distinct from those.
 Neither limitation is upgraded to passed. Still **open**:
 
 - Focus latency under grid-image load.
-- A private-corpus export rerun at the current source.
+- A private-corpus export rerun at the current source. Done 2026-10-14 (aggregate results in [the final validation report](../validation/lytronaut-cjq-final.md#private-library)).
 - Checking the 1138×1842 first frame against the H.264 Level 5 per-frame limits.
 - Live Photo export on PostgreSQL end to end.
 - Release CPU-mode focus interaction p95: **not met** (target ≤100 ms).
