@@ -29,6 +29,19 @@ function zip(name, data, zip64) {
   return Buffer.concat(parts);
 }
 
+// A central directory of declared entries (no file data) followed by a classic
+// end record; enough for the client's pre-upload admission check.
+function declared(entries, count = entries.length) {
+  const u16 = v => { const b = Buffer.alloc(2); b.writeUInt16LE(v); return b; };
+  const u32 = v => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
+  const central = Buffer.concat(entries.map(({ name, size, extra = Buffer.alloc(0) }) => {
+    const n = Buffer.from(name);
+    return Buffer.concat([Buffer.from('PK\x01\x02', 'latin1'), u16(0x0314), u16(45), u16(0), u16(0), u32(0), u32(0), u32(size), u32(size),
+      u16(n.length), u16(extra.length), u16(0), u16(0), u16(0), u32(0o100644 << 16), u32(0), n, extra]);
+  }));
+  return Buffer.concat([central, Buffer.from('PK\x05\x06', 'latin1'), u16(0), u16(0), u16(count), u16(count), u32(central.length), u32(0), u16(0)]);
+}
+
 module.exports = async ({ browser, origin }) => {
   const page = await browser.newPage();
   page.setDefaultTimeout(30000);
@@ -93,6 +106,23 @@ module.exports = async ({ browser, origin }) => {
       await statusIncludes(message);
       await page.evaluate(() => window.__undo());
       proof.zipReads.push(name);
+    }
+    // ZIP declarations beyond the admission bounds are refused the same way.
+    const field = (id, data) => Buffer.concat([Buffer.from([id & 0xff, id >> 8, data.length & 0xff, data.length >> 8]), data]);
+    const size64 = v => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(v)); return b; };
+    proof.zipDeclarations = [];
+    for (const [name, bytes, message] of [
+      ['no-entries', declared([], 0), 'ZIP admission metadata exceeds bounds'],
+      // The ZIP64 size follows an unrelated extra field, which must be skipped.
+      ['zip64-size-after-other-field', declared([{ name: 'synthetic.bin', size: 0xffffffff, extra: Buffer.concat([field(0x5455, Buffer.alloc(5)), field(0x0001, Buffer.concat([size64(600 * 1024 * 1024), size64(600 * 1024 * 1024)]))]) }]), 'ZIP individual file exceeds 512 MiB'],
+      ['over-20-gib', declared(Array.from({ length: 41 }, (_, i) => ({ name: `synthetic-${i}.bin`, size: 512 * 1024 * 1024 }))), 'ZIP library exceeds admission bounds'],
+    ]) {
+      const file = path.join(scratch, `${name}.zip`);
+      fs.writeFileSync(file, bytes);
+      await page.waitForFunction(() => !document.querySelector('#zip').disabled);
+      await (await page.$('#zip')).uploadFile(file);
+      await statusIncludes(message);
+      proof.zipDeclarations.push(name);
     }
     assert.equal(imports, 0, 'no import is created when the selection cannot be read');
 
