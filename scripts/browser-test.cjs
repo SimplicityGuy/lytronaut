@@ -102,7 +102,7 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
   let sidebarProof=null;
   if(!privateMode&&!gpuMode){checkpoint='bounded-sidebars';sidebarProof=await require('./sidebar-test.cjs')({browser,origin});}
   // Separate public fault-injection flows (scripts/flows), each on its own page.
-  const flowProofs={};if(!privateMode&&!gpuMode)for(const flow of (process.env.LYTRONAUT_FLOWS??'fault-injection,focus-video-faults,browse-admission').split(',').filter(Boolean)){checkpoint='flow-'+flow;flowProofs[flow]=await require('./flows/'+flow+'.cjs')({browser,origin});}
+  const flowProofs={};if(!privateMode&&!gpuMode)for(const flow of (process.env.LYTRONAUT_FLOWS??'fault-injection,focus-video-faults,browse-admission,video-container-faults').split(',').filter(Boolean)){checkpoint='flow-'+flow;flowProofs[flow]=await require('./flows/'+flow+'.cjs')({browser,origin});}
   checkpoint='keyboard-navigation';const firstCapture=await page.$eval('.viewer-strip span',e=>e.textContent);
   await page.focus('.stage');await page.keyboard.press('ArrowRight');
   await page.waitForFunction(first=>document.querySelector('.viewer-strip span').textContent!==first,{},firstCapture);
