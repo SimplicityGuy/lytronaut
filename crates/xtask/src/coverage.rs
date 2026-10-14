@@ -187,6 +187,43 @@ fn gpu_exemptions(root: &Path) -> Result<(ExemptLines, Vec<Value>)> {
     Ok((lines, listed))
 }
 
+/// Browser scripts that must contribute WASM profiles to each instrumented build.
+/// A suite that aborts early or stops dumping fails the gate instead of silently
+/// shrinking the measured execution.
+const EXPECTED_DRIVERS: &[(&str, &[&str])] = &[
+    ("client", &["browser-test", "live-photo-test", "video-test"]),
+    ("harness", &["browser-test", "live-photo-jpeg-stress-test"]),
+];
+
+/// Per-script profile counts from the coverage driver summaries in `dir`.
+/// Script name -> (profiles written, pages that loaded the client).
+type DriverCounts = BTreeMap<String, (u64, u64)>;
+fn driver_summaries(dir: &Path) -> Result<(DriverCounts, Vec<String>)> {
+    let mut scripts = DriverCounts::new();
+    let mut failures = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries {
+            let path = entry?.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !(name.starts_with("driver-") && name.ends_with(".json")) {
+                continue;
+            }
+            let summary: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+            let script = summary["script"].as_str().unwrap_or("unknown").to_owned();
+            let entry = scripts.entry(script.clone()).or_default();
+            entry.0 += summary["profiles"].as_u64().unwrap_or(0);
+            entry.1 += summary["pagesWithClient"].as_u64().unwrap_or(0);
+            for failure in summary["failures"].as_array().into_iter().flatten() {
+                failures.push(format!(
+                    "{script}: {}",
+                    failure.as_str().unwrap_or("driver failure")
+                ));
+            }
+        }
+    }
+    Ok((scripts, failures))
+}
+
 /// First-party tooling crates: reported separately, never in a denominator.
 const TOOLING: &[&str] = &["xtask", "lytronaut-coverage"];
 
@@ -562,9 +599,28 @@ pub fn run(args: &[String]) -> Result<()> {
                 client.add(tally(&keep(Some(lines), &excluded_lines(file))));
             }
         }
+        let (scripts, driver_failures) = driver_summaries(&dir.join("profraw"))?;
+        for failure in driver_failures {
+            failures.push(format!("WASM build {name}: {failure}"));
+        }
+        for (build, expected) in EXPECTED_DRIVERS {
+            if build == name {
+                for script in *expected {
+                    if scripts
+                        .get(*script)
+                        .is_none_or(|(profiles, _)| *profiles == 0)
+                    {
+                        failures.push(format!(
+                            "WASM build {name}: browser script {script} contributed no profiles"
+                        ));
+                    }
+                }
+            }
+        }
         builds.push(
             json!({"name": name, "application_wasm_sha256": sha256(&dir.join("application.wasm"))?,
-            "external_files_dropped": external, "lytronaut_client": client.json()}),
+            "external_files_dropped": external, "lytronaut_client": client.json(),
+            "scripts": scripts.iter().map(|(s, (profiles, pages))| json!({"script": s, "profiles": profiles, "pages_with_client": pages})).collect::<Vec<_>>()}),
         );
     }
     let head = git(&["rev-parse", "HEAD"])?;
@@ -715,6 +771,14 @@ pub fn run(args: &[String]) -> Result<()> {
             b["lytronaut_client"]["covered"],
             b["lytronaut_client"]["lines"]
         ));
+        for script in b["scripts"].as_array().into_iter().flatten() {
+            md.push_str(&format!(
+                "  - `{}`: {} profiles from {} client pages\n",
+                script["script"].as_str().unwrap_or(""),
+                script["profiles"],
+                script["pages_with_client"]
+            ));
+        }
     }
     for (key, value) in &meta {
         md.push_str(&format!("- {key}: {value}\n"));
