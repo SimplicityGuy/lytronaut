@@ -48,6 +48,10 @@ async function dump(page, reason) {
   if (!state || !state.client) return;
   state.dumped = true;
   if (page.isClosed()) { fail(`${reason}: page closed before its client coverage was dumped`); return; }
+  // Let in-flight requests and queued rendering settle so the dump does not
+  // depend on how far asynchronous work happened to get (best effort, bounded).
+  await page.waitForNetworkIdle({ idleTime: 250, timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))).catch(() => {});
   let result;
   try {
     result = await page.evaluate(() => {

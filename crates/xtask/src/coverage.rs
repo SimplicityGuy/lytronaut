@@ -195,6 +195,10 @@ const EXPECTED_DRIVERS: &[(&str, &[&str])] = &[
     ("harness", &["browser-test", "live-photo-jpeg-stress-test"]),
 ];
 
+/// Recorded floors of instrumented lines each browser script covers on its own
+/// (build, script, minimum). A suite that silently stops part-way drops below.
+const SCRIPT_LINE_FLOORS: &[(&str, &str, u64)] = &[];
+
 /// Per-script profile counts from the coverage driver summaries in `dir`.
 /// Script name -> (profiles written, pages that loaded the client).
 type DriverCounts = BTreeMap<String, (u64, u64)>;
@@ -602,6 +606,16 @@ pub fn run(args: &[String]) -> Result<()> {
         let (scripts, driver_failures) = driver_summaries(&dir.join("profraw"))?;
         for failure in driver_failures {
             failures.push(format!("WASM build {name}: {failure}"));
+        }
+        for (build, script, floor) in SCRIPT_LINE_FLOORS {
+            if build == name {
+                let key = format!("wasm_{name}_script_{script}_lines");
+                match meta.get(&key).and_then(|v| v.parse::<u64>().ok()) {
+                    Some(lines) if lines >= *floor => {}
+                    Some(lines) => failures.push(format!("WASM build {name}: browser script {script} covered {lines} lines, below its recorded floor {floor}")),
+                    None => failures.push(format!("WASM build {name}: no per-script line count for {script}")),
+                }
+            }
         }
         for (build, expected) in EXPECTED_DRIVERS {
             if build == name {
