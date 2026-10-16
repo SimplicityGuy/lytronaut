@@ -308,3 +308,65 @@ async fn postgres_http_cancel_during_render_and_partial_write() {
 async fn postgres_http_shutdown_drains_workers_before_restart() {
     restart_case(true).await;
 }
+
+/// The worker is demonstrably active at a real render boundary. A single
+/// failed state read followed by a successful read must leave it running.
+async fn single_monitor_error_case(pg: bool) {
+    let (fx, store, api, asset, bytes, original) = fixture(pg, Stage::Render).await;
+    let gate = Gate::new(Stage::Render);
+    let release = Release(gate.clone());
+    *api.0.export_gate.lock().unwrap() = Some(gate.clone());
+    let http = Http::new(&api).await;
+    let id = begin(&http, &asset).await;
+    bounded(gate.entered.notified()).await;
+    test_seam::arm_single_failure(&id);
+    let cancelled = bounded(async {
+        loop {
+            if let Some(value) = test_seam::recovered(&id) {
+                break value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    // Release and drain even if the invariant is broken, so a failed test
+    // cannot leave a worker holding the service/store behind its paused gate.
+    drop(release);
+    let terminal = bounded(async {
+        loop {
+            let state = report(&api, &id).await.unwrap().state;
+            if matches!(
+                state,
+                JobState::Succeeded | JobState::Failed | JobState::Cancelled
+            ) {
+                break state;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    bounded(api.shutdown()).await.unwrap();
+    assert_eq!(
+        http.request("DELETE", &format!("/exports/{id}"), b"")
+            .await
+            .0,
+        200
+    );
+    assert!(!cancelled, "one failed monitor read cancelled active work");
+    assert_eq!(terminal, JobState::Succeeded);
+    assert_eq!(fs::read(original).unwrap(), bytes);
+    http.stop().await;
+    sentinel(&fx).await;
+    drop(api);
+    drop(store);
+    fx.finish().await;
+}
+#[tokio::test]
+async fn sqlite_single_transient_monitor_read_retries_active_work() {
+    single_monitor_error_case(false).await;
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL with restricted role and sentinel"]
+async fn postgres_single_transient_monitor_read_retries_active_work() {
+    single_monitor_error_case(true).await;
+}

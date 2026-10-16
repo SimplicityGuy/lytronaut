@@ -282,12 +282,15 @@ recorded publication, since the database and export root are separate stores)
 becomes `failed` with error `unverified-result` (also reported
 as retryable `storage_unavailable`), keeps its files, namespace, journal and quota,
 and is never cleaned automatically: only an explicit `DELETE`, with ownership proof,
-removes the user's restored copy. If either non-ready state cannot be persisted,
+removes the user's restored copy. Each startup retries publication/ownership and
+PostgreSQL schema verification; if they pass, a retained `unverified-result` job
+returns to `succeeded`. This verifies ownership and publication, not every restored
+file's content hash. Missing/non-published journals remain unready. If either non-ready state cannot be persisted,
 startup is refused rather than leaving the job in its previous state. Startup is
 refused only for whole-store failures: an unreadable export root or restore journal,
 or an unreachable database (checked after any per-job failure). A journal file name
 that is not an application job id is foreign and is left untouched.
-Without a journal, a `<job>.restored` or `<job>.pending-*` path is not provably
+Without a journal, a `<job>.restored`, `<job>.pending-*` or `<job>.deleting-*` path is not provably
 owned: cleanup leaves it untouched and keeps the job's reservation (no quota is
 released while those bytes remain), exactly like the other fixed transfer names.
 
@@ -295,8 +298,9 @@ The worker's final status UPDATE can fail ambiguously (committed, but reported a
 an error). The worker therefore re-reads the durable job state and acts only on it:
 a committed success keeps its published result, a durable failure or cancellation
 triggers owned cleanup, and any other state leaves ownership, files and quota to
-startup reconciliation. The worker's progress monitor may stop work early when it
-cannot read the job state, but that never decides the outcome: only a cancellation
+startup reconciliation. The worker's progress monitor retries one failed state read at its next 25 ms
+poll; any successful read resets that allowance. Two consecutive failed reads
+stop work early, but that never decides the outcome: only a cancellation
 recorded in the database (applied atomically by the final UPDATE) discards a
 finished restore, and an unreadable state after success leaves the result, files
 and quota for reconciliation. Recovery keeps an already recorded cancellation or failure
@@ -318,8 +322,9 @@ Restore jobs at startup, by database row state, restore journal phase and whethe
 the owned files (`<job>.restored` / pending store and, on PostgreSQL, the owned
 schema) are present. "Unverified" means: persist `failed` / `unverified-result`
 (reported as retryable `storage_unavailable`), retain files, schema, journal and
-quota (re-counting the journaled reservation if the row lost it), never ready, and
-remove only on an explicit `DELETE` with ownership proof. "Cleanup" means owned
+quota (re-counting the journaled reservation if the row lost it in the same atomic
+UPDATE as the unverified status), unready for this recovery, and remove only on
+an explicit `DELETE` with ownership proof. Subsequent startups retry verification. "Cleanup" means owned
 cleanup with marker/nonce proof, releasing quota only after removal; an unprovable
 or failed cleanup becomes `cleanup-blocked` (retained, retried on DELETE/startup).
 Startup is refused only for whole-store failures or when the chosen state cannot be
@@ -329,19 +334,21 @@ CleanupPending, CleanupComplete (a cleanup was already decided and begun).
 
 | Row state | Journal phase | Files | Action |
 |---|---|---|---|
-| any, error `unverified-result` | any | any | Keep as is (retained until DELETE) |
+| any | cleanup-intent | any | Resume durable owned cleanup before considering readiness or unverified errors |
+| `failed`, error `unverified-result` | published or once-ready | verified | Restore succeeded, clear error, keep accounting; journal → JobSucceeded |
+| `failed`, error `unverified-result` | any | missing or not verified | Keep unverified and counted; retry next startup |
+| `cancelled`/`cancelling` | any | any | Cleanup (recorded DELETE takes precedence, including unverified results) |
 | `succeeded` | published or once-ready | present, verified (dir, private marker, PG schema marker) | Ready; journal → JobSucceeded |
 | `succeeded` | published or once-ready | missing or not verified | Unverified |
-| `succeeded` | never-ready or cleanup-intent | any | Unverified |
+| `succeeded` | never-ready | any | Unverified |
 | `succeeded` | absent | any | Unverified (M1) |
 | missing | once-ready | any | Re-create row as unverified with retained = journaled reservation |
-| `queued`/`running`/`cancelling` | once-ready | any | Unverified (database regressed; no recorded DELETE) |
+| `queued`/`running` | once-ready | any | Unverified (database regressed; no recorded DELETE) |
 | `failed` (not `cleanup-blocked`) | once-ready | any | Unverified |
 | `cancelled`, or `failed`/`cleanup-blocked` | once-ready | any | Cleanup (recorded DELETE) |
-| missing, `queued`/`running`/`cancelling` | published | any | Unverified (no recorded outcome; may have been ready); missing row re-created |
+| missing, `queued`/`running` | published | any | Unverified (no recorded outcome; may have been ready); missing row re-created |
 | `cancelled` or `failed` | published | any | Cleanup (recorded terminal outcome) |
 | any non-`succeeded`, or missing | never-ready | any | Mark interrupted (keep a recorded reason), Cleanup |
-| any non-`succeeded`, or missing | cleanup-intent | any | Cleanup (continue the recorded decision) |
 | `failed`/`cancelled` | absent | `<job>.restored` or `<job>.pending-*` present | Cleanup-blocked (unprovable; nothing deleted, quota kept) |
 | `failed`/`cancelled` | absent | none present | Release quota (nothing owned remains) |
 | `queued`/`running`/`cancelling` | absent | any | Mark interrupted, then as the `failed` rows above |
@@ -350,18 +357,21 @@ Intentional behaviour change: a published result (FilesPublished) whose job has 
 recorded outcome used to be cleaned up at startup as an interrupted job. Because a
 database restored from an older snapshot looks exactly the same, it is now kept as
 unverified. After a crash between publication and the final status write the user
-therefore sees a retained, unready restore and removes it with `DELETE`.
+therefore sees a retained, unready restore. A subsequent startup can verify it
+and restore readiness; `DELETE` requests owned cleanup instead. Recovery logs do
+not claim a recreated row was previously ready or that verification was attempted
+when the journal only proves publication.
 
 Every cell that can delete data requires either a recorded cancellation/DELETE or
 terminal failure (cancelled, failed, cleanup-blocked), a never-ready phase, or an
 already recorded cleanup decision. Without a journal nothing restore-owned is
 deleted because ownership cannot be proved.
 
-Finished non-restore exports (archive and flatten artifacts) are not re-verified at
-startup. A `succeeded` archive/flatten row keeps its status even if its artifact was
-lost or the database regressed, so the status can be misleading; download still
-refuses it unless the job is `succeeded` and its transfer-owner record and artifact
-verify, so no unverified bytes are served.
+Finished non-restore exports (archive, Flatten and Live Photo artifacts) are not
+re-verified at startup. A `succeeded` row records job completion even if its
+artifact was later lost. Download requires the succeeded row, verified transfer
+ownership and an openable artifact; it does not rehash content. See the explicit
+non-restore integrity-policy disposition below.
 
 ## Verification
 
@@ -399,22 +409,49 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   live writes during a restore import, an exactly-at-limit source cell, per-job
   blocked cleanup that still starts the service, an unverifiable ready result
   that fails closed and is never auto-deleted, a monitor read error after success
-  that keeps the result, and whole-store failures that still refuse startup. Every case checks unrelated SQL/filesystem sentinels and
-  the live library.
+  that keeps the result, and whole-store failures that still refuse startup.
+  Every case checks unrelated SQL/filesystem sentinels and the live library.
+
+New `lytronaut-25u` cases are authored for both engines but execution is pending:
+startup re-verification after repaired ownership; published/missing-row and
+published/cancelling cases; an SQL-trigger check that unverified status never
+commits with lost accounting; tombstone intent/rename/deletion crash cuts and
+foreign-directory substitution (including actual DELETE of a failed/unverified
+row and a failed fallback state write); unjournaled tombstone preservation; and active
+monitor retry at a deterministic render boundary in `export_control_tests.rs`.
+Only the initial failing-first readiness cases (SQLite and PostgreSQL) and
+SQLite cleanup crash-cut case have executed so far, against the original code;
+they failed as expected. The changed implementation has not yet been compiled.
 
 Not covered by an engine test: a database connection lost during cleanup, and
 measured memory under concurrent admission. Coverage is gated separately.
 
-Known follow-ups, deliberately not changed here:
+Reconciliation follow-ups (lytronaut-25u):
 
-- An `unverified-result` job stays unready until `DELETE`; re-verifying it at each
-  startup and restoring readiness when it verifies again would be safe.
-- Directory cleanup removes the owned result with `remove_dir_all` after checking
-  its marker; renaming it to a private tombstone first would make a crash mid-removal
-  recoverable instead of permanently blocked.
-- The worker's progress monitor stops work early on a single failed state read; a
-  short retry before stopping would avoid aborting healthy jobs on one transient
-  error (outcomes are already decided only by durable state).
+- Startup retries retained unverified restores and restores readiness on ownership/
+  publication/schema verification. Missing-row recreation and zero-accounting
+  recovery remain conservative, using the journaled reservation. Recorded
+  `cancelling` is a DELETE even when the journal says FilesPublished/JobSucceeded.
+- Before recursive restore cleanup, the journal durably records the verified
+  directory's device/inode and pending/result slot, then the directory is renamed
+  to a private nonce-qualified tombstone and the export root is synced. Recovery
+  matches that exact directory identity before resuming deletion; it does not
+  need an inner marker that partial deletion already removed. Unrelated,
+  mismatched or symlink paths remain untouched and quota stays retained. Identity
+  is tied to the original filesystem: moving a partially cleaned store to another
+  filesystem may require operator resolution, and fails closed. Existing journals
+  without this optional cleanup field remain readable.
+- A single failed monitor state read is retried; two consecutive failures still
+  stop work early. A durable DELETE or shutdown continues to stop work immediately.
+- Finished non-restore archive, Flatten and Live Photo artifacts are deliberately
+  **not re-verified at startup** (won't-fix for this bead). Their `succeeded` status
+  records the completed job, not ongoing artifact integrity. Download verifies
+  transient ownership and opens the artifact; absent/conflicting ownership or a
+  missing/unreadable file is refused. Download does not rehash artifact content,
+  so corruption/truncation is not universally detected. A full startup scan could
+  re-read multi-GiB whole-library archives and block service startup; adding a
+  background integrity state/API is a separate product change. Users must retain
+  their original library and verify portable bundle hashes during restore.
 
 Transient ownership uses a separate durable nonce record before creating a private
 job transfer directory and marker. Uploads, export artifacts and logical spools
@@ -425,8 +462,9 @@ Successful upload crashes before restore journal creation are recoverable throug
 this earlier ownership record. Initial mkdir/marker crash cuts retain the record
 and quota rather than guessing that an unmarked directory is safe to remove.
 
-Recursive removal is not atomic. If interruption removes the ownership marker
-before all directory contents, a subsequent recovery deliberately fails closed:
-it retains the durable record, remaining files and reservation. It never resumes
-deletion by inferring ownership from the directory name. This conservative state
-requires ownership resolution; automatic resumable deletion is not claimed.
+Recursive removal is not atomic. Restore results now use the journaled identity
+and tombstone protocol above to resume partial deletion. Transient transfer-owner
+cleanup still requires its inner marker: if interruption removes it before all
+contents, recovery retains the durable record, remaining files and reservation
+for ownership resolution. It never infers ownership from the directory name;
+automatic resumable deletion of those transient directories is not claimed.
