@@ -60,7 +60,7 @@ pub(super) fn configuration(width: u32, height: u32) -> (Vec<u8>, Vec<u8>) {
     let mut s = Bits::default();
     s.n(66, 8);
     s.n(0xc0, 8);
-    s.n(50, 8); // Baseline Level 5, bounded <=90 Mbit/s.
+    s.n(50, 8); // Baseline Level 5; movie byte cap alone is not an HRD proof.
     s.ue(0);
     s.ue(0);
     s.ue(2);

@@ -5,6 +5,35 @@ use lytronaut_format::{
 };
 const ID: &str = "A8A8A8A8-1111-4444-8888-121212121212";
 #[test]
+fn admitted_geometry_fits_level_five_frame_size_and_processing_rate() {
+    // Independent Annex A geometry oracle, including padding rather than only
+    // visible pixels. No image allocation or codec run is needed for admission.
+    let mut maximum = 0;
+    for width in (2u32..=2048).step_by(2) {
+        for height in (2u32..=2048).step_by(2) {
+            let geometry = Geometry { width, height };
+            let plan = Plan::new(geometry, &[-1.0, 1.0], 0);
+            if width * height > 2 * 1024 * 1024 {
+                assert!(matches!(plan, Err(FormatError::Unsupported)));
+                continue;
+            }
+            assert!(plan.is_ok(), "admitted geometry {width}x{height}");
+            let columns = width.div_ceil(16);
+            let rows = height.div_ceil(16);
+            let macroblocks = columns * rows;
+            maximum = maximum.max(macroblocks);
+            assert!(macroblocks <= 22_080, "Level 5 MaxFS");
+            assert!(columns * columns <= 8 * 22_080);
+            assert!(rows * rows <= 8 * 22_080);
+            // Even the stack's maximum 64 samples in a three-second movie
+            // stays below MaxMBPS; size admission can only lower this rate.
+            assert!(macroblocks * 64 <= 589_824 * 3);
+        }
+    }
+    assert_eq!(maximum, 8352);
+    assert_eq!(1138u32.div_ceil(16) * 1842u32.div_ceil(16), maximum);
+}
+#[test]
 fn platform_jpeg_metadata_at_two_million_pixels_keeps_real_decode_admission() {
     let geometry = Geometry {
         width: 2048,
