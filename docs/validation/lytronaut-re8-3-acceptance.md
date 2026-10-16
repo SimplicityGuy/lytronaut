@@ -38,7 +38,15 @@ The encoder admits even dimensions ≤2048 with ≤2,097,152 visible pixels.
 The regression `admitted_geometry_fits_level_five_frame_size_and_processing_rate`
 enumerates all even shapes and rejected pixel-limit shapes. It checks padded
 macroblocks and the conservative 64-frame / three-second processing rate.
-It allocates no images and does not run a decoder. It has not yet been run.
+It allocates no images and does not run a decoder. It passed at clean source
+`d2b63f27793bc9849d9c2369ec319203c2187e25` using mise-pinned Cargo: one test
+passed, seven filtered out; compilation took 14.26 s and the test took 0.37 s.
+The command was `cargo test --locked -p lytronaut-format --test live_photo
+admitted_geometry_fits_level_five_frame_size_and_processing_rate -- --exact`,
+with one build job, incremental compilation off and debug information off.
+Its source identity, command, environment and output are retained in the
+external evidence folder's `focused-cargo-regression.log`. This focused package
+test does not replace the canonical check.
 
 At 1138×1842, coding padding gives 72×116 = 8,352 macroblocks. Level 5
 permits 22,080 and each axis ≤sqrt(8×22,080); the conservative processing rate
@@ -96,7 +104,8 @@ private source identifiers, paths, hashes, pixels or calibration into this repo.
 The current host has insufficient free disk for a fresh build and excessive
 load for reliable latency acceptance. No browser, private-corpus, PostgreSQL or
 performance run has been performed for this bead. The bounded AVC probe above
-is the only executable correctness experiment. Do not reinterpret the later
+and focused Cargo regression above are the executable correctness experiments.
+Do not reinterpret the later
 `b81e689` CPU p95 of 137.9–150.4 ms as the older post-export 104.7–150.7 ms stage,
 or attribute either stage to the current delivery revision.
 
