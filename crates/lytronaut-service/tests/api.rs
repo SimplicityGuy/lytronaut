@@ -44,6 +44,7 @@ struct Server {
     postgres: Option<(PgConnection, String)>,
     port: u16,
     task: Option<tokio::task::JoinHandle<()>>,
+    api: Option<Api>,
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -114,6 +115,7 @@ impl Server {
             store: None,
             port: 0,
             task: None,
+            api: None,
         };
         s.start().await;
         s
@@ -138,35 +140,23 @@ impl Server {
             self.assert_public_sentinel().await;
             assert!(!self.root.join("catalog.db").exists());
         }
-        // An in-process restart races the previous server's detached job
-        // workers, which hold the store's exclusive lock until they finish
-        // their final status and cleanup. A real restart ends the process.
-        let mut attempts = 0;
-        let store = loop {
-            match Store::open(
-                catalog.clone(),
-                &self.root.join("originals"),
-                &self.root.join("staging"),
-                Limits {
-                    upload_bytes: 4 * 1024 * 1024,
-                    file_bytes: 2 * 1024 * 1024,
-                    encoded_bytes: 4 * 1024 * 1024,
-                    metadata_bytes: 64 * 1024,
-                    files: 32,
-                    free_floor: 0,
-                    reserved_bytes: 2 * 1024 * 1024 * 1024,
-                    ..Default::default()
-                },
-            )
-            .await
-            {
-                Err(lytronaut_storage::StorageError::Busy) if attempts < 500 => {
-                    attempts += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                result => break result.unwrap(),
-            }
-        };
+        let store = Store::open(
+            catalog.clone(),
+            &self.root.join("originals"),
+            &self.root.join("staging"),
+            Limits {
+                upload_bytes: 4 * 1024 * 1024,
+                file_bytes: 2 * 1024 * 1024,
+                encoded_bytes: 4 * 1024 * 1024,
+                metadata_bytes: 64 * 1024,
+                files: 32,
+                free_floor: 0,
+                reserved_bytes: 2 * 1024 * 1024 * 1024,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         let api = Api::open(catalog.clone(), store.clone()).await.unwrap();
         self.assert_public_sentinel().await;
         let app = router_with_routes(
@@ -174,7 +164,7 @@ impl Server {
                 catalog: catalog.clone(),
                 security: SecurityConfig::new("http://127.0.0.1:3000").unwrap(),
             },
-            uploads::routes(store.clone()).merge(api.routes()),
+            uploads::routes(store.clone()).merge(api.clone().routes()),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         self.port = listener.local_addr().unwrap().port();
@@ -183,11 +173,13 @@ impl Server {
         }));
         self.store = Some(store);
         self.catalog = Some(catalog);
+        self.api = Some(api);
     }
     async fn restart(&mut self) {
         let t = self.task.take().unwrap();
         t.abort();
         let _ = t.await;
+        self.api.take().unwrap().shutdown().await.unwrap();
         self.store.take();
         self.catalog.take().unwrap().pool().close().await;
         self.start().await;
@@ -217,6 +209,7 @@ impl Server {
             task.abort();
             let _ = task.await;
         }
+        self.api.take().unwrap().shutdown().await.unwrap();
         self.store.take();
         self.catalog.take().unwrap().pool().close().await;
         self.assert_public_sentinel().await;
@@ -1606,48 +1599,9 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
     s.close().await;
 }
 
-fn live_focus_fixture() -> Vec<u8> {
-    live_focus_fixture_with(false)
-}
-/// `missing_second`: the directory still references the second stored plane but
-/// its content section is absent from the container.
-fn live_focus_fixture_with(missing_second: bool) -> Vec<u8> {
-    use sha1::{Digest, Sha1};
-    let hash = |b: &[u8]| format!("sha1-{:x}", Sha1::digest(b));
-    let planes: Vec<Vec<u8>> = [[255u8, 0, 0], [0, 0, 255]]
-        .into_iter()
-        .map(|rgb| {
-            let mut bytes = Vec::new();
-            let pixels: Vec<_> = (0..32 * 16).flat_map(|_| rgb).collect();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
-                .encode(&pixels, 32, 16, image::ExtendedColorType::Rgb8)
-                .unwrap();
-            bytes
-        })
-        .collect();
-    let directory=serde_json::to_vec(&json!({"version":{"major":1,"minor":0},"picture":{"recipe":{"cameraSerial":"invented-sensitive-note","sourcePath":"invented-private-path","orientation":8},"accelerationArray":[{"type":"com.lytro.acceleration.refocusStack","vendorContent":{"imageArray":[{"representation":"jpeg","width":32,"height":16,"lambda":-1,"imageRef":hash(&planes[0])},{"representation":"jpeg","width":32,"height":16,"lambda":1,"imageRef":hash(&planes[1])}]}}]}})).unwrap();
-    let mut bytes = b"\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0".to_vec();
-    let mut sections = vec![(true, directory.as_slice()), (false, planes[0].as_slice())];
-    if !missing_second {
-        sections.push((false, planes[1].as_slice()));
-    }
-    for (directory, payload) in sections {
-        bytes.extend(if directory {
-            b"\x89LFM\r\n\x1a\n"
-        } else {
-            b"\x89LFC\r\n\x1a\n"
-        });
-        bytes.extend([0; 4]);
-        bytes.extend((payload.len() as u32).to_be_bytes());
-        bytes.extend(hash(payload).as_bytes());
-        bytes.extend([0; 35]);
-        bytes.extend(payload);
-        while !bytes.len().is_multiple_of(16) {
-            bytes.push(0);
-        }
-    }
-    bytes
-}
+#[path = "support/live_focus.rs"]
+mod live_focus;
+use live_focus::{live_focus_fixture, live_focus_fixture_with};
 fn live_zip_entries(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
     let mut out = std::collections::BTreeMap::new();
     let mut p = 0;
@@ -1864,7 +1818,7 @@ async fn live_photo_delete_succeeded_removes_pair_and_quota_across_restart() {
     s.close().await;
 }
 #[tokio::test]
-async fn live_photo_cancel_in_flight_never_offers_a_half_pair() {
+async fn live_photo_delete_after_create_never_offers_a_half_pair() {
     let (s, headers, mutation, asset, _) = live_photo_server().await;
     for _ in 0..4 {
         let id = live_photo_create(&s, &mutation, &asset, 1, 1).await;
@@ -1906,7 +1860,7 @@ async fn live_photo_cancel_in_flight_never_offers_a_half_pair() {
     s.close().await;
 }
 #[tokio::test]
-async fn live_photo_unavailable_plane_fails_without_output_and_survives_restart() {
+async fn live_photo_out_of_range_plane_fails_without_output_and_survives_restart() {
     let (mut s, headers, mutation, asset, source) = live_photo_server().await;
     let id = live_photo_create(&s, &mutation, &asset, 63, 1).await;
     assert_eq!(wait_export(&s, &id, &headers).await["state"], "failed");
