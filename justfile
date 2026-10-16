@@ -20,7 +20,7 @@ lint:
 test:
     cargo test --locked --workspace --all-targets --all-features
     cargo test --locked --workspace --doc
-    node --test scripts/coverage.test.cjs
+    node --test scripts/coverage.test.cjs scripts/focus-grid-load.test.cjs
 
 # Explicit disposable PostgreSQL only; the default SQLite test recipe stays independent.
 # Requires a restricted role, CONNECT+CREATE on its dedicated DB, and the synthetic

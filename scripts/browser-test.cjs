@@ -10,6 +10,8 @@ assert(root,'LYTRONAUT_TEST_ROOT must point at synthetic fixture/scratch');
 const gpuMode=process.env.LYTRONAUT_GPU_TEST==='1';
 const privateMode=process.env.LYTRONAUT_PRIVATE_TEST==='1';
 const gpuLifetimeMode=process.env.LYTRONAUT_GPU_LIFETIME_TEST==='1';
+const gridLoadMode=process.env.LYTRONAUT_GRID_LOAD_TEST==='1';
+if(gridLoadMode)assert(!privateMode&&!gpuMode&&!gpuLifetimeMode&&process.env.LYTRONAUT_OWNER_TEST!=='1'&&process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'&&!process.env.LYTRONAUT_VIDEO_PRIVATE_ROOT&&!process.env.LYTRONAUT_PRIVATE_SEALED_ROOT,'grid-load acceptance experiment requires public synthetic CPU release mode');
 if(gpuLifetimeMode)assert(gpuMode&&!privateMode&&process.env.LYTRONAUT_OWNER_TEST!=='1'&&!process.env.LYTRONAUT_VIDEO_PRIVATE_ROOT&&!process.env.LYTRONAUT_PRIVATE_SEALED_ROOT,'reference GPU lifetime fixture rejects incompatible/private flags');
 const binary=process.env.LYTRONAUT_BINARY;
 const origin=process.env.LYTRONAUT_TEST_ORIGIN||'http://127.0.0.1:3017';
@@ -145,7 +147,7 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
    const displayed=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(Error('focus interaction timeout'));},5000);const observer=new MutationObserver(()=>{if(image.src!==old){clearTimeout(timer);observer.disconnect();resolve();}});observer.observe(image,{attributes:true,attributeFilter:['src']});});
    range.dispatchEvent(new Event('input',{bubbles:true}));await displayed;await image.decode();await new Promise(requestAnimationFrame);times.push(performance.now()-start);
   }times.sort((a,b)=>a-b);return {samples:times.length,pendingGridAtStart,p50InputToDecodedFrameReadyMs:times[Math.ceil(times.length*.5)-1],p95InputToDecodedFrameReadyMs:times[Math.ceil(times.length*.95)-1],maxInputToDecodedFrameReadyMs:times[times.length-1]};});
-  const focusUiLoadContendedTimes=await measureFocusUi();
+  const focusUiLoadContendedTimes=gridLoadMode?await require('./focus-grid-load.cjs').run({browser,page,origin,instrument}):await measureFocusUi();
   if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusUiLoadContendedTimes.pendingGridAtStart>0,'release grid-load gate requires pending grid images; a warm first batch is not load-contended evidence');
   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&[...document.querySelectorAll('.capture img')].every(i=>i.complete&&i.naturalWidth>0),{timeout:120000});
   const focusUiTimes=await measureFocusUi();

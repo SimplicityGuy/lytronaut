@@ -2,10 +2,16 @@
 
 Status: **open**. This source review does not clear the release gates.
 
-The acceptance worktree starts at application revision
-`5a9ece369185c8e81908db2421d2a6d2e5223373`. Validation bead `lytronaut-cjq`
-has additional, unmerged validation changes; its results do not attest this
-worktree, and this report does not attest their eventual integration.
+The acceptance worktree started at application revision
+`5a9ece369185c8e81908db2421d2a6d2e5223373`. Approved validation bead
+`lytronaut-cjq` landed in the epic at
+`37809a2294223384717cda33a4a285c8b4818788`; its complete source tree is
+`0da6c71f574992f7e1d60a2a90f0468cb1a8a77e`, identical to validated `469aa4f`.
+Acceptance merge `440b9b5117b6772f7fec1619be31cfef669c3a05` incorporated that
+baseline cleanly while preserving the three acceptance commits. Differences
+from that baseline were the encoder comment, geometry regression, acceptance
+report and release-grid assertion. The merged acceptance source has not passed
+the canonical check or runtime acceptance yet; neither has `main` delivery.
 
 ## Gate disposition
 
@@ -27,9 +33,9 @@ instead of accepting it as load-contended evidence. This prevents a false pass;
 it does not manufacture concurrent requests or prove load-contended latency.
 The future runtime recipe must establish real grid traffic before measuring.
 
-The written owner dispositions above are recorded in the validation branch's
+The written owner dispositions above are recorded in the integrated
 `docs/design/004-live-photo-export.md`, “Owner results and accepted limitations
-(2026-10-13)”. Preserve those records when integrating that branch. They are
+(2026-10-13)”. They are
 neither new approvals nor newly measured passes.
 
 ## H.264 bounds
@@ -119,9 +125,9 @@ format and contracts crate trees, root Cargo manifests/lock, mise/toolchain
 configuration, `.cargo`, or assets/web/static paths. The only changed crate file
 in that interval is the coverage tooling in `crates/xtask/src/coverage.rs`.
 This establishes application-source equality for that interval, not a rebuild
-or new runtime measurement. Integration must preserve those trees before
-carrying that private evidence forward; this older acceptance branch does not
-yet contain the validation branch's application fixes.
+or new runtime measurement. The epic's `37809a2` merge preserves the entire
+validated tree. The acceptance branch now contains those application fixes;
+later application changes still require scoped evidence review.
 
 Before repeating a multi-gigabyte private copy, compare the application source
 and program provenance used by that run with the integrated delivery source.
@@ -145,3 +151,28 @@ check and focused format regression, reconcile PostgreSQL evidence against the
 integrated source, and run quiet reference-host performance A/B against
 `623f2b9`. Preserve exact
 source/program identities and aggregate evidence outside the repository.
+
+## Opt-in grid contention experiment
+
+`LYTRONAUT_GRID_LOAD_TEST=1` selects `scripts/focus-grid-load.cjs` from the
+existing browser suite. It requires public synthetic CPU release mode
+(`LYTRONAUT_RELEASE_BENCHMARK=1`) and refuses private, owner and GPU modes.
+Existing test-root, binary, client and revision configuration still applies.
+No product controls or production code are added.
+
+Each of 24 interactions uses a fresh isolated page on the same synthetic
+24-capture catalog. The helper holds an actual nonselected grid preview's
+single chunk, starts focus timing, then continues that real HTTP request.
+It requires positive body bytes and network response completion within the
+exact input-to-decoded-frame-ready interval, followed by decode of that same
+capture's displayed grid image before the interval ends. No mock bytes are
+returned and focus timing never waits for the grid image to finish. A late
+response, late decode, cached/warm-only page or held-only request fails the
+experiment instead of claiming contention. The original page supplies a
+separate warm batch afterward.
+
+The helper is authored but has not run in a browser. Its evidence guard's nine
+unit cases pass (including adversarial missing/late body and decode cases), and
+syntax checks pass. This verifies evidence rejection only; it establishes no
+runtime overlap or latency result. A quiet reference host with built release
+artifacts remains necessary for the actual acceptance measurement.
