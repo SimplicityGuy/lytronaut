@@ -1267,14 +1267,16 @@ async fn denied_cleanup_retains_ownership_and_quota_until_retry(pg: bool) {
         .map(|entry| entry.unwrap().metadata().unwrap().len())
         .sum();
     assert!(on_disk >= BLOB.len() as u64, "retained files stay on disk");
-    let available = env.store.available_staging_bytes().unwrap();
-    let need = available.saturating_add(1);
+    // The filesystem can gain free bytes between this test and admission's
+    // live read (other tests may clean up). Use a fixed, representable need
+    // beyond any supported work volume instead of racing a sampled free+1.
+    let need = i64::MAX as u64;
     match admit(&env.api, "archive", need).await {
         Err(Refusal::Space(shortfall)) => {
             // Exactly the need plus the (zero) floor and reservations: the
             // retained bytes are not added again; the filesystem has them.
             assert_eq!(shortfall.required_bytes, need);
-            assert!(shortfall.available_bytes <= available + 64 * 1024 * 1024);
+            assert!(shortfall.available_bytes < need);
         }
         _ => panic!("an archive beyond free space must be refused for space"),
     }

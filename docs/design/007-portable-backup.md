@@ -412,16 +412,20 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   that keeps the result, and whole-store failures that still refuse startup.
   Every case checks unrelated SQL/filesystem sentinels and the live library.
 
-New `lytronaut-25u` cases are authored for both engines but execution is pending:
-startup re-verification after repaired ownership; published/missing-row and
-published/cancelling cases; an SQL-trigger check that unverified status never
-commits with lost accounting; tombstone intent/rename/deletion crash cuts and
-foreign-directory substitution (including actual DELETE of a failed/unverified
-row and a failed fallback state write); unjournaled tombstone preservation; and active
-monitor retry at a deterministic render boundary in `export_control_tests.rs`.
-Only the initial failing-first readiness cases (SQLite and PostgreSQL) and
-SQLite cleanup crash-cut case have executed so far, against the original code;
-they failed as expected. The changed implementation has not yet been compiled.
+The new `lytronaut-25u` cases executed at source `47b4cb0`: SQLite restore-fault
+matrix **22 passed**, active monitor retry **1 passed**, and strict PostgreSQL
+**62 passed**, each with zero failures or ignored cases. They cover startup
+re-verification after repaired ownership; published/missing-row and published/
+cancelling cases; an SQL-trigger check that unverified status never commits with
+lost accounting; tombstone intent/rename/deletion crash cuts and foreign-directory
+substitution (including actual DELETE of a failed/unverified row and a failed
+fallback status write); unjournaled tombstone preservation; and active monitor
+retry at a deterministic render boundary in `export_control_tests.rs`.
+Six subsequent mutation checks caught disabled accounting, retry and cleanup-intent
+guards on both engines. The separate deterministic free-space assertion correction
+then passed its affected SQLite and PostgreSQL cases. These are historical source-
+specific results, not a claim that a future final SHA was already tested; see
+[restore reconciliation validation](../validation/lytronaut-25u-restore-reconciliation.md).
 
 Not covered by an engine test: a database connection lost during cleanup, and
 measured memory under concurrent admission. Coverage is gated separately.
