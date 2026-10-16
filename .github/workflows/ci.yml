@@ -28,7 +28,7 @@ jobs:
       CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - run: mise exec -- just setup
       - run: mise exec -- just fmt
       - run: mise exec -- cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
@@ -41,7 +41,7 @@ jobs:
       CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - run: mise exec -- just setup
       - run: mise exec -- cargo clippy --locked -p lytronaut-client --target wasm32-unknown-unknown -- -D warnings
       - run: mise exec -- just wasm-build dependencies
@@ -55,7 +55,7 @@ jobs:
       LYTRONAUT_CHROME: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - run: mise exec -- just setup wasm-build build
       - run: mise exec -- just browser-test
       - name: Actual owner disposal and public JPEG rejection (explicit test-harness artifact)
@@ -78,7 +78,7 @@ jobs:
       LYTRONAUT_TEST_PREFIX: lytronaut-ci-parity
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - run: mise exec -- just setup
       # The recipe starts the pinned official PostgreSQL release from
       # compose.postgres.yaml as a disposable, task-owned container, bootstraps
@@ -95,7 +95,7 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - run: mise exec -- just setup
       # The proof writes about 9 GiB of real bundle and restored bytes; use
       # whichever runner filesystem has the most free space.
@@ -127,7 +127,7 @@ jobs:
       - name: Bound repetitions before building
         run: |
           [[ "$LYTRONAUT_SIDEBAR_REPETITIONS" =~ ^(2[0-9]|[34][0-9]|50)$ ]]
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - run: mise exec -- just setup wasm-build build
       - name: Consecutive sidebar suites (fail immediately; no reruns)
         run: mise exec -- just browser-test
