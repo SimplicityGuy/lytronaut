@@ -9,7 +9,7 @@ module.exports=async({browser,origin})=>{
   const libraries=Array.from({length:30},(_,index)=>({...source,id:index===0?source.id:`public-sidebar-library-${index+1}`,albums:30}));
   const albums=Array.from({length:30},(_,index)=>({id:`public-sidebar-album-${index+1}`,name:`Public album ${index+1}`,name_truncated:false,sort_order:index,captures:30}));
   const page=await browser.newPage();page.setDefaultTimeout(30000);
-  let held=null,holdKind=null,failKind=null,handlerFailure=false,heldReplies=0,heldCancelled=0,heldCompleted=0,captureItems=[];
+  let held=null,holdKind=null,failKind=null,handlerFailure=false,heldReplies=0,heldCancelled=0,heldCompleted=0,captureItems=[],completedDetails=0;
   let phase='setup',observedHeld=null;
   page.on('requestfinished',request=>{if(observedHeld?.request===request){observedHeld.finished=true;observedHeld.onFinished?.();}});
   page.on('requestfailed',request=>{if(observedHeld?.request===request){observedHeld.failed=true;observedHeld.aborted=request.failure()?.errorText==='net::ERR_ABORTED';observedHeld.settle({kind:'failed'});}});
@@ -47,6 +47,7 @@ module.exports=async({browser,origin})=>{
     run().catch(()=>{handlerFailure=true;request.abort().catch(()=>{});});
   };
   try{
+    await page.evaluateOnNewDocument(require('./sidebar-fetch.cjs'),origin);
     await page.evaluateOnNewDocument(()=>{
       Object.defineProperty(navigator,'gpu',{value:undefined});
       Object.defineProperty(window,'VideoDecoder',{value:undefined,writable:true});
@@ -61,13 +62,13 @@ module.exports=async({browser,origin})=>{
     // Fence each real select before clicking: shared fixture pixels need not change URL.
     const selectComplete=async(interact,index,mappedPath=null)=>{
       const expected=captureItems[index];assert(expected,'bounded mapped capture required');
-      // Capture both the request start and its successful finish. An old
-      // request with the same fixture id cannot satisfy this fence; cancelled
-      // candidates never supply a response. Thumbnail and viewer requests share
-      // the endpoint, so the DOM assertions below prove the actual selection.
+      // Keep transport lifecycle diagnostics, but do not use CDP completion as
+      // the selected-detail body witness: Chrome can report ERR_ABORTED after
+      // Fetch already delivered complete JSON. The in-page probe below binds
+      // its own bounded body read to a post-arm logical Fetch invocation.
       const detailResponse=currentRequest(page,origin+`/captures/${expected.id}`);
       const mappedResponse=mappedPath?currentRequest(page,origin+mappedPath+'?limit=24&offset=0&sort=order&search='):null;
-      await page.evaluate(()=>{
+      const probeToken=await page.evaluate(id=>{
         const original=document.querySelector('.stage img');
         const state={changed:false,observer:null};
         state.observer=new MutationObserver(()=>{
@@ -75,23 +76,26 @@ module.exports=async({browser,origin})=>{
         });
         state.observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});
         window.__sidebarSelectionFence=state;
-      });
+        return window.__sidebarCaptureProbe.arm(id);
+      },expected.id);
       let focus=false,geometry={width:0,height:0};
       try{
         await interact();
-        // Never read bodies back through CDP: the app may cancel a superseded or
-        // completed response stream, after which Chrome discards its data. The
-        // mapped body is the one this test served; independently fetch the
-        // exact completed detail URL for expected fixture geometry.
+        // No CDP body read or cancelled-header success shortcut: a cloned Fetch
+        // stream must reach EOF under the metadata limit and match the exact
+        // capture identity. Failed/pre-arm/superseded reads cannot satisfy it.
         if(mappedResponse)await mappedResponse.promise;
-        const response=await detailResponse.promise;const independent=await fetch(response.url(),{signal:AbortSignal.timeout(10000)});assert(independent.ok);const bytes=Buffer.from(await independent.arrayBuffer());assert(bytes.length<=256*1024);const detail=JSON.parse(bytes);assert.equal(detail.capture.id,expected.id);
-        focus=detail.originals.some(file=>file.role==='jpeg_focus_stack');
+        const body=await page.waitForFunction(token=>window.__sidebarCaptureProbe.ready(token),{},probeToken);
+        let consumed;try{consumed=await body.jsonValue();}finally{await body.dispose();}
+        assert.equal(consumed.captureId,expected.id);assert(consumed.bytes>0&&consumed.bytes<=256*1024);
+        focus=consumed.focus;
         geometry=focus?{width:360,height:240}:{width:640,height:360};
         await page.waitForFunction((expected,focus,geometry)=>{
           const image=document.querySelector('.stage img'),status=document.querySelector('.status')?.textContent;
           return window.__sidebarSelectionFence?.changed===true&&document.querySelector('.viewer-strip span')?.textContent===expected.name&&document.querySelector('.capture[aria-pressed="true"] span')?.textContent===expected.name&&image?.complete&&image.naturalWidth===geometry.width&&image.naturalHeight===geometry.height&&image.alt.endsWith(': '+expected.name)&&(focus?status?.startsWith('Discrete focus: stored plane '):status==='Static JPEG preview ready. Color profile unverified');
         },{},expected,focus,geometry);
-        if(process.env.LYTRONAUT_SIDEBAR_LIFECYCLE==='1')console.log(JSON.stringify({sidebarSelectionLifecycle:true,phase,detail:detailResponse.snapshot(),mapped:mappedResponse?.snapshot()||null}));
+        completedDetails++;
+        if(process.env.LYTRONAUT_SIDEBAR_LIFECYCLE==='1')console.log(JSON.stringify({sidebarSelectionLifecycle:true,phase,detail:detailResponse.snapshot(),fetch:await page.evaluate(token=>window.__sidebarCaptureProbe.snapshot(token),probeToken),mapped:mappedResponse?.snapshot()||null}));
       }catch(error){
         const diagnostic=await page.evaluate((expected,focus,geometry)=>{
           const image=document.querySelector('.stage img'),status=document.querySelector('.status')?.textContent;
@@ -99,11 +103,11 @@ module.exports=async({browser,origin})=>{
           return {sidebarSelectionDiagnostic:true,fenceChanged:window.__sidebarSelectionFence?.changed===true,gridMatch:document.querySelector('.capture[aria-pressed="true"] span')?.textContent===expected.name,viewerMatch:document.querySelector('.viewer-strip span')?.textContent===expected.name,altMatch:image?.alt.endsWith(': '+expected.name)===true,imageComplete:image?.complete===true,naturalWidth:image?.naturalWidth||0,naturalHeight:image?.naturalHeight||0,expectedWidth:geometry.width,expectedHeight:geometry.height,focusFlag:focus,statusKind};
         },expected,focus,geometry).catch(()=>({sidebarSelectionDiagnosticUnavailable:true}));
         console.error(JSON.stringify(diagnostic));
-        console.error(JSON.stringify({sidebarRequestDiagnostic:true,phase,detail:detailResponse.snapshot(),mapped:mappedResponse?.snapshot()||null}));
+        console.error(JSON.stringify({sidebarRequestDiagnostic:true,phase,detail:detailResponse.snapshot(),fetch:await page.evaluate(token=>window.__sidebarCaptureProbe.snapshot(token),probeToken).catch(()=>null),mapped:mappedResponse?.snapshot()||null}));
         throw error;
       }finally{
         detailResponse.cancel();mappedResponse?.cancel();
-        await page.evaluate(()=>{window.__sidebarSelectionFence?.observer.disconnect();delete window.__sidebarSelectionFence;});
+        await page.evaluate(token=>{window.__sidebarCaptureProbe.cancel(token);window.__sidebarSelectionFence?.observer.disconnect();delete window.__sidebarSelectionFence;},probeToken);
       }
     };
     const release=async(expected='aborted')=>{
@@ -210,9 +214,9 @@ module.exports=async({browser,origin})=>{
       await click(`#${kind}-next`);await waitPage(kind,2,6);
       await click(`#${kind}-prev`);await waitPage(kind,1,24);
     }
-    assert.equal(heldCancelled,3);assert.equal(heldCompleted,1);assert.equal(heldReplies,4);
+    assert.equal(heldCancelled,3);assert.equal(heldCompleted,1);assert.equal(heldReplies,4);assert.equal(completedDetails,4);
     assert.equal(handlerFailure,false);assert.deepEqual(pageErrors,[]);
-    return {publicSynthetic:true,libraryItems:30,albumItems:30,pageLimit:24,absoluteLibraryNumbers:true,selectedCapturePreserved:true,offPageSelectionPreserved:true,obsoleteSidebarRequestsCancelled:heldCancelled,currentSidebarResponseCompleted:heldCompleted,captureOperationsDoNotInvalidateSidebar:true,newLibraryResetsAlbum:true,failedPageRecovery:true};
+    return {publicSynthetic:true,libraryItems:30,albumItems:30,pageLimit:24,absoluteLibraryNumbers:true,selectedCapturePreserved:true,offPageSelectionPreserved:true,obsoleteSidebarRequestsCancelled:heldCancelled,currentSidebarResponseCompleted:heldCompleted,completedCaptureMetadataBodies:completedDetails,captureOperationsDoNotInvalidateSidebar:true,newLibraryResetsAlbum:true,failedPageRecovery:true};
   }catch(error){
     const state=await page.evaluate(()=>({libraryRows:document.querySelectorAll('.library-item').length,albumRows:document.querySelectorAll('.album-item').length,captureRows:document.querySelectorAll('.capture').length,stageReady:document.querySelector('.stage img')?.complete===true&&document.querySelector('.stage img')?.naturalWidth>0})).catch(()=>null);
     console.error(JSON.stringify({sidebarPhaseDiagnostic:true,phase,heldObserved:observedHeld!==null,heldFinished:observedHeld?.finished===true,heldFailed:observedHeld?.failed===true,heldAborted:observedHeld?.aborted===true,heldResponse:observedHeld?.response===true,heldReplyFailed:observedHeld?.replyFailed===true,handlerFailure,heldReplies,heldCancelled,heldCompleted,state}));
