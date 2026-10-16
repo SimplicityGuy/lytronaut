@@ -115,12 +115,14 @@ Photo pair) is capped well below 4 GiB, and the intake ZIP reader (which accepts
 ZIP64) reads browser imports, legitimately bounded by the single-upload budget.
 Creation, download and restore each move bytes through one fixed 64 KiB buffer per
 transfer (`copy_checked`, the download body), hashing as they go; no step holds an
-original, the bundle or a size-proportional buffer in memory. A restore upload is
-written one HTTP body frame at a time to its owned file and never accumulated;
-on the pinned HTTP/1.1 server path a frame is bounded by hyper's default
-417,792-byte read buffer (408 KiB), not by the 64 KiB copy buffer, and is written before the next is
-read. Resuming an
-interrupted upload or download is not supported; the transfer is restarted.
+original or bundle in an application copy buffer. A restore upload is written
+one HTTP body frame at a time to its owned file and never accumulated; the frame
+is written before the next is read. Transport frames are not the 64 KiB copy
+buffer: hyper's nominal HTTP/1.1 read strategy target is 417,792 bytes (408 KiB),
+but its underlying buffer's spare capacity can produce larger frames. The real
+HTTP test verifies streaming and exact bytes, not a hard frame-size or total RSS
+ceiling. Resuming an interrupted upload or download is not supported; the
+transfer is restarted.
 
 **Modeled disk needs.** Payload length is not physical disk usage. Let `A` be
 `f_frsize` from the work filesystem (`f_bsize` when unavailable, at least 512
