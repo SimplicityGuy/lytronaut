@@ -907,6 +907,16 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             .open(artifact(&worker, &job))
                             .map_err(storage)?;
                         for chunk in output.chunks(1024 * 1024) {
+                            #[cfg(test)]
+                            if f.metadata().map_err(storage)?.len() > 0 {
+                                control_tests::checkpoint(
+                                    &worker,
+                                    control_tests::Stage::Write,
+                                    &flag,
+                                    &progress,
+                                )
+                                .await;
+                            }
                             if flag.load(Ordering::Acquire) {
                                 return Err(Failure::invalid());
                             }
@@ -1668,3 +1678,7 @@ pub(super) mod test_seam {
 #[cfg(test)]
 #[path = "restore_fault_tests.rs"]
 mod restore_fault_tests;
+
+#[cfg(test)]
+#[path = "export_control_tests.rs"]
+pub(super) mod control_tests;
