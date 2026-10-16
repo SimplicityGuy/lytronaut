@@ -198,7 +198,9 @@ module.exports=async({browser,origin})=>{
       phase='failed-'+kind;failKind=kind==='library'?'libraries':'albums';
       // Track this response explicitly; previous failure status is insufficient.
       const failedPath=kind==='library'?'/libraries':'/libraries/public-sidebar-library-2/albums';
-      const failedResponse=currentRequest(page,origin+failedPath+'?limit=24&offset=24',503);
+      // Rust intentionally cancels non-OK response bodies. Correlate this
+      // exact request's headers, without requiring a body the app discards.
+      const failedResponse=currentRequest(page,origin+failedPath+'?limit=24&offset=24',503,true);
       try{await click(`#${kind}-next`);await failedResponse.promise;}finally{failedResponse.cancel();}
       await page.waitForFunction(kind=>document.querySelector(`#${kind}-prev`)?.disabled===true&&document.querySelector('.status')?.textContent==='The service could not complete this request. Retry or inspect import status',{},kind);
       await waitPage(kind,1,24);

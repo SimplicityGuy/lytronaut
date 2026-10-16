@@ -42,3 +42,14 @@ test('explicit expected failure status is correlated to its exact completed requ
  p.emit('request',failed);p.emit('requestfinished',failed);
  assert.equal((await f.promise).request(),failed);assert.equal(p.eventNames().length,0);
 });
+
+test('intentional rejected body may be cancelled after exact current-request headers',async()=>{
+ const p=page(),old=request(url,'GET',false);p.emit('request',old);
+ const f=fence(p,url,503,true);p.emit('response',old.response());
+ const fresh=request(url,'GET',false);p.emit('request',fresh);p.emit('response',fresh.response());p.emit('requestfailed',fresh);
+ assert.equal((await f.promise).request(),fresh);assert.equal(p.eventNames().length,0);
+});
+
+test('successful responses cannot opt out of actual request completion',()=>{
+ assert.throws(()=>fence(page(),url,200,true),/limited to rejected/);
+});
