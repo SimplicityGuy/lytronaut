@@ -159,12 +159,11 @@ impl Fixture {
     }
     /// As `add_sparse_originals`, one original per entry of `sizes` (each >= 16).
     pub(crate) async fn add_sparse_sized(&self, sizes: &[u64]) -> u64 {
+        // Hash the potentially multi-GiB fixture before opening a PostgreSQL
+        // transaction: CPU-only preparation must not consume its idle timeout.
+        let digests = sparse_sized_digests(sizes);
         let mut tx = self.catalog.begin_write().await.unwrap();
-        for (index, (digest, &size)) in sparse_sized_digests(sizes)
-            .into_iter()
-            .zip(sizes)
-            .enumerate()
-        {
+        for (index, (digest, &size)) in digests.into_iter().zip(sizes).enumerate() {
             let path = self.root.join("originals").join(format!("{digest}-{size}"));
             let mut file = new_file(&path).unwrap();
             file.write_all(&sparse_prefix(index as u64)).unwrap();
