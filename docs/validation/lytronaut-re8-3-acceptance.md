@@ -19,7 +19,7 @@ worktree, and this report does not attest their eventual integration.
 | Private-corpus export rerun | Pending reconciliation with the final integrated application source; see below |
 | iOS | Owner signed off as out of scope; not verified or supported |
 | H.264 Level 5 first-frame check | Geometry bounds reviewed; encoded first-access-unit bound remains open, as detailed below |
-| Live Photo on PostgreSQL | Open at the delivery revision; restore parity alone does not exercise job creation, rendering, download and pair verification |
+| Live Photo on PostgreSQL | **Pass for validation `469aa4f`, native HTTP flow**: five Live Photo cases passed on a byte-identical tested tree; final integrated-revision verification remains pending |
 | CPU focus p95 ≤100 ms | Not met in historical merged-tree runs; quiet-host A/B and final-source measurement or explicit owner acceptance remain required |
 
 The release benchmark now rejects a first batch with zero pending grid images
@@ -78,9 +78,39 @@ The validation branch's `lytronaut-cjq-final.md` records the private run at
 `30800de`: 109 captures, three albums, 109 memberships, all 109 thumbnails and
 420 JPEG planes; 728 unchanged source files/bytes; three successful private
 Live Photo exports; and PostgreSQL restore with original-download equality.
-These aggregate results do not identify captures. The report explicitly keeps
-Live Photo end-to-end on PostgreSQL open. Historical `b81e689` parity exercised
-four Live Photo API cases, but does not attest the final delivery revision.
+These aggregate results do not identify captures. That earlier report left
+Live Photo end-to-end on PostgreSQL open. The newer CI evidence below supplies
+that native HTTP proof for the validation branch. Historical `b81e689` parity
+exercised four Live Photo API cases, but does not attest the final delivery
+revision.
+
+### PostgreSQL native HTTP result (2026-10-16)
+
+[CI run 38900423013, persistence-parity job 116971015380](https://github.com/SimplicityGuy/lytronaut/actions/runs/38900423013/job/116971015380)
+succeeded with 53 passed, zero failed and zero ignored. Its exact-count
+`live-photo-api` group passed all five cases at 12:27:48 UTC, including
+`live_photo_create_download_complete_private_metadata_free_pair`, missing
+stored-plane failure, invalid-plane/restart, ready-pair deletion/restart and
+in-flight cancellation. The runner explicitly selects PostgreSQL and refuses
+missing test configuration; it cannot silently fall back to SQLite.
+
+The create/download case imports public synthetic input through HTTP, creates
+a Live Photo export, polls the worker to success and downloads the complete ZIP
+for all eight EXIF orientations. It verifies the decoded JPEG dimensions/color,
+MOV still-image-time metadata marker, provenance, reserved-quota release,
+private-marker exclusion and unchanged original bytes. This satisfies gate 9's
+native HTTP end-to-end scope. It does not establish browser UI behavior, Apple
+Photos recognition or independent MOV decoding/conformance; those have separate
+evidence and gates.
+
+The run's head is `469aa4fa729065eca3abdf37e81637e7254edad4`. Checkout actually
+tested GitHub's PR merge `d15f97d84027030a1516fc28a7c1705a377c652e`; GitHub's
+commit API and the local validation head both give the identical full source
+tree `0da6c71f574992f7e1d60a2a90f0468cb1a8a77e`. This supports a source-bound
+pass for validation `469aa4f`, without claiming that future integration was
+tested. The retained log and metadata are
+`cjq-pg-parity-469aa4f.log` / `cjq-pg-parity-469aa4f.json` in the external
+evidence folder. Bead state and human gates have not been changed.
 
 Source comparison on 2026-10-16 found no changes from private-run revision
 `30800deb642d94c3bdcc7dc6956043829eb7202d` to validation revision
@@ -102,14 +132,16 @@ private source identifiers, paths, hashes, pixels or calibration into this repo.
 ## Runtime work still required
 
 The current host has insufficient free disk for a fresh build and excessive
-load for reliable latency acceptance. No browser, private-corpus, PostgreSQL or
-performance run has been performed for this bead. The bounded AVC probe above
+load for reliable latency acceptance. No local browser, private-corpus,
+PostgreSQL or performance rerun has been performed for this bead. The existing
+remote PostgreSQL result above is retained instead. The bounded AVC probe above
 and focused Cargo regression above are the executable correctness experiments.
 Do not reinterpret the later
 `b81e689` CPU p95 of 137.9–150.4 ms as the older post-export 104.7–150.7 ms stage,
 or attribute either stage to the current delivery revision.
 
 After integration and resource availability, run the canonical mise-pinned
-check, the focused format regression, disposable PostgreSQL Live Photo flow,
-and quiet reference-host performance A/B against `623f2b9`. Preserve exact
+check and focused format regression, reconcile PostgreSQL evidence against the
+integrated source, and run quiet reference-host performance A/B against
+`623f2b9`. Preserve exact
 source/program identities and aggregate evidence outside the repository.
