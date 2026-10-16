@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      sidebar_repetitions:
+        description: 'Opt-in public sidebar stability run (20..50; 0 disables)'
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: read
@@ -104,3 +110,24 @@ jobs:
           echo "TMPDIR=$scratch" >> "$GITHUB_ENV"
       - name: Portable bundle beyond 4 GiB round trip with exact hashes
         run: mise exec -- just large-bundle-test
+
+  sidebar-stability:
+    name: sidebar-stability
+    if: github.event_name == 'workflow_dispatch' && inputs.sidebar_repetitions != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      LYTRONAUT_CHROME: /usr/bin/google-chrome
+      LYTRONAUT_SIDEBAR_REPETITIONS: ${{ inputs.sidebar_repetitions }}
+      LYTRONAUT_TEST_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bound repetitions before building
+        run: |
+          [[ "$LYTRONAUT_SIDEBAR_REPETITIONS" =~ ^(2[0-9]|[34][0-9]|50)$ ]]
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup wasm-build build
+      - name: Consecutive sidebar suites (fail immediately; no reruns)
+        run: mise exec -- just browser-test

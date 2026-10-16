@@ -99,6 +99,17 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
    fs.writeFileSync(path.join(root,'owner-results.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});
    console.log(JSON.stringify(report));return;
   }
+  if(process.env.LYTRONAUT_SIDEBAR_REPETITIONS!==undefined){
+   const count=Number(process.env.LYTRONAUT_SIDEBAR_REPETITIONS);
+   assert(!privateMode&&!gpuMode&&Number.isInteger(count)&&count>=1&&count<=50,'public sidebar repetitions must be an integer in 1..50');
+   await page.close();
+   for(let iteration=1;iteration<=count;iteration++){
+    checkpoint=`sidebar-repetition-${iteration}`;
+    const proof=await require('./sidebar-test.cjs')({browser,origin});
+    console.log(JSON.stringify({sidebarRepetition:iteration,total:count,revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',proof}));
+   }
+   return;
+  }
   let importLifetimeProof=null;
   if(!privateMode&&!gpuMode){checkpoint='import-lifetime';importLifetimeProof=await require('./import-lifetime-test.cjs')({browser,origin});}
   let sidebarProof=null;
