@@ -10,6 +10,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      sidebar_repetitions:
+        description: 'Opt-in instrumented sidebar suites (20..50; 0 disables)'
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: read
@@ -31,7 +37,10 @@ jobs:
       LYTRONAUT_TEST_PREFIX: lytronaut-ci-coverage
       # Bind evidence to the exact branch commit, not the PR merge ref.
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SIDEBAR_REPETITIONS: ${{ inputs.sidebar_repetitions || '0' }}
     steps:
+      - name: Bound instrumented repetitions before building
+        run: '[[ "$SIDEBAR_REPETITIONS" =~ ^(0|2[0-9]|[34][0-9]|50)$ ]]'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -46,6 +55,17 @@ jobs:
         run: mise exec -- just coverage-wasm
       - name: Instrumented native tests, binaries and PostgreSQL parity
         run: mise exec -- just coverage-native
+      - name: Consecutive instrumented sidebar suites (no retries)
+        if: ${{ inputs.sidebar_repetitions != '' && inputs.sidebar_repetitions != '0' }}
+        run: |
+          source target/coverage/native-env.sh
+          npm ci --ignore-scripts --prefix scripts/browser
+          LYTRONAUT_CLIENT="$PWD/target/coverage/wasm/client/dist" \
+            LYTRONAUT_COVERAGE_DIR="$PWD/target/coverage/wasm/client/profraw" \
+            LYTRONAUT_TEST_REVISION="$SOURCE_SHA" \
+            LYTRONAUT_SIDEBAR_REPETITIONS="$SIDEBAR_REPETITIONS" \
+            LYTRONAUT_SIDEBAR_LIFECYCLE=1 \
+            mise exec -- bash scripts/browser-test.sh
       - name: Browser suites against the instrumented service and clients
         run: mise exec -- just coverage-browser
       - name: Coverage report and 95% floors

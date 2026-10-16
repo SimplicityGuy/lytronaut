@@ -91,6 +91,7 @@ module.exports=async({browser,origin})=>{
           const image=document.querySelector('.stage img'),status=document.querySelector('.status')?.textContent;
           return window.__sidebarSelectionFence?.changed===true&&document.querySelector('.viewer-strip span')?.textContent===expected.name&&document.querySelector('.capture[aria-pressed="true"] span')?.textContent===expected.name&&image?.complete&&image.naturalWidth===geometry.width&&image.naturalHeight===geometry.height&&image.alt.endsWith(': '+expected.name)&&(focus?status?.startsWith('Discrete focus: stored plane '):status==='Static JPEG preview ready. Color profile unverified');
         },{},expected,focus,geometry);
+        if(process.env.LYTRONAUT_SIDEBAR_LIFECYCLE==='1')console.log(JSON.stringify({sidebarSelectionLifecycle:true,phase,detail:detailResponse.snapshot(),mapped:mappedResponse?.snapshot()||null}));
       }catch(error){
         const diagnostic=await page.evaluate((expected,focus,geometry)=>{
           const image=document.querySelector('.stage img'),status=document.querySelector('.status')?.textContent;
@@ -98,6 +99,7 @@ module.exports=async({browser,origin})=>{
           return {sidebarSelectionDiagnostic:true,fenceChanged:window.__sidebarSelectionFence?.changed===true,gridMatch:document.querySelector('.capture[aria-pressed="true"] span')?.textContent===expected.name,viewerMatch:document.querySelector('.viewer-strip span')?.textContent===expected.name,altMatch:image?.alt.endsWith(': '+expected.name)===true,imageComplete:image?.complete===true,naturalWidth:image?.naturalWidth||0,naturalHeight:image?.naturalHeight||0,expectedWidth:geometry.width,expectedHeight:geometry.height,focusFlag:focus,statusKind};
         },expected,focus,geometry).catch(()=>({sidebarSelectionDiagnosticUnavailable:true}));
         console.error(JSON.stringify(diagnostic));
+        console.error(JSON.stringify({sidebarRequestDiagnostic:true,phase,detail:detailResponse.snapshot(),mapped:mappedResponse?.snapshot()||null}));
         throw error;
       }finally{
         detailResponse.cancel();mappedResponse?.cancel();
