@@ -1,5 +1,12 @@
 # Portable Live Photo export
 
+The acceptance branch corrects an inferred per-picture VUI byte limit in the
+generated SPS. Encoded picture pixels are unchanged, but stream headers change;
+decoder/resource-loader and Photos compatibility for the new bytes require
+revalidation. The prior owner Photos pass remains tied to the `fbe615a` pair.
+See [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md)
+for the bounded regression evidence and remaining Annex A timing uncertainty.
+
 Status: implementation in progress. Release CPU-mode focus interaction is **not met**
 on the merged tree at `b81e689` (p95 137.9–150.4 ms against ≤100 ms). Apple Photos recognition is an
 owner-reported pass. VoiceOver is **not verified**; the owner signed it off as out of

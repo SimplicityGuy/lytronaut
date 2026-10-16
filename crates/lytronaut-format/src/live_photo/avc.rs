@@ -95,7 +95,17 @@ pub(super) fn configuration(width: u32, height: u32) -> (Vec<u8>, Vec<u8>) {
     s.n(0, 1);
     s.n(0, 1);
     s.n(0, 1);
-    s.n(0, 1);
+    // E.2.1 infers max_bytes_per_pic_denom=2 when restrictions are absent.
+    // I_PCM plus headers exceeds even uncompressed picture bytes; signal the
+    // permitted unrestricted picture size rather than that false default.
+    s.n(1, 1); // bitstream_restriction_flag
+    s.n(0, 1); // No inter prediction, including across picture boundaries.
+    s.ue(0); // max_bytes_per_pic_denom: no per-picture VUI byte limit.
+    s.ue(1); // max_bits_per_mb_denom: <=3200 bits; PCM needs <=3088.
+    s.ue(0); // No horizontal motion vectors.
+    s.ue(0); // No vertical motion vectors.
+    s.ue(0); // No reordered output pictures.
+    s.ue(1); // One decoded frame; no inter-picture prediction.
     let mut p = Bits::default();
     p.ue(0);
     p.ue(0);
@@ -188,4 +198,115 @@ pub(super) fn frame(
         }
     }
     Ok(bits.finish(0x65))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Independently read the emitted SPS rather than inspecting writer calls.
+    struct Reader {
+        bytes: Vec<u8>,
+        bit: usize,
+    }
+    impl Reader {
+        fn new(nal: &[u8]) -> Self {
+            assert_eq!(nal[0], 0x67);
+            let mut bytes = Vec::new();
+            let mut zeros = 0;
+            for &byte in &nal[1..] {
+                if zeros == 2 && byte == 3 {
+                    zeros = 0;
+                    continue;
+                }
+                bytes.push(byte);
+                zeros = if byte == 0 { zeros + 1 } else { 0 };
+            }
+            Self { bytes, bit: 0 }
+        }
+        fn n(&mut self, count: usize) -> u32 {
+            (0..count).fold(0, |value, _| {
+                let next = (self.bytes[self.bit / 8] >> (7 - self.bit % 8)) & 1;
+                self.bit += 1;
+                (value << 1) | u32::from(next)
+            })
+        }
+        fn ue(&mut self) -> u32 {
+            let mut zeros = 0;
+            while self.n(1) == 0 {
+                zeros += 1;
+                assert!(zeros < 32);
+            }
+            (1u32 << zeros) - 1 + self.n(zeros)
+        }
+    }
+
+    fn read_restrictions(width: u32, height: u32) -> [u32; 7] {
+        let (sps, _) = configuration(width, height);
+        let mut r = Reader::new(&sps);
+        assert_eq!([r.n(8), r.n(8), r.n(8)], [66, 192, 50]);
+        assert_eq!([r.ue(), r.ue(), r.ue(), r.ue(), r.n(1)], [0, 0, 2, 0, 0]);
+        assert_eq!(
+            [r.ue() + 1, r.ue() + 1],
+            [width.div_ceil(16), height.div_ceil(16)]
+        );
+        assert_eq!([r.n(1), r.n(1)], [1, 1]); // progressive, direct_8x8
+        if r.n(1) == 1 {
+            assert_eq!(
+                [r.ue(), r.ue(), r.ue(), r.ue()],
+                [
+                    0,
+                    (width.div_ceil(16) * 16 - width) / 2,
+                    0,
+                    (height.div_ceil(16) * 16 - height) / 2
+                ]
+            );
+        } else {
+            assert_eq!((width % 16, height % 16), (0, 0));
+        }
+        assert_eq!([r.n(1), r.n(1), r.n(8), r.n(1)], [1, 1, 1, 0]);
+        assert_eq!([r.n(1), r.n(3), r.n(1), r.n(1)], [1, 5, 0, 1]);
+        assert_eq!([r.n(8), r.n(8), r.n(8)], [1, 13, 6]);
+        assert_eq!([r.n(1), r.n(1), r.n(1), r.n(1), r.n(1)], [0; 5]);
+        assert_eq!(
+            r.n(1),
+            1,
+            "explicit restrictions required for PCM picture size"
+        );
+        let restrictions = [r.n(1), r.ue(), r.ue(), r.ue(), r.ue(), r.ue(), r.ue()];
+        assert_eq!(r.n(1), 1, "RBSP stop bit");
+        while r.bit < r.bytes.len() * 8 {
+            assert_eq!(r.n(1), 0, "RBSP alignment");
+        }
+        restrictions
+    }
+
+    #[test]
+    fn pcm_sps_signals_only_restrictions_the_writer_satisfies() {
+        for (width, height) in [(2, 2), (32, 16), (1138, 1842), (1842, 1138)] {
+            assert_eq!(read_restrictions(width, height), [0, 0, 1, 0, 0, 0, 1]);
+        }
+    }
+
+    #[test]
+    fn padded_pcm_picture_requires_unrestricted_vui_picture_bytes() {
+        let (width, height) = (1138u32, 1842u32);
+        let image = DecodedJpeg {
+            geometry: crate::Geometry { width, height },
+            rgba: (0..width * height)
+                .flat_map(|_| [64, 128, 192, 255])
+                .collect(),
+        };
+        let nal = frame(&image, 0, &|| false).unwrap();
+        let raw_picture_bytes = width.div_ceil(16) as usize * height.div_ceil(16) as usize * 384;
+        assert!(
+            nal.len() > raw_picture_bytes,
+            "even denominator one is too strict"
+        );
+        let restrictions = read_restrictions(width, height);
+        assert_eq!(restrictions[1], 0, "permitted no-picture-byte-limit signal");
+        // I_PCM macroblock_layer: ue(25), at most seven alignment bits,
+        // and 384 PCM bytes. E-80 counts RBSP syntax bits, not NAL escaping.
+        assert!(9 + 7 + 384 * 8 <= (3072 + 128) / restrictions[2]);
+    }
 }

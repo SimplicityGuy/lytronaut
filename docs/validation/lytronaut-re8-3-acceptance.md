@@ -58,7 +58,7 @@ At 1138×1842, coding padding gives 72×116 = 8,352 macroblocks. Level 5
 permits 22,080 and each axis ≤sqrt(8×22,080); the conservative processing rate
 is 178,176 macroblocks/s, below 589,824. These checks do not prove the
 first-access-unit byte constraint. Annex A.3.1(c) additionally bounds that unit
-by `384 * (max(PicSizeInMbs, MaxMBPS/172) + MaxMBPS * initial_delay) / MinCR`;
+by `384 * (max(PicSizeInMbs, MaxMBPS/172) + MaxMBPS * removal_delay_excess) / MinCR`;
 Level 5 uses `MinCR=2`. The I_PCM payload alone is 3,207,168 bytes. The
 zero-additional-delay bound is only 1,603,584 bytes. An applicable HRD timing
 derivation and the actual encoded byte count are required before claiming pass.
@@ -69,14 +69,41 @@ pixel/error type shims, using mise-pinned rustc 1.99.0 and synthetic solid RGB.
 It produced a 3,223,876-byte first IDR NAL (3,223,897 bytes including SPS/PPS).
 An independent SPS reader confirmed coded 1152×1856, displayed 1138×1842,
 Baseline profile 66, level 50, no reference frames and progressive coding.
-The formula above therefore needs at least 14.308 ms additional initial CPB
-delay; its applicable timing derivation remains unresolved. Evidence, exact
+The formula above therefore needs at least 14.308 ms excess actual-over-nominal
+CPB removal delay; its applicable timing derivation
+remains unresolved. Evidence, exact
 commands and synthetic source/program hashes are outside this worktree at
 `/private/tmp/lytronaut-re8-3-evidence`. This does not run the Plan regression,
 MOV assembly, a decoder or the canonical check.
 
 Source: [ITU-T H.264 (08/2024), Annex A.3.1 and Table A-1](https://www.itu.int/rec/T-REC-H.264-202408-S/en).
 This is a geometry and first-frame investigation, not full stream conformance.
+
+### Corrected per-picture VUI limit
+
+Independent full-VUI parsing and primary E.2.1 review found a definite defect:
+the old SPS omitted bitstream restrictions, inferring picture denominator two.
+Its 3,223,876-byte VCL picture exceeded the inferred 1,603,584-byte ceiling.
+Denominator one is also too strict because PCM headers exceed raw picture bytes.
+The corrected SPS explicitly signals permitted denominator zero, retains the
+3,200-bit macroblock bound (actual syntax at most 3,088), and declares no
+inter-boundary prediction, motion vectors or reordering, with one decoded frame.
+All generated pictures are IDR/I; no predicted P/B pictures are introduced.
+
+Two independent-parser regressions pass using pinned standalone rustc against
+the actual writer, including the padded encode. Both fail under a deliberately
+wrong denominator-two mutation. The new SPS is 18 bytes rather than 17; VCL
+bytes remain 3,223,876 and SPS/PPS plus VCL totals 3,223,898. This fixes the VUI
+picture-size claim only. Annex A.3.1(c,d,i,j) still need an applicable HRD
+schedule. Absent timing infers fixed-rate zero and low-delay one, so assuming
+actual removal always equals nominal removal would also be unjustified.
+
+Decoder/resource-loader compatibility and isolated Photos recognition need
+revalidation of the new output. The owner's earlier Photos result remains
+historical evidence for the rebuilt `fbe615a` pair. No current-byte Photos pass,
+full Level 5 conformance, quiet-host latency or canonical validation is claimed.
+The format source has now changed relative to the private-run baseline, so
+that run does not attest these newly emitted SPS bytes.
 
 ## Existing private and PostgreSQL evidence
 
