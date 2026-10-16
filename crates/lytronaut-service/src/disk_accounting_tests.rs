@@ -145,10 +145,7 @@ impl Http {
                 Ok(_) => (),
                 Err(error)
                     if error.kind() == std::io::ErrorKind::ConnectionReset
-                        && !response.is_empty() =>
-                {
-                    ()
-                }
+                        && !response.is_empty() => {}
                 Err(error) => panic!("HTTP restore read failed: {error}"),
             }
             let split = response
