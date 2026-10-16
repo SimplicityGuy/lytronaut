@@ -66,8 +66,8 @@ that the foundation has already imported originals or edit sidecars.
 caused by insufficient free work space. The field is additive and
 backward-compatible: it is omitted whenever absent, so every other error
 (including every job report) is byte-identical to the original V1 shape, and it
-appears only on 429 admission responses of `POST /exports` (archive) and
-`POST /restores`. Clients that ignore unknown fields parse it unchanged; earlier
+appears on 429 free-space admission responses of `POST /imports`,
+`POST /exports` (archive) and `POST /restores`. Clients that ignore unknown fields parse it unchanged; earlier
 Lytronaut browser clients never decode a 429 body. Services map internal
 errors to codes and keep filesystem paths, credentials and serials out of the
 wire and routine logs. Public `GET /healthz` performs an actual catalog query and returns 503 on

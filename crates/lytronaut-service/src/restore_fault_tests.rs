@@ -939,6 +939,7 @@ async fn per_file_disk_cost_is_admitted_and_enforced(pg: bool) {
         },
     )
     .await;
+    let probe = super::disk_tests::Probe::arm(&env.api, false, None);
     let (status, body) = env.upload_json(hostile).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let id = body["id"].as_str().unwrap().to_owned();
@@ -949,6 +950,10 @@ async fn per_file_disk_cost_is_admitted_and_enforced(pg: bool) {
         (ErrorCode::ResourceLimit, true)
     );
     assert_eq!(env.job(&id).await.1.as_deref(), Some("space"));
+    assert!(
+        !probe.started(&id),
+        "readmission refusal never enters extraction/journal preparation"
+    );
     env.assert_released(&id).await;
     env.finish().await;
 
