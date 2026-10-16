@@ -62,7 +62,7 @@ module.exports=async({browser,origin})=>{
       }
       assert((await bounded(cancelled)).ok(),'owned import cancellation reached the service');
       const result=await fetch(origin+`/imports/${id}`,{signal:AbortSignal.timeout(30000)});
-      assert(result.ok());assert.equal((await result.json()).state,'cancelled');
+      assert(result.ok);assert.equal((await result.json()).state,'cancelled');
       assert.equal(handlerError,null);
       completed.push(mode);
     }finally{
