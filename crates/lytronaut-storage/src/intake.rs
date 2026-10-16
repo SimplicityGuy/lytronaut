@@ -16,8 +16,9 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
-use tokio::sync::{Mutex as AsyncMutex, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, RwLock, Semaphore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageError {
@@ -69,6 +70,8 @@ pub struct Limits {
     pub decoders: usize,
     pub reserved_bytes: u64,
     pub free_floor: u64,
+    /// No accepted byte/file progress for this duration cancels a running intake.
+    pub import_idle_timeout: Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -84,6 +87,7 @@ impl Default for Limits {
             decoders: 1,
             reserved_bytes: 84 * 1024 * 1024 * 1024,
             free_floor: 64 * 1024 * 1024,
+            import_idle_timeout: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -105,6 +109,8 @@ impl Limits {
             || self.decoders > Semaphore::MAX_PERMITS
             || self.reserved_bytes > i64::MAX as u64
             || self.free_floor > i64::MAX as u64
+            || self.import_idle_timeout.is_zero()
+            || self.import_idle_timeout > Duration::from_secs(24 * 60 * 60)
         {
             return Err(StorageError::Invalid);
         }
@@ -135,6 +141,14 @@ impl Limits {
         env!(decoders, "LYTRONAUT_IMPORT_DECODERS");
         env!(reserved_bytes, "LYTRONAUT_RESERVED_BYTES");
         env!(free_floor, "LYTRONAUT_FREE_FLOOR");
+        if let Some(value) = std::env::var_os("LYTRONAUT_IMPORT_IDLE_SECONDS") {
+            let seconds = value
+                .to_str()
+                .ok_or(StorageError::Invalid)?
+                .parse()
+                .map_err(|_| StorageError::Invalid)?;
+            l.import_idle_timeout = Duration::from_secs(seconds);
+        }
         l.validate()?;
         Ok(l)
     }
@@ -173,9 +187,52 @@ struct Inner {
     decode: Arc<Semaphore>,
     verify: Arc<Semaphore>,
     uploads: Mutex<HashSet<String>>,
+    activity: Mutex<HashMap<String, Activity>>,
+    #[cfg(test)]
+    reaper_enabled: AtomicBool,
+    #[cfg(test)]
+    write_latch: Mutex<Option<Arc<TestLatch>>>,
+    #[cfg(test)]
+    preflight_latch: Mutex<Option<Arc<TestLatch>>>,
     fault: Mutex<Option<FaultPoint>>,
     _lock: File,
     _stage_lock: File,
+}
+struct Activity {
+    last: tokio::time::Instant,
+    processing: usize,
+    drain: Arc<RwLock<()>>,
+}
+/// Owned by the async operation AND every blocking worker it starts. Dropping
+/// the caller cannot release cancellation's drain before filesystem IO ends.
+struct Processing {
+    owner: Store,
+    job: String,
+    flag: Arc<AtomicBool>,
+    renew: AtomicBool,
+    _drain: OwnedRwLockReadGuard<()>,
+}
+impl Drop for Processing {
+    fn drop(&mut self) {
+        if let Some(activity) = self.owner.0.activity.lock().unwrap().get_mut(&self.job) {
+            activity.processing -= 1;
+            if self.renew.load(Ordering::Relaxed) && !self.flag.load(Ordering::Relaxed) {
+                activity.last = tokio::time::Instant::now();
+            }
+        }
+    }
+}
+#[cfg(test)]
+struct TestLatch {
+    entered: tokio::sync::Notify,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+#[cfg(test)]
+impl TestLatch {
+    fn wait(&self) {
+        self.entered.notify_one();
+        self.release.lock().unwrap().recv().unwrap();
+    }
 }
 fn unique() -> Result<String, StorageError> {
     let mut b = [0; 16];
@@ -318,12 +375,99 @@ impl Store {
             gate: AsyncMutex::new(()),
             cancel: Mutex::new(HashMap::new()),
             uploads: Mutex::new(HashSet::new()),
+            activity: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            reaper_enabled: AtomicBool::new(true),
+            #[cfg(test)]
+            write_latch: Mutex::new(None),
+            #[cfg(test)]
+            preflight_latch: Mutex::new(None),
             fault: Mutex::new(None),
             _lock: lock,
             _stage_lock: stage_lock,
         }));
         s.recover().await?;
+        // The worker cannot retain the store or its exclusive filesystem locks
+        // across its timer. Restart recovery already ends all prior running jobs.
+        let owner = Arc::downgrade(&s.0);
+        let interval = s.0.limits.import_idle_timeout.min(Duration::from_secs(1));
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(inner) = owner.upgrade() else { break };
+                #[cfg(test)]
+                if !inner.reaper_enabled.load(Ordering::Relaxed) {
+                    continue;
+                }
+                Store(inner).expire_idle().await;
+            }
+        });
         Ok(s)
+    }
+    fn progress(&self, id: &str) {
+        let flag = self.flag(id).ok();
+        if let Some(activity) = self.0.activity.lock().unwrap().get_mut(id)
+            && flag.is_some_and(|flag| !flag.load(Ordering::Relaxed))
+        {
+            activity.last = tokio::time::Instant::now();
+        }
+    }
+    fn drain(&self, id: &str) -> Result<Arc<RwLock<()>>, StorageError> {
+        self.0
+            .activity
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|a| a.drain.clone())
+            .ok_or(StorageError::Conflict)
+    }
+    async fn processing(&self, id: &str) -> Result<Arc<Processing>, StorageError> {
+        let drain = self
+            .drain(id)?
+            .try_read_owned()
+            .map_err(|_| StorageError::Cancelled)?;
+        let flag = self.flag(id)?;
+        {
+            let mut activities = self.0.activity.lock().unwrap();
+            let activity = activities.get_mut(id).ok_or(StorageError::Conflict)?;
+            if flag.load(Ordering::Relaxed) {
+                return Err(StorageError::Cancelled);
+            }
+            activity.processing += 1;
+        }
+        Ok(Arc::new(Processing {
+            owner: self.clone(),
+            job: id.to_owned(),
+            flag,
+            renew: AtomicBool::new(false),
+            _drain: drain,
+        }))
+    }
+    async fn expire_idle(&self) {
+        let timeout = self.0.limits.import_idle_timeout;
+        let expired: Vec<String> = {
+            let activity = self.0.activity.lock().unwrap();
+            activity
+                .iter()
+                .filter_map(|(id, activity)| {
+                    let flag = self.flag(id).ok()?;
+                    if activity.processing != 0
+                        || (activity.last.elapsed() < timeout && !flag.load(Ordering::Relaxed))
+                    {
+                        return None;
+                    }
+                    // Progress/processing admission uses this same mutex. Once this
+                    // cancellation wins, late completion cannot renew the job.
+                    flag.store(true, Ordering::Relaxed);
+                    Some(id.clone())
+                })
+                .collect()
+        };
+        for id in expired {
+            // stop drains real IO before acquiring the global gate, so an active
+            // decoder can finish/unwind without deadlocking on that gate.
+            let _ = self.stop(&id, "cancelled", None).await;
+        }
     }
     /// Application-owned scratch root, never a source library.
     pub fn available_staging_bytes(&self) -> Result<u64, StorageError> {
@@ -428,6 +572,14 @@ impl Store {
             .lock()
             .unwrap()
             .insert(id.clone(), Arc::new(AtomicBool::new(false)));
+        self.0.activity.lock().unwrap().insert(
+            id.clone(),
+            Activity {
+                last: tokio::time::Instant::now(),
+                processing: 0,
+                drain: Arc::new(RwLock::new(())),
+            },
+        );
         Ok(id)
     }
     fn flag(&self, id: &str) -> Result<Arc<AtomicBool>, StorageError> {
@@ -468,11 +620,15 @@ impl Store {
                 return Err(e);
             }
         };
+        drop(file);
         Ok(Spool {
             owner: self.clone(),
             job: id.to_string(),
             path,
-            file: Some(tokio::fs::File::from_std(file)),
+            sealed: false,
+            released: false,
+            io: Arc::new(AsyncMutex::new(())),
+            drain: self.drain(id)?,
             bytes: 0,
             limit: r.get::<i64, _>("encoded_limit") as u64,
             flag,
@@ -496,6 +652,19 @@ impl Store {
         reader: R,
         expected: Option<(u64, u32)>,
     ) -> Result<(), StorageError> {
+        let processing = self.processing(id).await?;
+        self.append_processing(id, path, reader, expected, processing)
+            .await
+    }
+    async fn append_processing<R: Read + Send + 'static>(
+        &self,
+        id: &str,
+        path: &str,
+        reader: R,
+        expected: Option<(u64, u32)>,
+        processing: Arc<Processing>,
+    ) -> Result<(), StorageError> {
+        let _operation = processing.clone();
         validate_path(path, &self.0.limits)?;
         let _g = self.0.gate.lock().await;
         let r = self.running(id).await?;
@@ -536,9 +705,13 @@ impl Store {
         let bound = (total - completed) as u64;
         let s = self.clone();
         let flag = self.flag(id)?;
-        let entry = tokio::task::spawn_blocking(move || s.publish(reader, bound, expected, flag))
-            .await
-            .map_err(|_| StorageError::Unavailable)??;
+        processing.renew.store(true, Ordering::Relaxed);
+        let entry = tokio::task::spawn_blocking(move || {
+            let _processing = processing;
+            s.publish(reader, bound, expected, flag)
+        })
+        .await
+        .map_err(|_| StorageError::Unavailable)??;
         self.fault(FaultPoint::BeforeTransaction)?;
         let mut tx = self.0.catalog.begin_write().await?;
         sqlx::query(
@@ -554,6 +727,7 @@ impl Store {
         sqlx::query("UPDATE intake_jobs SET completed=completed+$1,files=files+1,path_bytes=path_bytes+$2 WHERE id=$3 AND state='running'").bind(entry.1 as i64).bind(path.len() as i64).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
         self.fault(FaultPoint::AfterTransaction)?;
+        self.progress(id);
         Ok(())
     }
     fn publish<R: Read>(
@@ -627,6 +801,15 @@ impl Store {
         result
     }
     pub async fn finish(&self, id: &str) -> Result<(), StorageError> {
+        let processing = self.processing(id).await?;
+        self.finish_processing(id, processing).await
+    }
+    async fn finish_processing(
+        &self,
+        id: &str,
+        processing: Arc<Processing>,
+    ) -> Result<(), StorageError> {
+        let _operation = processing.clone();
         let _g = self.0.gate.lock().await;
         let r = self.running(id).await?;
         if self.0.uploads.lock().unwrap().contains(id) {
@@ -652,7 +835,9 @@ impl Store {
         let s = self.clone();
         let flag = self.flag(id)?;
         let verify_flag = flag.clone();
+        processing.renew.store(true, Ordering::Relaxed);
         tokio::task::spawn_blocking(move || {
+            let _processing = processing;
             for e in entries {
                 s.verified_blob(&e, Some(&verify_flag))?;
             }
@@ -666,6 +851,7 @@ impl Store {
         self.fault(FaultPoint::BeforeTransaction)?;
         sqlx::query("UPDATE intake_jobs SET state='succeeded',total=completed,reserved=0,error=NULL WHERE id=$1 AND state='running'").bind(id).execute(self.0.catalog.pool()).await?;
         self.0.cancel.lock().unwrap().remove(id);
+        self.0.activity.lock().unwrap().remove(id);
         self.fault(FaultPoint::AfterTransaction)?;
         Ok(())
     }
@@ -794,7 +980,26 @@ impl Store {
         if let Ok(f) = self.flag(id) {
             f.store(true, Ordering::Relaxed)
         }
+        // No global gate while waiting: processing readers may need it in
+        // order to observe cancellation and unwind. The write lease excludes
+        // new writes and covers already spawned blocking IO, even orphaned IO.
+        let _drain = if let Ok(drain) = self.drain(id) {
+            Some(drain.write_owned().await)
+        } else {
+            None
+        };
         let _g = self.0.gate.lock().await;
+        self.stop_locked(id, state, error).await
+    }
+    async fn stop_locked(
+        &self,
+        id: &str,
+        state: &str,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        // Release capacity only after the job-owned encoded files are gone.
+        // Sealed originals remain immutable and available for dedup/recovery.
+        self.cleanup(id)?;
         sqlx::query(
             "UPDATE intake_jobs SET state=$1,reserved=0,error=$2 WHERE id=$3 AND state='running'",
         )
@@ -804,7 +1009,7 @@ impl Store {
         .execute(self.0.catalog.pool())
         .await?;
         self.0.cancel.lock().unwrap().remove(id);
-        self.cleanup(id)?;
+        self.0.activity.lock().unwrap().remove(id);
         Ok(())
     }
     /// Retry starts a new intake with existing verified content dedup; old progress remains durable.
@@ -832,16 +1037,29 @@ impl Store {
         .await
     }
     fn cleanup(&self, id: &str) -> Result<(), StorageError> {
+        use std::os::unix::fs::MetadataExt;
         let prefix = format!("{id}-");
         for entry in fs::read_dir(&self.0.staging)? {
             let entry = entry?;
-            if entry
+            if !entry
                 .file_name()
                 .to_str()
                 .is_some_and(|n| n.starts_with(&prefix))
             {
-                regular(&entry.path())?;
-                fs::remove_file(entry.path())?;
+                continue;
+            }
+            // Spool::drop may already have removed exactly this owned path after
+            // draining its IO. Missing is idempotent; aliases remain forbidden.
+            let metadata = match fs::symlink_metadata(entry.path()) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                value => value?,
+            };
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
+                return Err(StorageError::Invalid);
+            }
+            match fs::remove_file(entry.path()) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                value => value?,
             }
         }
         sync_dir(&self.0.staging)
@@ -889,43 +1107,71 @@ impl Store {
         Ok(())
     }
     /// The spool is owned/created by Store; ZIP metadata is bounded before allocating entries.
-    pub async fn import_zip(&self, id: &str, spool: Spool) -> Result<(), StorageError> {
+    pub async fn import_zip(&self, id: &str, mut spool: Spool) -> Result<(), StorageError> {
         if self.running(id).await?.get::<String, _>("kind") != "zip" {
             return Err(StorageError::Conflict);
         }
-        let _permit = self
-            .0
-            .decode
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| StorageError::Busy)?;
+        let processing = self.processing(id).await?;
+        let _permit = loop {
+            tokio::select! {
+                permit = self.0.decode.clone().acquire_owned() => break permit.map_err(|_|StorageError::Busy)?,
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                    if processing.flag.load(Ordering::Relaxed) { return Err(StorageError::Cancelled); }
+                }
+            }
+        };
         let path = spool.path.clone();
         let l = self.0.limits.clone();
-        let entries = tokio::task::spawn_blocking(move || crate::zip::preflight(&path, &l))
-            .await
-            .map_err(|_| StorageError::Unavailable)??;
+        processing.renew.store(true, Ordering::Relaxed);
+        let preflight_processing = processing.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            let _processing = preflight_processing;
+            #[cfg(test)]
+            if let Some(latch) = _processing.owner.0.preflight_latch.lock().unwrap().take() {
+                let _open = File::open(&path)?;
+                latch.wait();
+            }
+            if _processing.flag.load(Ordering::Relaxed) {
+                return Err(StorageError::Cancelled);
+            }
+            crate::zip::preflight(&path, &l)
+        })
+        .await
+        .map_err(|_| StorageError::Unavailable)??;
         for entry in entries {
             let path = spool.path.clone();
             let name = entry.name.clone();
             let reader = entry.reader(&path)?;
-            self.append(id, &name, reader, Some((entry.size, entry.crc)))
-                .await?;
+            self.append_processing(
+                id,
+                &name,
+                reader,
+                Some((entry.size, entry.crc)),
+                processing.clone(),
+            )
+            .await?;
         }
         sqlx::query("UPDATE intake_jobs SET zip_complete=1 WHERE id=$1 AND state='running'")
             .bind(id)
             .execute(self.0.catalog.pool())
             .await?;
+        // All preflight/publication workers have been joined. Remove this
+        // input under our existing processing lease before finish releases quota.
+        spool.discard_ready()?;
         drop(spool);
-        self.finish(id).await
+        self.finish_processing(id, processing).await
     }
 }
-/// Streaming upload spool bounded before every write. Drop removes abandoned encoded input.
+/// Streaming upload spool bounded before every write. Blocking tasks own their
+/// file and drain leases until synchronous filesystem IO is truly complete.
 pub struct Spool {
     owner: Store,
     job: String,
     path: PathBuf,
-    file: Option<tokio::fs::File>,
+    sealed: bool,
+    released: bool,
+    io: Arc<AsyncMutex<()>>,
+    drain: Arc<RwLock<()>>,
     bytes: u64,
     limit: u64,
     flag: Arc<AtomicBool>,
@@ -935,7 +1181,6 @@ impl Spool {
         self.limit = self.limit.min(limit)
     }
     pub async fn write(&mut self, bytes: &[u8]) -> Result<(), StorageError> {
-        use tokio::io::AsyncWriteExt;
         if self.flag.load(Ordering::Relaxed) {
             return Err(StorageError::Cancelled);
         }
@@ -946,34 +1191,136 @@ impl Spool {
         if self.bytes > self.limit {
             return Err(StorageError::Quota);
         }
-        self.file
-            .as_mut()
-            .ok_or(StorageError::Conflict)?
-            .write_all(bytes)
-            .await?;
+        if self.sealed {
+            return Err(StorageError::Conflict);
+        }
+        // One additional owned 64 KiB chunk, never a copy of the full request.
+        for chunk in bytes.chunks(65536) {
+            let drain = self.drain.clone().read_owned().await;
+            let io = self.io.clone().lock_owned().await;
+            if self.flag.load(Ordering::Relaxed) {
+                return Err(StorageError::Cancelled);
+            }
+            let chunk = chunk.to_vec();
+            let path = self.path.clone();
+            let flag = self.flag.clone();
+            let owner = self.owner.clone();
+            let job = self.job.clone();
+            tokio::task::spawn_blocking(move || {
+                let (_drain, _io) = (drain, io);
+                if flag.load(Ordering::Relaxed) {
+                    return Err(StorageError::Cancelled);
+                }
+                let mut file = OpenOptions::new().append(true).open(path)?;
+                let result = file.write_all(&chunk).map_err(StorageError::from);
+                #[cfg(test)]
+                if let Some(latch) = owner.0.write_latch.lock().unwrap().take() {
+                    latch.wait();
+                }
+                // No FD or buffered Tokio IO survives release of the drain.
+                drop(file);
+                if flag.load(Ordering::Relaxed) {
+                    return Err(StorageError::Cancelled);
+                }
+                if result.is_ok() {
+                    owner.progress(&job);
+                }
+                result
+            })
+            .await
+            .map_err(|_| StorageError::Unavailable)??;
+        }
         Ok(())
     }
     pub async fn sync(&mut self) -> Result<(), StorageError> {
-        self.file
-            .as_mut()
-            .ok_or(StorageError::Conflict)?
-            .sync_all()
-            .await?;
-        self.file.take();
-        Ok(())
-    }
-    pub fn reader(&self) -> Result<File, StorageError> {
-        if self.file.is_some() {
+        let drain = self.drain.clone().read_owned().await;
+        let io = self.io.clone().lock_owned().await;
+        if self.flag.load(Ordering::Relaxed) {
+            return Err(StorageError::Cancelled);
+        }
+        if self.sealed {
             return Err(StorageError::Conflict);
         }
+        let path = self.path.clone();
+        let flag = self.flag.clone();
+        tokio::task::spawn_blocking(move || {
+            let (_drain, _io) = (drain, io);
+            if flag.load(Ordering::Relaxed) {
+                return Err(StorageError::Cancelled);
+            }
+            let file = OpenOptions::new().write(true).open(path)?;
+            let result = file.sync_all().map_err(StorageError::from);
+            drop(file);
+            if flag.load(Ordering::Relaxed) {
+                return Err(StorageError::Cancelled);
+            }
+            result
+        })
+        .await
+        .map_err(|_| StorageError::Unavailable)??;
+        self.sealed = true;
+        Ok(())
+    }
+    fn discard_ready(&mut self) -> Result<(), StorageError> {
+        match fs::remove_file(&self.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            value => value?,
+        }
+        self.owner.0.uploads.lock().unwrap().remove(&self.job);
+        self.released = true;
+        Ok(())
+    }
+    pub fn reader(&self) -> Result<SpoolReader, StorageError> {
+        if !self.sealed {
+            return Err(StorageError::Conflict);
+        }
+        let drain = self
+            .drain
+            .clone()
+            .try_read_owned()
+            .map_err(|_| StorageError::Cancelled)?;
+        if self.flag.load(Ordering::Relaxed) {
+            return Err(StorageError::Cancelled);
+        }
         regular(&self.path)?;
-        Ok(File::open(&self.path)?)
+        Ok(SpoolReader {
+            file: File::open(&self.path)?,
+            _drain: drain,
+        })
+    }
+}
+/// The file closes before its cancellation drain is released, including when a
+/// caller drops a pending append future before publication starts.
+pub struct SpoolReader {
+    file: File,
+    _drain: OwnedRwLockReadGuard<()>,
+}
+impl Read for SpoolReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(bytes)
     }
 }
 impl Drop for Spool {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-        self.owner.0.uploads.lock().unwrap().remove(&self.job);
+        if self.released {
+            return;
+        }
+        if let Ok(_drain) = self.drain.clone().try_write_owned() {
+            let _ = fs::remove_file(&self.path);
+            self.owner.0.uploads.lock().unwrap().remove(&self.job);
+        } else {
+            // The caller may have been dropped while its blocking worker still
+            // reads/writes. Keep the input until every task-owned reader ends.
+            let drain = self.drain.clone();
+            let path = self.path.clone();
+            let owner = self.owner.clone();
+            let job = self.job.clone();
+            tokio::spawn(async move {
+                let _drain = drain.write_owned().await;
+                let _ = fs::remove_file(path);
+                owner.0.uploads.lock().unwrap().remove(&job);
+            });
+        }
     }
 }
 fn verify_digest(
@@ -1030,6 +1377,121 @@ fn verify_equal(temp: &Path, dest: &Path, digest: &str, len: u64) -> Result<(), 
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+    #[tokio::test]
+    async fn idle_progress_finish_and_failed_cleanup_keep_their_ownership_invariants() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("lytronaut-idle-{}", unique().unwrap()));
+        fs::create_dir(&root).unwrap();
+        let catalog = Catalog::open_application_database(&root.join("app.db"))
+            .await
+            .unwrap();
+        let idle = Duration::from_secs(10);
+        let store = Store::open(
+            catalog.clone(),
+            &root.join("originals"),
+            &root.join("staging"),
+            Limits {
+                free_floor: 0,
+                import_idle_timeout: idle,
+                ..Limits::default()
+            },
+        )
+        .await
+        .unwrap();
+        let request = ImportRequest {
+            version: WireVersion::V1,
+            kind: lytronaut_contracts::ImportKind::Directory,
+            declared_bytes: 128,
+            declared_files: 4,
+        };
+        let id = store.begin(&request).await.unwrap();
+        let mut spool = store.spool(&id).await.unwrap();
+        let stale = tokio::time::Instant::now() - idle;
+        store.0.activity.lock().unwrap().get_mut(&id).unwrap().last = stale;
+        spool.write(b"").await.unwrap();
+        assert_eq!(
+            store.0.activity.lock().unwrap()[&id].last,
+            stale,
+            "empty frames are not progress"
+        );
+        spool.write(b"public bytes").await.unwrap();
+        assert!(store.0.activity.lock().unwrap()[&id].last > stale);
+        store.expire_idle().await;
+        assert_eq!(store.job(&id).await.unwrap().state, JobState::Running);
+        drop(spool);
+        store
+            .append_directory_file(&id, "synthetic.txt", &b"sealed synthetic original"[..])
+            .await
+            .unwrap();
+        store.finish(&id).await.unwrap();
+        assert!(!store.0.activity.lock().unwrap().contains_key(&id));
+        store.expire_idle().await;
+        assert_eq!(store.job(&id).await.unwrap().state, JobState::Succeeded);
+        let entries = store.manifest(&id).await.unwrap();
+        let mut bytes = Vec::new();
+        store
+            .open_blob(&entries[0])
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"sealed synthetic original");
+
+        let blocked = store.begin(&request).await.unwrap();
+        let untouched = root.join("untouched");
+        fs::write(&untouched, b"outside the job").unwrap();
+        let bad = root.join("staging").join(format!("{blocked}-unsafe"));
+        symlink(&untouched, &bad).unwrap();
+        store
+            .0
+            .activity
+            .lock()
+            .unwrap()
+            .get_mut(&blocked)
+            .unwrap()
+            .last = tokio::time::Instant::now() - idle;
+        store.expire_idle().await;
+        let row = sqlx::query("SELECT reserved,state FROM intake_jobs WHERE id=$1")
+            .bind(&blocked)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("state"), "running");
+        assert!(
+            row.get::<i64, _>("reserved") > 0,
+            "failed cleanup must retain quota"
+        );
+        assert_eq!(fs::read(&untouched).unwrap(), b"outside the job");
+        fs::remove_file(&bad).unwrap();
+        store.expire_idle().await;
+        assert_eq!(
+            store.job(&blocked).await.unwrap().state,
+            JobState::Cancelled
+        );
+        assert!(!store.0.activity.lock().unwrap().contains_key(&blocked));
+        assert_eq!(fs::read(&untouched).unwrap(), b"outside the job");
+        drop(store);
+        catalog.pool().close().await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn idle_timeout_configuration_is_bounded_and_cannot_be_disabled() {
+        for idle in [Duration::ZERO, Duration::from_secs(86401)] {
+            assert_eq!(
+                Limits {
+                    import_idle_timeout: idle,
+                    ..Limits::default()
+                }
+                .validate(),
+                Err(StorageError::Invalid)
+            );
+        }
+        assert_eq!(
+            Limits::default().import_idle_timeout,
+            Duration::from_secs(1800)
+        );
+    }
+
     #[tokio::test]
     async fn shutdown_cancels_intake_and_preserves_existing_originals() {
         let root = std::env::temp_dir().join(format!("lytronaut-shutdown-{}", unique().unwrap()));
@@ -1105,3 +1567,7 @@ mod publication_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "intake_idle_tests.rs"]
+mod idle_tests;

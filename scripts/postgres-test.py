@@ -36,6 +36,7 @@ def main():
     env = dict(os.environ, LYTRONAUT_TEST_BACKEND="postgres")
     cases = [
         ("storage", 7, ["-p", "lytronaut-storage", "--lib", "database::tests::postgres_", "--", "--ignored", "--test-threads=1"]),
+        ("storage-idle", 2, ["-p", "lytronaut-storage", "--lib", "intake::idle_tests::postgres_", "--", "--ignored", "--test-threads=1"]),
         ("desktop", 1, ["-p", "lytronaut-storage", "--test", "desktop", "postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport_and_reopen", "--", "--exact", "--ignored", "--test-threads=1"]),
         ("http-api", 7, ["-p", "lytronaut-service", "--test", "api", "--", "--skip", "live_photo_", "--test-threads=1"]),
         # Live Photo export create/download, DELETE of a ready pair, in-flight

@@ -168,6 +168,26 @@ three volumes together. Retain originals/catalog consistency; never use an activ
 SQLite database file without its journal/sidecars. Restart the same volumes to
 resume browsing. Do not delete originals merely to clear staging or free space.
 
+### Abandoned imports
+
+An import with no accepted upload bytes or completed file for 30 minutes is
+cancelled automatically on both catalog backends. Override this with
+`LYTRONAUT_IMPORT_IDLE_SECONDS` (1–86400 seconds; default 1800). Status polling
+is not progress. The worker checks once per second (subject to executor and
+I/O scheduling). ZIP decoder admission, preflight,
+file publication and finish verification hold processing leases and do not
+count as network idle. Expiry first stops new writes, then waits for every
+in-flight file operation and open reader to drain, including blocking workers
+whose HTTP caller has already gone away. Only then does cleanup remove that
+job's staging files and release its slot and reservation. A cleanup
+failure retains the reservation and is retried; sealed original bytes are never
+deleted. Restart recovery still marks interrupted running imports as failed.
+
+The browser also attempts cancellation when an import cannot finish or its
+mounted view detaches. Closing or crashing the browser can prevent that request
+from reaching the service, so the server deadline is the final backstop. To
+retry, reselect the original directory or ZIP; preserved bytes deduplicate.
+
 ## Choosing a catalog backend
 
 | | SQLite (default `compose.yaml`) | PostgreSQL (`compose.postgres.yaml` or `compose.postgres-external.yaml`) |

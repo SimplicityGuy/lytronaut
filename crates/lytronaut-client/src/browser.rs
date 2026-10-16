@@ -225,6 +225,30 @@ fn browse_submit(ui: &Ui, lane: BrowseLane, intent: BrowseIntent) {
 struct Net {
     admission: Rc<RefCell<Admission>>,
 }
+/// Import ownership outlives mounted signals. Detach and every unsuccessful
+/// upload continuation release it; the server idle timer backs up page closure.
+struct ImportCleanup {
+    net: Net,
+    slot: Rc<RefCell<Option<OpaqueId>>>,
+}
+impl ImportCleanup {
+    fn cancel(net: &Net, slot: &Rc<RefCell<Option<OpaqueId>>>) {
+        let id = slot.borrow_mut().take();
+        if let Some(id) = id {
+            let net = net.clone();
+            spawn_local(async move {
+                let _ = net
+                    .mutation(&format!("/imports/{}/cancel", id.as_str()), "mutation")
+                    .await;
+            });
+        }
+    }
+}
+impl Drop for ImportCleanup {
+    fn drop(&mut self) {
+        Self::cancel(&self.net, &self.slot);
+    }
+}
 struct ObjectUrl(String);
 impl Drop for ObjectUrl {
     fn drop(&mut self) {
@@ -927,6 +951,7 @@ struct Ui {
     progress: RwSignal<u64>,
     total: RwSignal<u64>,
     upload_abort: Rc<RefCell<Option<web_sys::XmlHttpRequest>>>,
+    active_import: Rc<RefCell<Option<OpaqueId>>>,
     upload_cancelled: Rc<RefCell<bool>>,
     export_job: RwSignal<Option<ExportProgress>>,
     export_busy: RwSignal<bool>,
@@ -1043,6 +1068,7 @@ impl Ui {
             progress: RwSignal::new(0),
             total: RwSignal::new(1),
             upload_abort: Rc::default(),
+            active_import: Rc::default(),
             upload_cancelled: Rc::default(),
             export_job: RwSignal::new(None),
             export_busy: RwSignal::new(false),
@@ -1480,6 +1506,7 @@ impl Ui {
     /// originating handler returns (see `supersede`).
     fn cancel_upload(&self) {
         *self.upload_cancelled.borrow_mut() = true;
+        ImportCleanup::cancel(&self.net, &self.active_import);
         let xhr = self.upload_abort.borrow().clone();
         if let Some(xhr) = xhr {
             spawn_local(async move {
@@ -2540,6 +2567,8 @@ impl Ui {
         let result=async {
             let value:serde_json::Value=self.net.json("/imports","POST","mutation",Some(serde_json::json!({"version":1,"kind":kind,"declared_bytes":declared_bytes,"declared_files":declared_files}))).await?;
             let id:OpaqueId=value["id"].as_str().ok_or("Invalid import identifier")?.to_owned().try_into().map_err(|_|"Invalid import identifier")?;
+            *self.active_import.borrow_mut() = Some(id.clone());
+            let _import_cleanup = ImportCleanup { net: self.net.clone(), slot: self.active_import.clone() };
             if self.attached(mount) { self.job.set(id.as_str().into()); }
             // Only the opaque job ID is retained; never source paths.
             if let Ok(Some(storage))=web_sys::window().unwrap().session_storage(){let _=storage.set_item("lytronaut-import",id.as_str());}
@@ -2551,20 +2580,14 @@ impl Ui {
                 self.status.set(format!("Uploading file {} of {}",index+1,files.len()));
                 let route=if kind==ImportKind::Directory {format!("/imports/{}/file",id.as_str())} else {format!("/imports/{}/zip",id.as_str())};
                 let hex=if kind==ImportKind::Directory {let path=Reflect::get(file,&"webkitRelativePath".into()).ok().and_then(|v|v.as_string()).unwrap_or_else(||file.name());Some(path_hex(&path).map_err(str::to_owned)?)}else{None};
-                if let Err(error)=self.send_file(&route,file,hex.as_deref(),base).await {
-                    // This import cannot finish: a retry selects the files again and
-                    // creates a new one. Cancel it so it stops holding one of the
-                    // service's import admission slots; an import the service has
-                    // already ended is unaffected, and committed originals stay
-                    // preserved. A user cancellation has already been sent.
-                    if !*self.upload_cancelled.borrow() {
-                        let _=self.net.mutation(&format!("/imports/{}/cancel",id.as_str()),"mutation").await;
-                    }
-                    return Err(error);
-                }
+                self.send_file(&route,file,hex.as_deref(),base).await?;
                 base+=file.size() as u64;
             }
             self.net.mutation(&format!("/imports/{}/finish",id.as_str()),"mutation").await?;
+            // A successful finish transfers ownership to the durable catalog;
+            // status recovery errors must not cancel an already completed job.
+            self.active_import.borrow_mut().take();
+            if !self.attached(mount) { return Err("Cancelled".into()); }
             self.status_job().await
         }.await;
         self.upload_abort.borrow_mut().take();
