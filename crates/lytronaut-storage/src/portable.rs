@@ -437,6 +437,28 @@ impl<R: std::io::Read> Decoder<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn column_constructors_define_the_version_2_nullability_contract() {
+        // The descriptors are otherwise only built in const context; run the
+        // constructors and check they agree with the published table contract.
+        let required = col("id", Text);
+        let nullable = optional("error", Text);
+        assert!(!required.nullable && nullable.nullable);
+        assert_eq!((required.name, nullable.name), ("id", "error"));
+        let intake = TABLES.iter().find(|t| t.name == "intake_jobs").unwrap();
+        let error = intake.columns.iter().find(|c| c.name == "error").unwrap();
+        assert!(error.nullable);
+        assert!(
+            !intake
+                .columns
+                .iter()
+                .find(|c| c.name == "id")
+                .unwrap()
+                .nullable
+        );
+        // Every table keeps at least one required identifying column.
+        assert!(TABLES.iter().all(|t| t.columns.iter().any(|c| !c.nullable)));
+    }
     fn encode(rows: &[Vec<Vec<Cell>>]) -> Result<Vec<u8>, E> {
         let mut writer = Encoder::new(Vec::new())?;
         for table in rows {

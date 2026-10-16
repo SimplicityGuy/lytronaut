@@ -339,3 +339,179 @@ async fn malformed_and_overlarge_declarations_never_echo_private_input() {
     }
     s.close().await;
 }
+#[tokio::test]
+async fn upload_framing_cancel_and_retry_routes_fail_closed_over_http() {
+    let s = Server::new().await;
+    let (_, mutation) = s.request_headers().await;
+    let put = |id: &str, extra: &str| (format!("/imports/{id}/file"), format!("{mutation}{extra}"));
+    // Header framing that can never name a safe logical file.
+    for extra in [
+        String::new(),
+        "X-Lytronaut-Entry-Type: directory\r\n".into(),
+        "X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: 61\r\n".into(),
+        "X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: 6\r\n".into(),
+        "X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: 6A\r\n".into(),
+        "X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: zz\r\n".into(),
+        "X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: ff\r\n".into(),
+        format!("X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: {}\r\n", "61".repeat(5000)),
+    ] {
+        let id = s.begin(&mutation, 16).await;
+        let (path, headers) = put(&id, &extra);
+        let r = s.request("PUT", &path, &headers, b"x", false).await;
+        assert_eq!(r.0, 400, "{extra}");
+        assert_eq!(serde_json::from_str::<Value>(&r.2).unwrap()["code"], "invalid_input");
+        let progress = s.request("GET", &format!("/imports/{id}"), &mutation, b"", false).await;
+        assert_eq!(serde_json::from_str::<Value>(&progress.2).unwrap()["phase"], "failed");
+    }
+    // A declared Content-Length above the per-file limit is refused before streaming.
+    let id = s.begin(&mutation, 16384).await;
+    let (path, headers) = put(
+        &id,
+        &format!(
+            "X-Lytronaut-Entry-Type: file\r\nX-Lytronaut-Path-Hex: {}\r\n",
+            hex("big")
+        ),
+    );
+    assert_eq!(
+        s.request("PUT", &path, &headers, &vec![b'x'; 8193], false)
+            .await
+            .0,
+        413
+    );
+    // Non-ZIP bytes on the ZIP route fail the job without publishing anything.
+    let request = json!({"version":1,"kind":"zip_library","declared_bytes":64,"declared_files":1})
+        .to_string();
+    let r = s
+        .request("POST", "/imports", &mutation, request.as_bytes(), false)
+        .await;
+    assert_eq!(r.0, 201, "{}", r.2);
+    let zip = serde_json::from_str::<Value>(&r.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        s.request(
+            "PUT",
+            &format!("/imports/{zip}/zip"),
+            &mutation,
+            b"not a zip archive",
+            false
+        )
+        .await
+        .0,
+        413
+    );
+    assert!(s.store.manifest(&zip).await.is_err());
+
+    // Cancel is idempotent; a cancelled import can be retried as a new import.
+    let id = s.begin(&mutation, 16).await;
+    for _ in 0..2 {
+        assert_eq!(
+            s.request(
+                "POST",
+                &format!("/imports/{id}/cancel"),
+                &mutation,
+                b"",
+                false
+            )
+            .await
+            .0,
+            204
+        );
+    }
+    let progress = s
+        .request("GET", &format!("/imports/{id}"), &mutation, b"", false)
+        .await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&progress.2).unwrap()["phase"],
+        "cancelled"
+    );
+    assert_eq!(
+        s.request(
+            "POST",
+            &format!("/imports/{id}/finish"),
+            &mutation,
+            b"",
+            false
+        )
+        .await
+        .0,
+        409
+    );
+    let retried = s
+        .request(
+            "POST",
+            &format!("/imports/{id}/retry"),
+            &mutation,
+            b"",
+            false,
+        )
+        .await;
+    assert_eq!(retried.0, 201, "{}", retried.2);
+    let new_id = serde_json::from_str::<Value>(&retried.2).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(new_id, id);
+    // A running import cannot be retried; finishing one without files is invalid.
+    assert_eq!(
+        s.request(
+            "POST",
+            &format!("/imports/{new_id}/retry"),
+            &mutation,
+            b"",
+            false
+        )
+        .await
+        .0,
+        409
+    );
+    assert_eq!(
+        s.request(
+            "POST",
+            &format!("/imports/{new_id}/finish"),
+            &mutation,
+            b"",
+            false
+        )
+        .await
+        .0,
+        400
+    );
+    // An interrupted (retryable) failure is reported and retryable.
+    s.store.fail(&new_id).await.unwrap();
+    let progress = s
+        .request("GET", &format!("/imports/{new_id}"), &mutation, b"", false)
+        .await;
+    let progress: Value = serde_json::from_str(&progress.2).unwrap();
+    assert_eq!(progress["phase"], "failed");
+    assert_eq!(
+        s.request(
+            "POST",
+            &format!("/imports/{new_id}/retry"),
+            &mutation,
+            b"",
+            false
+        )
+        .await
+        .0,
+        201
+    );
+
+    // Malformed or unknown identifiers on every route, without echoing input.
+    for (method, route) in [
+        ("GET", "/imports/%FF"),
+        ("GET", "/imports/not-an-import"),
+        ("PUT", "/imports/%FF/file"),
+        ("PUT", "/imports/%FF/zip"),
+        ("POST", "/imports/%FF/finish"),
+        ("POST", "/imports/%FF/cancel"),
+        ("POST", "/imports/%FF/retry"),
+        ("POST", "/imports/not-an-import/retry"),
+    ] {
+        let r = s.request(method, route, &mutation, b"", false).await;
+        assert_eq!(r.0, 400, "{method} {route}");
+        assert!(!r.2.contains("not-an-import"));
+    }
+    s.close().await;
+}

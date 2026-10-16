@@ -1607,6 +1607,11 @@ async fn public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_an
 }
 
 fn live_focus_fixture() -> Vec<u8> {
+    live_focus_fixture_with(false)
+}
+/// `missing_second`: the directory still references the second stored plane but
+/// its content section is absent from the container.
+fn live_focus_fixture_with(missing_second: bool) -> Vec<u8> {
     use sha1::{Digest, Sha1};
     let hash = |b: &[u8]| format!("sha1-{:x}", Sha1::digest(b));
     let planes: Vec<Vec<u8>> = [[255u8, 0, 0], [0, 0, 255]]
@@ -1622,11 +1627,11 @@ fn live_focus_fixture() -> Vec<u8> {
         .collect();
     let directory=serde_json::to_vec(&json!({"version":{"major":1,"minor":0},"picture":{"recipe":{"cameraSerial":"invented-sensitive-note","sourcePath":"invented-private-path","orientation":8},"accelerationArray":[{"type":"com.lytro.acceleration.refocusStack","vendorContent":{"imageArray":[{"representation":"jpeg","width":32,"height":16,"lambda":-1,"imageRef":hash(&planes[0])},{"representation":"jpeg","width":32,"height":16,"lambda":1,"imageRef":hash(&planes[1])}]}}]}})).unwrap();
     let mut bytes = b"\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0".to_vec();
-    for (directory, payload) in [
-        (true, directory.as_slice()),
-        (false, planes[0].as_slice()),
-        (false, planes[1].as_slice()),
-    ] {
+    let mut sections = vec![(true, directory.as_slice()), (false, planes[0].as_slice())];
+    if !missing_second {
+        sections.push((false, planes[1].as_slice()));
+    }
+    for (directory, payload) in sections {
         bytes.extend(if directory {
             b"\x89LFM\r\n\x1a\n"
         } else {
@@ -1668,6 +1673,9 @@ fn live_zip_entries(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>>
 /// One imported synthetic JPEG focus stack. Runs on the configured backend
 /// (`LYTRONAUT_TEST_BACKEND`), so every Live Photo case also runs on PostgreSQL.
 async fn live_photo_server() -> (Server, String, String, String, Vec<u8>) {
+    live_photo_server_with(live_focus_fixture()).await
+}
+async fn live_photo_server_with(source: Vec<u8>) -> (Server, String, String, String, Vec<u8>) {
     let s = Server::new().await;
     let (headers, mutation) = s.request_headers().await;
     let body =
@@ -1681,7 +1689,6 @@ async fn live_photo_server() -> (Server, String, String, String, Vec<u8>) {
         .as_str()
         .unwrap()
         .to_owned();
-    let source = live_focus_fixture();
     let db = s.source(23).await;
     for (name, bytes) in [
         ("lytrolibrary.db", db),
@@ -1930,5 +1937,181 @@ async fn live_photo_unavailable_plane_fails_without_output_and_survives_restart(
     );
     assert_eq!(live_photo_quota(&s, &id).await, (0, 0));
     assert!(live_photo_files_removed(&s, &id));
+    s.close().await;
+}
+/// lytronaut-0f6 item 2: a real missing stored plane (not an out-of-range index)
+/// is admitted (the original exists) but rejected when the worker parses the
+/// stack: no output is ever offered and the original stays byte-identical.
+#[tokio::test]
+async fn live_photo_missing_stored_plane_fails_in_the_worker_without_output() {
+    let (s, headers, mutation, asset, source) =
+        live_photo_server_with(live_focus_fixture_with(true)).await;
+    let id = live_photo_create(&s, &mutation, &asset, 0, 1).await;
+    let report = wait_export(&s, &id, &headers).await;
+    assert_eq!(report["state"], "failed");
+    assert_eq!(report["error"]["code"], "corrupt_asset");
+    assert_eq!(
+        s.request("GET", &format!("/exports/{id}/download"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        s.request("GET", &format!("/assets/{asset}/download"), &headers, b"")
+            .await
+            .2,
+        source
+    );
+    // A non-stack original is refused at admission, before any job exists.
+    let library = s.get("/libraries", &headers).await["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let files = s
+        .get(&format!("/libraries/{library}/files"), &headers)
+        .await;
+    let catalog = files["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"].as_str() != Some(asset.as_str()))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request =
+        json!({"kind":"live_photo","version":1,"asset":catalog,"plane_index":0,"orientation":1})
+            .to_string();
+    let refused = s
+        .request("POST", "/exports", &mutation, request.as_bytes())
+        .await;
+    assert_eq!(refused.0, 422);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&refused.2).unwrap()["code"],
+        "unsupported_format"
+    );
+    s.close().await;
+}
+#[tokio::test]
+async fn browse_queries_and_asset_requests_are_validated_before_storage() {
+    let s = Server::new().await;
+    let (headers, mutation) = s.request_headers().await;
+    let (job, _) = s.upload(&mutation, 23).await;
+    assert_eq!(
+        s.request("POST", &format!("/imports/{job}/finish"), &mutation, b"")
+            .await
+            .0,
+        204
+    );
+    let progress = s.get(&format!("/imports/{job}"), &headers).await;
+    assert_eq!(progress["catalog_state"], "ready");
+    let lib = progress["library"].as_str().unwrap().to_owned();
+    // Form-encoded search: '+' is a space and %XX bytes are UTF-8.
+    let found = s
+        .get(
+            &format!("/libraries/{lib}/captures?search=%E9%9B%AA+%F0%9F%8C%8C"),
+            &headers,
+        )
+        .await;
+    assert_eq!(found["items"].as_array().unwrap().len(), 1);
+    assert_eq!(found["items"][0]["name"], "雪 🌌");
+    let invalid = [
+        "/libraries?search=x".to_owned(),
+        "/libraries?sort=name".into(),
+        format!("/libraries/{lib}/albums?sort=rating"),
+        format!("/libraries/{lib}/files?search=x"),
+        format!("/libraries/{lib}/files?sort=name"),
+        format!("/libraries/{lib}/captures?search=%G1"),
+        format!("/libraries/{lib}/captures?search=%E9"),
+        format!("/libraries/{lib}/captures?search=%4"),
+        "/libraries/%FF/albums".into(),
+        "/assets/bad.identifier/manifest".into(),
+    ];
+    for path in &invalid {
+        let r = s.request("GET", path, &headers, b"").await;
+        assert_eq!(r.0, 400, "{path}");
+        let body: Value = serde_json::from_slice(&r.2).unwrap();
+        assert_eq!(body["code"], "invalid_input", "{path}");
+    }
+    // A well-formed identifier that names nothing is not found.
+    assert_eq!(
+        s.request("GET", "/assets/unknown-opaque-id/manifest", &headers, b"")
+            .await
+            .0,
+        404
+    );
+    // Pick the first capture's preserved originals by role.
+    let captures = s
+        .get(&format!("/libraries/{lib}/captures?sort=name"), &headers)
+        .await;
+    let capture = captures["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "雪 🌌")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let detail = s.get(&format!("/captures/{capture}"), &headers).await;
+    let original = |role: &str| {
+        detail["originals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["role"] == role)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let raw = original("raw");
+    let thumbnail = original("thumbnail");
+    // A raw original is not a focus stack and has no preview chunks to serve.
+    assert_eq!(
+        s.request("GET", &format!("/assets/{raw}/focus"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        s.request("GET", &format!("/assets/{raw}/chunks/0"), &headers, b"")
+            .await
+            .0,
+        404
+    );
+    // Chunks are whole verified ranges: no client Range, numeric indices only.
+    assert_eq!(
+        s.request(
+            "GET",
+            &format!("/assets/{thumbnail}/chunks/0"),
+            &format!("{headers}Range: bytes=0-1\r\n"),
+            b""
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        s.request(
+            "GET",
+            &format!("/assets/{thumbnail}/chunks/first"),
+            &headers,
+            b""
+        )
+        .await
+        .0,
+        400
+    );
+    let chunk = s
+        .request(
+            "GET",
+            &format!("/assets/{thumbnail}/chunks/0"),
+            &headers,
+            b"",
+        )
+        .await;
+    assert_eq!(chunk.0, 200);
+    assert!(lytronaut_format::decode_jpeg(&chunk.2, lytronaut_format::Limits::default()).is_ok());
     s.close().await;
 }

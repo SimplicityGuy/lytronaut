@@ -17,14 +17,26 @@ const data=privateMode?root:path.join(root,'data');
 fs.mkdirSync(data,{recursive:true,mode:0o700});
 const server=process.env.LYTRONAUT_EXTERNAL_SERVER?{on(){},stderr:{on(){}},kill(){}}:spawn(binary,[],{cwd:process.cwd(),env:{...process.env,LYTRONAUT_DATA:data,LYTRONAUT_DATABASE:privateMode?'app.db':'catalog.db',LYTRONAUT_ORIGIN:origin,LYTRONAUT_LISTEN:new URL(origin).host},stdio:['ignore','ignore','pipe']});
 let serverFailure=false;server.stderr.on("data",d=>{if(!privateMode)process.stderr.write(d);});server.on('exit',code=>{if(code)serverFailure=true;});
+// The native service writes its LLVM profile (coverage builds) only on a normal
+// exit, so shutdown awaits the graceful SIGINT path instead of abandoning it.
+const serverExit=new Promise(resolve=>server.on('exit',(code,signal)=>resolve({code,signal})));
+const stopServer=async()=>{
+ if(process.env.LYTRONAUT_EXTERNAL_SERVER)return;
+ if(server.exitCode===null&&server.signalCode===null)server.kill('SIGINT');
+ let timer;const exit=await Promise.race([serverExit,new Promise(resolve=>{timer=setTimeout(()=>resolve(null),30000);})]);clearTimeout(timer);
+ if(!exit){server.kill('SIGKILL');throw Error('service did not exit within 30s of SIGINT');}
+ if(exit.signal||exit.code!==0)throw Error(`service exited uncleanly after SIGINT (code ${exit.code}, signal ${exit.signal})`);
+};
 let checkpoint='startup';
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
+// Extra Chrome switches, e.g. --enable-unsafe-webgpu for the CI software WebGPU adapter.
+const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boolean);
 (async()=>{
  let browser;
  try{
   const startupStart=Date.now();let ready=false;for(let i=0;i<1200;i++){try{if((await fetch(origin+'/healthz')).ok){ready=true;break;}}catch{}if(serverFailure)throw Error('test service startup failed');await delay(250);}assert(ready,'service must become healthy within 300s');const startupMs=Date.now()-startupStart;
   if(!privateMode)console.error("starting isolated Chrome");
-  browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1',userDataDir:path.join(root,'browser-profile-'+process.pid),args:[]});
+  browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1'&&process.env.LYTRONAUT_CHROME_HEADLESS!=='0',userDataDir:path.join(root,'browser-profile-'+process.pid),args:chromeArgs});
   let page=await browser.newPage();
   const click=async text=>{await page.waitForFunction(text=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===text&&!b.disabled);if(!b)return false;b.click();return true;},{polling:50},text);};await page.setViewport({width:1440,height:1000});
   const instrument=async p=>p.evaluateOnNewDocument(gpuMode=>{
@@ -89,6 +101,8 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   }
   let sidebarProof=null;
   if(!privateMode&&!gpuMode){checkpoint='bounded-sidebars';sidebarProof=await require('./sidebar-test.cjs')({browser,origin});}
+  // Separate public fault-injection flows (scripts/flows), each on its own page.
+  const flowProofs={};if(!privateMode&&!gpuMode)for(const flow of (process.env.LYTRONAUT_FLOWS??'fault-injection,focus-video-faults,browse-admission,video-container-faults,cancellation-races,browser-api-faults,render-faults').split(',').filter(Boolean)){checkpoint='flow-'+flow;flowProofs[flow]=await require('./flows/'+flow+'.cjs')({browser,origin});}
   checkpoint='keyboard-navigation';const firstCapture=await page.$eval('.viewer-strip span',e=>e.textContent);
   await page.focus('.stage');await page.keyboard.press('ArrowRight');
   await page.waitForFunction(first=>document.querySelector('.viewer-strip span').textContent!==first,{},firstCapture);
@@ -342,7 +356,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   }
   assert.deepEqual([...memberships].sort((a,b)=>a-b),privateMode?[12,39,58]:[10,10,10]);
   if(!privateMode){
-   await click('All captures');await delay(300);
+   await click('All captures');await page.waitForFunction(()=>document.querySelectorAll('.capture').length===24&&!document.querySelector('.album-item[aria-pressed="true"]'));
    await page.type('#search','Synthetic 029');await click('Search');
    await page.waitForFunction(()=>document.querySelectorAll('.capture').length===1);assert((await page.$eval('.capture',e=>e.textContent)).includes('029'));
    await page.$eval('#search',e=>{e.value='';e.dispatchEvent(new Event('input',{bubbles:true}));});await click('Search');
@@ -431,10 +445,34 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    corrupt=false;await page.setRequestInterception(false);page.off('request',corruptResponse);await click('Retry preview');
    await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
    checkpoint='canvas-cleanup';
-   // Canvas creation failure releases the original URL; revisit recovers thumbnails.
-   await page.evaluate(()=>{window.__canvasGet=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=()=>null;});
-   await click('Next page');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 2');await delay(300);
-   await page.evaluate(()=>{HTMLCanvasElement.prototype.getContext=window.__canvasGet;});
+   await page.waitForFunction(()=>{const images=[...document.querySelectorAll('.capture img')];return images.length===24&&images.every(image=>image.complete&&image.naturalWidth>0);},{timeout:120000});
+   // The synthetic second page has six thumbnails. Each downsample creates a
+   // 128² canvas; Rust's error path zeroes it and revokes its source URL before
+   // returning Unavailable. Fence those exact attempts, not unrelated polling.
+   await page.evaluate(()=>{
+    window.__canvasGet=HTMLCanvasElement.prototype.getContext;
+    window.__failedThumbnailCanvases=new Set();
+    HTMLCanvasElement.prototype.getContext=function(kind){
+     if(kind==='2d'&&this.width===128&&this.height===128)window.__failedThumbnailCanvases.add(this);
+     return null;
+    };
+   });
+   try{
+    await click('Next page');
+    await page.waitForFunction(()=>{
+     const canvases=window.__failedThumbnailCanvases,stage=document.querySelector('.stage img');
+     return document.querySelector('.pagination span').textContent==='Page 2'
+      &&document.querySelectorAll('.capture').length===6
+      &&document.querySelectorAll('.capture .thumb-empty').length===6
+      &&document.querySelectorAll('.capture img').length===0
+      &&canvases.size===6&&[...canvases].every(canvas=>canvas.width===0&&canvas.height===0)
+      &&stage?.complete&&stage.naturalWidth>0&&stage.src.startsWith('blob:')
+      &&window.__activeURLs.size===1&&window.__activeURLs.has(stage.src)
+      &&window.__urls.created-window.__urls.revoked===1;
+    },{timeout:120000});
+   }finally{
+    await page.evaluate(()=>{HTMLCanvasElement.prototype.getContext=window.__canvasGet;delete window.__canvasGet;delete window.__failedThumbnailCanvases;});
+   }
    await click('Previous page');await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===24,{timeout:120000});
   }
   await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
@@ -457,7 +495,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   const prefs=JSON.parse(fs.readFileSync(preferences,'utf8'));prefs.partition??={};
   prefs.partition.default_zoom_level={x:Math.log(2)/Math.log(1.2)};
   prefs.partition.per_host_zoom_levels={};fs.writeFileSync(preferences,JSON.stringify(prefs));
-  browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1',userDataDir:path.join(root,'browser-profile-'+process.pid),args:[]});
+  browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:process.env.LYTRONAUT_GPU_TRACE!=='1'&&process.env.LYTRONAUT_CHROME_HEADLESS!=='0',userDataDir:path.join(root,'browser-profile-'+process.pid),args:chromeArgs});
   page=await browser.newPage();attach(page);await instrument(page);await page.setViewport({width:1440,height:1000});await page.goto(origin);await page.waitForSelector('#directory');
   const zoom=await page.evaluate(()=>({inner:innerWidth,outer:outerWidth,dpr:devicePixelRatio}));
   assert(Math.abs(zoom.dpr/baseline.dpr-2)<0.01,'actual browser200% DPR');
@@ -481,10 +519,10 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   const direct=await page.evaluate(async()=> (await fetch('/libraries')).status);assert.equal(direct,200);
   await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.waitForFunction(()=>window.__urls.created===window.__urls.revoked);assert.equal(await page.evaluate(()=>window.__activeURLs.size),0,'pagehide releases every owned Blob URL');
   assert.equal(errors.length,0);assert(!responses.includes(429));const urls=await page.evaluate(()=>window.__urls);assert.equal(urls.created,urls.revoked);
-  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,sidebarProof,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,videoHttpRustUi:!privateMode,videoUiProof,keyboardNavigation:true,contrast,preZoomURLProof,displayedBlobOwnershipVerified:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
+  const result={mode:privateMode?'private-aggregate':'synthetic',revision:process.env.LYTRONAUT_TEST_REVISION||'working-tree',artifactProfiles:process.env.LYTRONAUT_ARTIFACT_PROFILES||(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'?'native release; wasm release':'native debug; wasm debug'),performanceGateEnabled:process.env.LYTRONAUT_RELEASE_BENCHMARK==='1',startupMs,gpuProof,preZoomGPUDevices,sidebarProof,focusProof,focusUiLoadContendedTimes,focusUiTimes,faultSuite:!privateMode,flowProofs,videoHttpRustUi:!privateMode,videoUiProof,keyboardNavigation:true,contrast,preZoomURLProof,displayedBlobOwnershipVerified:true,captures:seen,albums:albumCount,orderedMemberships:memberships,assets429:responses.filter(s=>s===429).length,blobURLsReleased:true,absentGPUAndCodecInjected:!gpuMode,pageErrors:errors.length,reducedMotion:reduced,forcedColors:true,AXTree:true,responsive:true,zoom,browser:await browser.version(),screenReader:'AX inspection only; VoiceOver not manually certified'};
   const clientDir=process.env.LYTRONAUT_CLIENT||'dist';const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
   result.applicationWasmSha256=hash(path.join(clientDir,'lytronaut_client_bg.wasm'));result.generatedGlueSha256=hash(path.join(clientDir,'lytronaut_client.js'));if(binary)result.nativeServiceSha256=hash(binary);
   console.log(JSON.stringify(result));
   fs.writeFileSync(process.env.LYTRONAUT_BROWSER_REPORT||path.join(root,privateMode?'browser-aggregate.json':'browser-results.json'),JSON.stringify(result,null,2),{mode:0o600});
- }finally{if(browser)await browser.close();fs.rmSync(path.join(root,'browser-profile-'+process.pid),{recursive:true,force:true});server.kill('SIGINT');}
+ }finally{if(browser)await browser.close();fs.rmSync(path.join(root,'browser-profile-'+process.pid),{recursive:true,force:true});await stopServer().catch(e=>{console.error(e.message);process.exitCode=1;});}
 })().catch(e=>{console.error(privateMode?'Browser validation failed at '+checkpoint+' '+(e.stack?.match(/browser-test.cjs:\d+:\d+/)?.[0]||'')+' (details redacted)':'checkpoint '+checkpoint+' '+e.stack);process.exitCode=1;});

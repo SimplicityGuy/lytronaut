@@ -2,7 +2,15 @@
 const assert=require('node:assert/strict');
 const {PNG}=require('./browser/node_modules/pngjs');
 module.exports=async function gpuTest(page,click){
- const ready=()=>page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.startsWith('GPU verified derivative'));
+ const ready=()=>page.waitForFunction(()=>document.querySelector('#gpu-status').textContent.startsWith('GPU verified derivative')).catch(async error=>{
+  // Synthetic-only diagnostic: the renderer status names the fallback reason.
+  const state=await page.evaluate(()=>({gpuStatus:document.querySelector('#gpu-status')?.textContent,status:document.querySelector('.status')?.textContent,adapter:!!navigator.gpu})).catch(()=>null);
+  // Platform WebGPU validation messages (synthetic fixture only) explain a fallback.
+  const messages=[];const collect=m=>{if(/gpu/i.test(m.text())&&messages.length<20)messages.push(`${m.type()}: ${m.text().slice(0,300)}`);};
+  page.on('console',collect);await page.reload().catch(()=>{});await new Promise(r=>setTimeout(r,8000));page.off('console',collect);
+  const after=await page.evaluate(()=>document.querySelector('#gpu-status')?.textContent).catch(()=>null);
+  throw Error(`GPU renderer not verified: ${JSON.stringify({...state,afterReload:after,messages})}`,{cause:error});
+ });
  const captureName=await page.$eval('.viewer-strip span',e=>e.textContent);
  const initialize=async fault=>{
   const script=await page.evaluateOnNewDocument(f=>{window.__gpuFault=f;if(f==='missing-api')Object.defineProperty(navigator,'gpu',{value:undefined,configurable:true});},fault);
@@ -22,7 +30,11 @@ module.exports=async function gpuTest(page,click){
  await ready();
  assert.equal(await page.$$eval('button',buttons=>buttons.some(b=>/Try GPU|Use CPU/.test(b.textContent))),false,'renderer selection is automatic');
  const hardware=await page.evaluate(async()=>{const a=await navigator.gpu.requestAdapter();return {info:{vendor:a.info.vendor,architecture:a.info.architecture,device:a.info.device},maxTextureDimension2D:a.limits.maxTextureDimension2D};});
- assert.equal(hardware.info.vendor,'apple');assert.equal(hardware.info.architecture,'metal-3');
+ // Reference host: Apple Metal hardware. CI: Chrome's SwiftShader software adapter
+ // (LYTRONAUT_GPU_ADAPTER=google/swiftshader) - real WebGPU execution, never a physical-GPU result.
+ const [vendor,architecture]=(process.env.LYTRONAUT_GPU_ADAPTER||'apple/metal-3').split('/');
+ assert.equal(hardware.info.vendor,vendor);assert.equal(hardware.info.architecture,architecture);
+ hardware.softwareAdapter=vendor==='google'&&architecture==='swiftshader';hardware.physicalGpu=!hardware.softwareAdapter;
  const compare=async orientation=>{const expected=await page.evaluate(async orientation=>{
   const gpu=document.querySelector('#gpu-stage');
   const library=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');
@@ -46,15 +58,15 @@ module.exports=async function gpuTest(page,click){
   return {pixels:[...expected],width:gpu.width,height:gpu.height,cpuBytes:Number(gpu.dataset.cpuBytes),gpuBytes:Number(gpu.dataset.gpuBytes)};
  },orientation);
  const png=PNG.sync.read(Buffer.from(await (await page.$('#gpu-stage')).screenshot({path:require('node:path').join(process.env.LYTRONAUT_TEST_ROOT,'gpu-orientation-'+orientation+'.png')})));assert.equal(png.width,expected.width);assert.equal(png.height,expected.height);
- let maximum=0,squared=0;for(let i=0;i<png.data.length;i++){const d=Math.abs(png.data[i]-expected.pixels[i]);maximum=Math.max(maximum,d);squared+=d*d;}
- const {pixels,...metadata}=expected;return {maximum,rmse:Math.sqrt(squared/png.data.length),...metadata};
+ let maximum=0,squared=0,differing=0,firstDifference=null;for(let i=0;i<png.data.length;i++){const d=Math.abs(png.data[i]-expected.pixels[i]);if(d&&!firstDifference)firstDifference={pixel:Math.floor(i/4),actual:[...png.data.slice(i-i%4,i-i%4+4)],expected:expected.pixels.slice(i-i%4,i-i%4+4)};if(d&&i%4===0)differing++;maximum=Math.max(maximum,d);squared+=d*d;}
+ const {pixels,...metadata}=expected;return {maximum,rmse:Math.sqrt(squared/png.data.length),differing,firstDifference,...metadata};
  };
  const transforms=[];
  for(let orientation=1;orientation<=8;orientation++){
   await page.$eval('#orientation',(e,n)=>{e.value=String(n);e.dispatchEvent(new Event('change',{bubbles:true}));},orientation);
   await page.waitForFunction(n=>document.querySelector('output[for=focus]').textContent.includes('EXIF '+n),{},orientation);await ready();
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const c=await compare(orientation);assert.equal(c.maximum,0,'exact integer texture-to-canvas pixels');assert.equal(c.rmse,0);assert(c.cpuBytes<=96*1024*1024&&c.gpuBytes<=64*1024*1024);transforms.push({orientation,...c});
+  const c=await compare(orientation);assert.equal(c.maximum,0,`exact integer texture-to-canvas pixels (orientation ${orientation}: max ${c.maximum}, rmse ${c.rmse.toFixed(3)}, ${c.width}x${c.height}, ${c.differing} pixels differ, first ${JSON.stringify(c.firstDifference)})`);assert.equal(c.rmse,0);assert(c.cpuBytes<=96*1024*1024&&c.gpuBytes<=64*1024*1024);transforms.push({orientation,...c});
  }
  await page.$eval('#gpu-quality',e=>{e.value='256';e.dispatchEvent(new Event('change',{bubbles:true}));});
  await page.waitForFunction(()=>document.querySelector('#gpu-stage').height===256);await ready();

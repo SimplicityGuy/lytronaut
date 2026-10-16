@@ -10,6 +10,8 @@ pub mod video;
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
+    #[cfg(feature = "coverage")]
+    lytronaut_coverage::install();
     #[cfg(not(feature = "test-harness"))]
     leptos::mount::mount_to_body(browser::app);
     #[cfg(feature = "test-harness")]

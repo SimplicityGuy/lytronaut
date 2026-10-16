@@ -217,7 +217,10 @@ pub fn zip64_record_offset(tail: &[u8], archive_size: u64) -> Result<Option<u64>
         Ok(None)
     }
 }
-pub fn zip_extent(tail: &[u8], archive_size: u64) -> Result<(u64, usize), &'static str> {
+/// Test convenience for archives without a ZIP64 record; the client always
+/// calls `zip_extent_with_record`.
+#[cfg(test)]
+fn zip_extent(tail: &[u8], archive_size: u64) -> Result<(u64, usize), &'static str> {
     zip_extent_with_record(tail, archive_size, None)
 }
 pub fn zip_extent_with_record(

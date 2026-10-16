@@ -14,7 +14,7 @@ const server=http.createServer((req,res)=>{if(req.method!=='GET'||req.url!=='/')
   let browser;
   try {
     await bounded(new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',()=>{server.removeListener('error',reject);resolve();});}),10000);
-    browser=await pp.launch({executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile'),timeout:30000});
+    browser=await require('./coverage.cjs').launch(pp,{executablePath:process.env.LYTRONAUT_CHROME||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:path.join(scratch,'profile'),timeout:30000});
     const page=await browser.newPage();
     await page.setRequestInterception(true);
     let interceptionFailed=false;

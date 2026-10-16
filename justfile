@@ -20,6 +20,7 @@ lint:
 test:
     cargo test --locked --workspace --all-targets --all-features
     cargo test --locked --workspace --doc
+    node --test scripts/coverage.test.cjs
 
 # Explicit disposable PostgreSQL only; the default SQLite test recipe stays independent.
 # Requires a restricted role, CONNECT+CREATE on its dedicated DB, and the synthetic
@@ -66,6 +67,42 @@ format:
 security-scan:
     gitleaks git --redact
     gitleaks dir --redact --config .gitleaks.toml .
+
+# First-party line coverage gate: native (stable, cargo-llvm-cov) plus the actual
+# Rust/WASM client instrumented with a dated nightly and executed by the real
+# browser suites; native, WASM(client) and union must each reach 95% of the full
+# crates/*/src inventory, with the owner-approved GPU-only exception itemised
+# separately (docs/operations/coverage.md). Needs Chrome, Docker and clang with wasm32;
+# synthetic fixtures only; report in target/coverage/report/coverage.md.
+# Full native + instrumented Rust/WASM browser coverage gate (>=95% each).
+coverage:
+    MISE_ENV=coverage mise exec -- just coverage-toolchain coverage-wasm coverage-native coverage-browser coverage-report
+
+# Install/verify the coverage-only toolchains; product pins stay unchanged.
+coverage-toolchain:
+    bash scripts/coverage.sh toolchain
+
+# Instrumented WASM clients (`coverage` and `coverage,test-harness` features).
+coverage-wasm:
+    bash scripts/coverage.sh wasm
+
+# Instrumented native workspace tests, binaries and PostgreSQL parity.
+coverage-native:
+    bash scripts/coverage.sh native
+
+# Browser suites drive the instrumented native service and WASM clients together.
+coverage-browser:
+    bash scripts/coverage.sh browser
+
+# Runnable local demo: synthetic library + fresh app state (no private data).
+# LYTRONAUT_DEMO_VIDEO=1 also generates a synthetic H.264 focus stack (needs Chrome).
+demo: wasm-build
+    cargo build --locked -p lytronaut-service --bin lytronaut-service --example synthetic_jpeg
+    bash scripts/demo.sh
+
+# Export LCOV, merge per target, write JSON/Markdown and enforce the floors.
+coverage-report:
+    bash scripts/coverage.sh report
 
 # Synthetic-only actual service+Rust/WASM browser integration.
 browser-test:
