@@ -1,0 +1,43 @@
+# Default deployment: one service with the application catalog in SQLite.
+# PostgreSQL is opt-in through compose.postgres.yaml (bundled service) or
+# compose.postgres-external.yaml (existing server); see docs/operations/linux.md.
+# Unset storage variables keep the named volumes below; set them to absolute
+# host directories (owned by 10001:10001, mode 0700) to choose storage locations.
+services:
+  lytronaut:
+    image: ${LYTRONAUT_IMAGE:-lytronaut:local}
+    build: .
+    user: "10001:10001"
+    read_only: true
+    ports:
+      - "127.0.0.1:${LYTRONAUT_PORT:-3000}:3000"
+    environment:
+      LYTRONAUT_ORIGIN: ${LYTRONAUT_ORIGIN:-http://127.0.0.1:3000}
+      LYTRONAUT_UPLOAD_BYTES: "2147483648"
+      LYTRONAUT_FILE_BYTES: "536870912"
+      LYTRONAUT_UPLOAD_FILES: "100000"
+      LYTRONAUT_ENCODED_BYTES: "3221225472"
+      LYTRONAUT_RESERVED_BYTES: "8589934592"
+      LYTRONAUT_FREE_FLOOR: "2147483648"
+      LYTRONAUT_IMPORT_JOBS: "2"
+      LYTRONAUT_IMPORT_DECODERS: "1"
+    volumes:
+      - ${LYTRONAUT_CATALOG_DIR:-catalog}:/data/catalog
+      - ${LYTRONAUT_ORIGINALS_DIR:-originals}:/data/originals
+      - ${LYTRONAUT_WORK_DIR:-work}:/data/work
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 128
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  catalog:
+  originals:
+  work:

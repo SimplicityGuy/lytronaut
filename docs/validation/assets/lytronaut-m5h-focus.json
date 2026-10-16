@@ -1,0 +1,92 @@
+{
+  "mode": "private-aggregate",
+  "revision": "cef102f4198c96b36f6507e8a24ca8db8e15467d",
+  "artifactProfiles": "native release; wasm release",
+  "startupMs": 7813,
+  "focusProof": {
+    "stacks": 58,
+    "planes": 420,
+    "maxSourceBytes": 739984,
+    "p95NativeHttpDecodeMs": 6.799999952316284
+  },
+  "focusUiLoadContendedTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 13,
+    "p50InputToDecodedFrameReadyMs": 66.70000004768372,
+    "p95InputToDecodedFrameReadyMs": 83.79999995231628,
+    "maxInputToDecodedFrameReadyMs": 85.89999997615814
+  },
+  "focusUiTimes": {
+    "samples": 24,
+    "pendingGridAtStart": 0,
+    "p50InputToDecodedFrameReadyMs": 66.60000002384186,
+    "p95InputToDecodedFrameReadyMs": 77.09999990463257,
+    "maxInputToDecodedFrameReadyMs": 77.69999992847443
+  },
+  "faultSuite": false,
+  "keyboardNavigation": true,
+  "contrast": {
+    "text": 15.465817170572732,
+    "control": 4.046600406095304
+  },
+  "preZoomURLsReleasedExceptCurrentStage": true,
+  "captures": 109,
+  "albums": 3,
+  "orderedMemberships": [
+    12,
+    39,
+    58
+  ],
+  "assets429": 0,
+  "blobURLsReleased": true,
+  "absentGPUAndCodecInjected": true,
+  "pageErrors": 0,
+  "reducedMotion": true,
+  "forcedColors": true,
+  "AXTree": true,
+  "responsive": true,
+  "zoom": {
+    "inner": 720,
+    "outer": 756,
+    "dpr": 2
+  },
+  "browser": "Chrome/154.0.8037.98",
+  "screenReader": "AX inspection only; VoiceOver not manually certified",
+  "artifact_sha256": {
+    "native_release": "c824b142ac7cac61a85a48aed6e0ce29489ff56e91153ffb15f39ddce6d16268",
+    "wasm_release": "1c63efd3b545d778f97def94e1b07cef1fdf46b526fa027aaa3280b2eb9e0c16",
+    "bindgen_glue": "179a738275c20ee8e52886b5b8cf1b091b9d0c8e26511c1e806c22de305d72a7"
+  },
+  "reference": {
+    "hardware": "MacBookPro18,1; Apple M1 Pro; 32 GiB",
+    "os": "macOS26.6.2 build25G83",
+    "rust": "1.99.0",
+    "wasm_bindgen": "0.2.129",
+    "isolation": "one owned release service and isolated Chrome; no other task builds or browser runs during measurement"
+  },
+  "application_source_objects": {
+    "crates": "a69e4c055d0b18450dd023dc0723a45f74d90b11",
+    "assets": "175fb51544e61e7debd813283c5a5789a8c2eb9b",
+    "Cargo.lock": "84b8804cc994299ce8ca289558cd5555f8f9c44a",
+    "Cargo.toml": "86d77bfdfafcc72cc4725eb5b5833e562fe6e04f",
+    "scripts/browser-test.cjs": "055842e0fb20a1a25234009a5968c9e5e4186ac2",
+    "scripts/synthetic-library.py": "7e34976f9521960ca8e0ff058d6aef4e96f24473"
+  },
+  "sealed_originals": {
+    "logical_files": 728,
+    "logical_bytes": 2001830074,
+    "unique_blobs": 638,
+    "unique_bytes": 2000902860,
+    "post_run_sha256_matches_ingested_manifest": true,
+    "all_original_blobs_readonly": true,
+    "source_library_unmodified": true
+  },
+  "source_library_coordinator_audit": {
+    "regular_files": 728,
+    "bytes": 2001830074,
+    "symlinks": 0,
+    "sha256_size_mtime_matches": 728,
+    "read_errors": 0,
+    "mismatches": 0
+  }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "lytronaut-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+[lints]
+workspace = true
+[features]
+default = []
+# Numeric ownership accessors for the opt-in synthetic application harness only.
+test-harness = []
+[dependencies]
+serde.workspace = true
+[dev-dependencies]
+serde_json.workspace = true

@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      sidebar_repetitions:
+        description: 'Opt-in public sidebar stability run (20..50; 0 disables)'
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: read
@@ -17,9 +23,111 @@ jobs:
   check:
     name: check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
-      - run: just setup
-      - run: just check
+      - run: mise exec -- just setup
+      - run: mise exec -- just fmt
+      - run: mise exec -- cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: mise exec -- just test build dependencies licenses
+  wasm:
+    name: wasm
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup
+      - run: mise exec -- cargo clippy --locked -p lytronaut-client --target wasm32-unknown-unknown -- -D warnings
+      - run: mise exec -- just wasm-build dependencies
+  browser:
+    name: browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      LYTRONAUT_CHROME: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup wasm-build build
+      - run: mise exec -- just browser-test
+      - name: Actual owner disposal and public JPEG rejection (explicit test-harness artifact)
+        id: owner
+        run: mise exec -- just live-photo-owner-test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.owner.outcome != 'skipped' && hashFiles('owner-evidence.tar.gz') != ''
+        with:
+          name: public-owner-lifecycle-${{ github.sha }}
+          path: owner-evidence.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+  persistence-parity:
+    name: persistence-parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      LYTRONAUT_TEST_PREFIX: lytronaut-ci-parity
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup
+      # The recipe starts the pinned official PostgreSQL release from
+      # compose.postgres.yaml as a disposable, task-owned container, bootstraps
+      # the restricted role and public sentinel, asserts server_version_num, runs
+      # the exact-count suite and removes the container and its volume.
+      - name: Actual PostgreSQL storage, Desktop, HTTP and portable backup parity
+        run: mise exec -- just postgres-parity
+  large-bundle:
+    name: large-bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup
+      # The proof writes about 9 GiB of real bundle and restored bytes; use
+      # whichever runner filesystem has the most free space.
+      - name: Choose the largest scratch disk
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/lytronaut-large
+          sudo chown "$(id -u):$(id -g)" /mnt/lytronaut-large
+          mnt=$(df --output=avail -B1 /mnt/lytronaut-large | tail -1)
+          tmp=$(df --output=avail -B1 "$RUNNER_TEMP" | tail -1)
+          if [ "$mnt" -gt "$tmp" ]; then scratch=/mnt/lytronaut-large; else scratch="$RUNNER_TEMP"; fi
+          echo "TMPDIR=$scratch" >> "$GITHUB_ENV"
+      - name: Portable bundle beyond 4 GiB round trip with exact hashes
+        run: mise exec -- just large-bundle-test
+
+  sidebar-stability:
+    name: sidebar-stability
+    if: github.event_name == 'workflow_dispatch' && inputs.sidebar_repetitions != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      LYTRONAUT_CHROME: /usr/bin/google-chrome
+      LYTRONAUT_SIDEBAR_REPETITIONS: ${{ inputs.sidebar_repetitions }}
+      LYTRONAUT_TEST_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bound repetitions before building
+        run: |
+          [[ "$LYTRONAUT_SIDEBAR_REPETITIONS" =~ ^(2[0-9]|[34][0-9]|50)$ ]]
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - run: mise exec -- just setup wasm-build build
+      - name: Consecutive sidebar suites (fail immediately; no reruns)
+        run: mise exec -- just browser-test

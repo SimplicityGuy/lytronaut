@@ -1,0 +1,2186 @@
+//! Backend-neutral restore failure, interruption and cleanup matrix through the
+//! production upload/worker/DELETE/restart paths. Synthetic fixtures only.
+//!
+//! Every scenario runs on SQLite by default and on PostgreSQL through the
+//! `postgres_` variants in the strict recipe. Unrelated SQL and filesystem
+//! sentinels (including restore-named decoys) must survive every outcome, and
+//! the deployment's existing library must remain byte-for-byte intact.
+use super::*;
+use crate::bundle::portable_bundle_tests::{BLOB, Fixture, IDS, logical_tables, verify};
+use crate::restore_journal::{Journal, Phase};
+use lytronaut_storage::DatabaseConfig;
+use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+use std::os::unix::fs::PermissionsExt;
+
+const KILL_CHILD: &str = "LYTRONAUT_RESTORE_KILL_CHILD";
+/// Rows large enough that row import takes seconds, so cancellation, shutdown
+/// and SIGKILL land mid-restore rather than racing completion.
+const BULK_ROWS: i64 = 200_000;
+
+fn limits() -> lytronaut_storage::Limits {
+    lytronaut_storage::Limits {
+        free_floor: 0,
+        ..Default::default()
+    }
+}
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn random_hex(len: usize) -> String {
+    let mut bytes = vec![0; len / 2];
+    getrandom::fill(&mut bytes).unwrap();
+    hex(&bytes)
+}
+
+/// Unrelated state that no restore, failure or cleanup may touch.
+struct Sentinels {
+    files: Vec<(PathBuf, Vec<u8>)>,
+    sqlite: PathBuf,
+    /// (unrelated schema, restore-named decoy schema with a foreign marker).
+    schemas: Option<(String, String)>,
+    restore_schemas: Vec<String>,
+    library: Library,
+}
+/// Logical content of the live library. Auxiliary job-order ordinals may be
+/// compacted by unrelated export admission, so intake ORDER is compared, not
+/// raw ordinal values.
+#[derive(PartialEq)]
+struct Library {
+    versions: Vec<i64>,
+    records: Vec<(i64, String, i64, Vec<u8>)>,
+    intake_order: Vec<String>,
+    counts: Vec<i64>,
+}
+async fn library(catalog: &Catalog) -> Library {
+    let pool = catalog.pool();
+    let mut counts = Vec::new();
+    for statement in [
+        "SELECT count(*) FROM intake_jobs",
+        "SELECT count(*) FROM intake_sources",
+        "SELECT count(*) FROM catalog_sources",
+        "SELECT count(*) FROM catalog_pictures",
+        "SELECT count(*) FROM catalog_albums",
+        "SELECT count(*) FROM catalog_memberships",
+        "SELECT count(*) FROM api_ids",
+        "SELECT count(*) FROM api_imports",
+        "SELECT count(*) FROM api_adaptation_errors",
+    ] {
+        counts.push(sqlx::query_scalar(statement).fetch_one(pool).await.unwrap());
+    }
+    Library {
+        versions: sqlx::query_scalar("SELECT id FROM catalog_versions ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap(),
+        records: sqlx::query("SELECT version,kind,ordinal,original FROM catalog_records ORDER BY version,kind,ordinal")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.try_get(0).unwrap(), r.try_get(1).unwrap(), r.try_get(2).unwrap(), r.try_get(3).unwrap()))
+            .collect(),
+        intake_order: sqlx::query_scalar("SELECT job FROM application_job_order WHERE kind='intake' ORDER BY ordinal")
+            .fetch_all(pool)
+            .await
+            .unwrap(),
+        counts,
+    }
+}
+impl Sentinels {
+    async fn plant(fx: &mut Fixture, store: &Store) -> Self {
+        let directory = root(store);
+        let decoy = directory.join(format!("{}.restored", random_id().unwrap()));
+        fs::create_dir_all(decoy.join("store")).unwrap();
+        let mut files = vec![
+            (
+                directory.join("unrelated-sentinel"),
+                b"keep: unrelated".to_vec(),
+            ),
+            (decoy.join("restore-owner"), random_hex(64).into_bytes()),
+            (
+                decoy.join("store/catalog.db"),
+                b"decoy library bytes".to_vec(),
+            ),
+        ];
+        files.push((fx.root.join("unrelated-library.bin"), vec![0, 255, 7]));
+        for (path, bytes) in &files {
+            fs::write(path, bytes).unwrap();
+        }
+        let sqlite = fx.root.join("unrelated.db");
+        let mut db = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&sqlite)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE unrelated(v BLOB NOT NULL); INSERT INTO unrelated VALUES(x'00ff07')",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+        let schemas = if let Some((admin, _)) = fx.pg.as_mut() {
+            let sentinel = format!("lytronaut_sentinel_{}", random_hex(32));
+            let decoy = format!("lytronaut_restore_{}", random_hex(32));
+            for statement in [
+                format!("CREATE SCHEMA \"{sentinel}\""),
+                format!("CREATE TABLE \"{sentinel}\".unrelated(v BYTEA NOT NULL)"),
+                format!("INSERT INTO \"{sentinel}\".unrelated VALUES('\\x00ff07')"),
+                format!("CREATE SCHEMA \"{decoy}\""),
+                format!(
+                    "CREATE TABLE \"{decoy}\".restore_ownership(singleton BIGINT PRIMARY KEY CHECK(singleton=1),job TEXT NOT NULL,nonce TEXT NOT NULL)"
+                ),
+                format!(
+                    "INSERT INTO \"{decoy}\".restore_ownership VALUES(1,'{}','{}')",
+                    random_id().unwrap(),
+                    random_hex(64)
+                ),
+            ] {
+                sqlx::query(sqlx::AssertSqlSafe(statement))
+                    .execute(&mut *admin)
+                    .await
+                    .unwrap();
+            }
+            Some((sentinel, decoy))
+        } else {
+            None
+        };
+        let mut value = Self {
+            files,
+            sqlite,
+            schemas,
+            restore_schemas: Vec::new(),
+            library: library(&fx.catalog).await,
+        };
+        value.restore_schemas = restore_schemas(&fx.catalog).await;
+        value
+    }
+    async fn assert_intact(&self, fx: &Fixture) {
+        for (path, bytes) in &self.files {
+            assert_eq!(&fs::read(path).unwrap(), bytes, "sentinel {path:?} changed");
+        }
+        let mut db = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&self.sqlite)
+                .read_only(true),
+        )
+        .await
+        .unwrap();
+        let value: Vec<u8> = sqlx::query_scalar("SELECT v FROM unrelated")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+        assert_eq!(value, [0, 255, 7]);
+        db.close().await.unwrap();
+        if let Some((sentinel, decoy)) = &self.schemas {
+            let value: Vec<u8> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT v FROM \"{sentinel}\".unrelated"
+            )))
+            .fetch_one(fx.catalog.pool())
+            .await
+            .unwrap();
+            assert_eq!(value, [0, 255, 7]);
+            let markers: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT count(*) FROM \"{decoy}\".restore_ownership"
+            )))
+            .fetch_one(fx.catalog.pool())
+            .await
+            .unwrap();
+            assert_eq!(markers, 1, "restore-named decoy schema must survive");
+        }
+        // The deployment's existing library is never overwritten by a restore.
+        assert!(
+            library(&fx.catalog).await == self.library,
+            "live library changed"
+        );
+        let digest = format!("{:x}", Sha256::digest(BLOB));
+        assert_eq!(
+            fs::read(
+                fx.root
+                    .join("originals")
+                    .join(format!("{digest}-{}", BLOB.len()))
+            )
+            .unwrap(),
+            BLOB
+        );
+    }
+    async fn remove(&self, fx: &mut Fixture) {
+        if let (Some((sentinel, decoy)), Some((admin, _))) = (&self.schemas, fx.pg.as_mut()) {
+            for schema in [sentinel, decoy] {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP SCHEMA \"{schema}\" CASCADE"
+                )))
+                .execute(&mut *admin)
+                .await
+                .unwrap();
+            }
+        }
+    }
+}
+async fn restore_schemas(catalog: &Catalog) -> Vec<String> {
+    if catalog.backend() != lytronaut_storage::Backend::Postgres {
+        return Vec::new();
+    }
+    sqlx::query_scalar(
+        "SELECT CAST(nspname AS TEXT) FROM pg_catalog.pg_namespace WHERE nspname LIKE 'lytronaut\\_restore\\_%' ORDER BY 1",
+    )
+    .fetch_all(catalog.pool())
+    .await
+    .unwrap()
+}
+
+struct Env {
+    fx: Fixture,
+    store: Store,
+    api: Api,
+    sentinels: Sentinels,
+}
+impl Env {
+    async fn new(pg: bool) -> Self {
+        Self::with_limits(pg, limits()).await
+    }
+    async fn with_limits(pg: bool, limits: lytronaut_storage::Limits) -> Self {
+        let mut fx = Fixture::new(pg).await;
+        let store = fx.seed_with(limits).await;
+        let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+        let sentinels = Sentinels::plant(&mut fx, &store).await;
+        Self {
+            fx,
+            store,
+            api,
+            sentinels,
+        }
+    }
+    fn root(&self) -> PathBuf {
+        root(&self.store)
+    }
+    fn catalog(&self) -> &Catalog {
+        &self.fx.catalog
+    }
+    /// Restart reconciliation as the service performs it at startup.
+    async fn restart(&self) -> bool {
+        Api::open(self.fx.catalog.clone(), self.store.clone())
+            .await
+            .is_ok()
+    }
+    async fn job(&self, id: &str) -> (String, Option<String>, i64, i64) {
+        let row = sqlx::query("SELECT state,error,reserved,retained FROM export_jobs WHERE id=$1")
+            .bind(id)
+            .fetch_one(self.catalog().pool())
+            .await
+            .unwrap();
+        (
+            row.try_get(0).unwrap(),
+            row.try_get(1).unwrap(),
+            row.try_get(2).unwrap(),
+            row.try_get(3).unwrap(),
+        )
+    }
+    async fn upload(&self, bytes: Vec<u8>) -> (StatusCode, Option<String>) {
+        let (status, body) = self.upload_json(bytes).await;
+        (status, body["id"].as_str().map(str::to_owned))
+    }
+    async fn upload_json(&self, bytes: Vec<u8>) -> (StatusCode, serde_json::Value) {
+        let length = bytes.len() as u64;
+        self.upload_body(Body::from(bytes), length).await
+    }
+    /// Stream a bundle file as the request body through the production
+    /// file body (64 KiB frames), never reading it into memory.
+    async fn upload_file(&self, path: &std::path::Path) -> (StatusCode, serde_json::Value) {
+        let file = fs::File::open(path).unwrap();
+        let length = file.metadata().unwrap().len();
+        let body = Body::new(FileBody {
+            file: Arc::new(file),
+            offset: 0,
+            remaining: length,
+            permit: None,
+            pending: None,
+        });
+        self.upload_body(body, length).await
+    }
+    async fn upload_body(&self, body: Body, length: u64) -> (StatusCode, serde_json::Value) {
+        let response = restore_upload(
+            Extension(self.api.clone()),
+            Request::builder()
+                .header(header::CONTENT_LENGTH, length.to_string())
+                .body(body)
+                .unwrap(),
+        )
+        .await;
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+    /// Request a whole-library archive through the production handler.
+    async fn begin_archive(&self) -> (StatusCode, serde_json::Value) {
+        let response = begin(
+            Extension(self.api.clone()),
+            Ok(Json(ExportRequest::ArchiveOriginals {
+                version: WireVersion::V1,
+            })),
+        )
+        .await;
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+    async fn delete(&self, id: &str) -> StatusCode {
+        cancel(Extension(self.api.clone()), Ok(Path(id.to_owned())))
+            .await
+            .status()
+    }
+    async fn wait_terminal(&self, id: &str) -> JobState {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        loop {
+            let state = report(&self.api, id).await.unwrap().state;
+            // Owned cleanup and quota release follow the terminal status write.
+            if !matches!(
+                state,
+                JobState::Queued | JobState::Running | JobState::Cancelling
+            ) && self.api.0.exports_inflight.load(Ordering::Acquire) == 0
+            {
+                return state;
+            }
+            assert!(std::time::Instant::now() < deadline, "job never settled");
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+    /// Wait until the worker has durably prepared its journal and pending store.
+    async fn wait_restoring(&self, id: &str) -> Journal {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            if let Some(journal) = Journal::load(&self.root(), id).unwrap()
+                && journal
+                    .pending(&self.root())
+                    .join("store/originals")
+                    .exists()
+            {
+                return journal;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "restore never started"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+    fn owned_entries(&self, id: &str) -> Vec<String> {
+        fs::read_dir(self.root())
+            .unwrap()
+            .filter_map(|entry| entry.unwrap().file_name().into_string().ok())
+            .filter(|name| name.starts_with(&format!("{id}.")))
+            .collect()
+    }
+    /// A failed, cancelled or deleted restore leaves nothing it owned and holds
+    /// no quota; every unrelated sentinel and the live library are untouched.
+    async fn assert_released(&self, id: &str) {
+        let (state, _, reserved, retained) = self.job(id).await;
+        assert_ne!(state, "succeeded");
+        assert_eq!((reserved, retained), (0, 0), "quota must be released");
+        assert!(Journal::load(&self.root(), id).unwrap().is_none());
+        assert_eq!(self.owned_entries(id), Vec::<String>::new());
+        assert_eq!(
+            restore_schemas(self.catalog()).await,
+            self.sentinels.restore_schemas
+        );
+        self.sentinels.assert_intact(&self.fx).await;
+    }
+    /// A cleanup-blocked job is visible as a failed, retryable storage error,
+    /// keeps its journal-or-paths and quota, and is never ready.
+    async fn assert_blocked(&self, id: &str) {
+        let (state, error, reserved, retained) = self.job(id).await;
+        assert_eq!(
+            (state.as_str(), error.as_deref()),
+            ("failed", Some("cleanup-blocked"))
+        );
+        assert!(reserved + retained > 0, "blocked job must keep its quota");
+        let report = report(&self.api, id).await.unwrap();
+        assert_eq!(report.state, JobState::Failed);
+        assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+        assert!(
+            !self.owned_entries(id).is_empty()
+                || restore_schemas(self.catalog()).await != self.sentinels.restore_schemas
+        );
+        self.sentinels.assert_intact(&self.fx).await;
+    }
+    /// A ready restore is published, journaled and reopens with exact values.
+    async fn assert_ready(&self, id: &str) -> Journal {
+        self.ready(id, true).await
+    }
+    /// A ready restore of a bundle this deployment archived itself: its logical
+    /// library equals the live one. Archive admission may compact auxiliary
+    /// job-order ordinals, so intake order is compared, not raw ordinals.
+    async fn assert_ready_as_live(&self, id: &str) -> Journal {
+        self.ready(id, false).await
+    }
+    async fn ready(&self, id: &str, exact_ordinals: bool) -> Journal {
+        assert_eq!(self.wait_terminal(id).await, JobState::Succeeded);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let journal = loop {
+            let journal = Journal::load(&self.root(), id).unwrap().unwrap();
+            if journal.phase() == Phase::JobSucceeded {
+                break journal;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        let result = journal.result(&self.root()).join("store");
+        let config = match journal.namespace() {
+            Some(namespace) => self
+                .fx
+                .config
+                .clone()
+                .with_schema(namespace.schema())
+                .unwrap(),
+            None => DatabaseConfig::Sqlite(result.join("catalog.db")),
+        };
+        let restored = Catalog::open(config).await.unwrap();
+        if exact_ordinals {
+            verify(&restored, &result.join("originals")).await;
+        } else {
+            assert!(library(&restored).await == library(&self.fx.catalog).await);
+            let skip = ["application_job_order"];
+            assert!(
+                logical_tables(&restored, &skip).await
+                    == logical_tables(&self.fx.catalog, &skip).await
+            );
+            let digest = format!("{:x}", Sha256::digest(BLOB));
+            assert_eq!(
+                fs::read(result.join(format!("originals/{digest}-{}", BLOB.len()))).unwrap(),
+                BLOB
+            );
+        }
+        restored.pool().close().await;
+        self.sentinels.assert_intact(&self.fx).await;
+        journal
+    }
+    async fn finish(mut self) {
+        self.sentinels.assert_intact(&self.fx).await;
+        self.sentinels.remove(&mut self.fx).await;
+        drop(self.api);
+        self.fx.finish().await;
+    }
+}
+
+/// An independently seeded SQLite source library, optionally with bulk rows.
+async fn archive(bulk: i64) -> Vec<u8> {
+    let source = Fixture::new(false).await;
+    let store = source.seed().await;
+    if bulk > 0 {
+        sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<$1) SELECT $2,'bulk',i,CAST(printf('%016x',i) AS BLOB) FROM n")
+            .bind(bulk)
+            .bind(IDS[3])
+            .execute(source.catalog.pool())
+            .await
+            .unwrap();
+    }
+    let path = source.root.join("source.bundle");
+    bundle::backup(
+        &source.catalog,
+        &store,
+        &path,
+        u64::MAX,
+        &AtomicBool::new(false),
+        &AtomicU64::new(0),
+    )
+    .await
+    .unwrap();
+    let bytes = fs::read(&path).unwrap();
+    source.finish().await;
+    bytes
+}
+
+// ---- Group 3: corruption, quota, cancellation, shutdown, process kill ------
+
+async fn corrupt_archives_fail_closed_and_release(pg: bool) {
+    let env = Env::new(pg).await;
+    let good = archive(0).await;
+    let catalog_bytes = u64::from_le_bytes(good[20..28].try_into().unwrap()) as usize;
+    // (a) Flipped catalog byte: the declared SHA-256 no longer matches.
+    let mut flipped = good.clone();
+    flipped[60 + catalog_bytes / 2] ^= 0x40;
+    // (b) Garbage catalog with a recomputed hash: rejected by the decoder only
+    // after the owned destination (and PostgreSQL namespace) exists.
+    let mut forged = good.clone();
+    for byte in &mut forged[60 + 8..60 + catalog_bytes] {
+        *byte ^= 0x5a;
+    }
+    let digest = Sha256::digest(&forged[60..60 + catalog_bytes]);
+    forged[28..60].copy_from_slice(&digest);
+    // (c) Flipped original byte: blob hash mismatch after rows are staged.
+    let mut original = good.clone();
+    let last = original.len() - 1;
+    original[last] ^= 0x01;
+    // Hostile framing: lengths and counts are never used to size memory or
+    // disk. A declared original of u64::MAX bytes, a u32::MAX original count
+    // with no records, a u64::MAX catalog section and a repeated original all
+    // fail closed after bounded work and release everything.
+    let record = 60 + catalog_bytes;
+    let mut huge_original = good.clone();
+    huge_original[record + 32..record + 40].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut huge_count = good[..record].to_vec();
+    huge_count[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut huge_catalog = good.clone();
+    huge_catalog[20..28].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut repeated = good.clone();
+    repeated[16..20].copy_from_slice(&2u32.to_le_bytes());
+    repeated.extend_from_slice(&good[record..]);
+    for corrupt in [
+        flipped,
+        forged,
+        original,
+        huge_original,
+        huge_count,
+        huge_catalog,
+        repeated,
+    ] {
+        let (status, id) = env.upload(corrupt).await;
+        assert_eq!(status, StatusCode::OK);
+        let id = id.unwrap();
+        assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+        env.assert_released(&id).await;
+    }
+    // The same deployment still restores a good archive afterwards.
+    let (_, id) = env.upload(good).await;
+    let id = id.unwrap();
+    env.assert_ready(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// A free-space refusal is a retryable `resource_limit` naming the required
+/// and available bytes, and nothing else: no path, no other field.
+fn assert_short_of_space(status: StatusCode, body: &serde_json::Value, env: &Env) {
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let error: ApiError = serde_json::from_value(body.clone()).unwrap();
+    assert_eq!(error.code, ErrorCode::ResourceLimit);
+    assert!(error.retryable);
+    let shortfall = error
+        .shortfall
+        .expect("free-space refusal names its numbers");
+    assert!(shortfall.required_bytes > shortfall.available_bytes);
+    assert!(shortfall.required_bytes >= env.store.limits().free_floor);
+    let text = body.to_string();
+    for private in [env.fx.root.to_str().unwrap(), env.root().to_str().unwrap()] {
+        assert!(!text.contains(private), "refusal leaked a path");
+    }
+}
+
+async fn quota_failures_fail_closed_and_release(pg: bool) {
+    // Admission is real free space: a free-space floor no volume can satisfy
+    // refuses archive and restore before any job, file or namespace exists,
+    // with a clear retryable shortfall.
+    let env = Env::with_limits(
+        pg,
+        lytronaut_storage::Limits {
+            free_floor: i64::MAX as u64 / 4,
+            ..limits()
+        },
+    )
+    .await;
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    let (status, body) = env.upload_json(archive(0).await).await;
+    assert_short_of_space(status, &body, &env);
+    let (status, body) = env.begin_archive().await;
+    assert_short_of_space(status, &body, &env);
+    let jobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    assert_eq!(jobs_before, jobs_after);
+    assert_eq!(
+        restore_schemas(env.catalog()).await,
+        env.sentinels.restore_schemas
+    );
+    assert!(fs::read_dir(env.root()).unwrap().all(|entry| {
+        let name = entry.unwrap().file_name();
+        !name.to_string_lossy().ends_with(".restore-journal")
+    }));
+    env.finish().await;
+    // The aggregate import/per-asset budget no longer bounds whole-library
+    // jobs: a 1 MiB `reserved_bytes` still archives and restores, while a
+    // per-asset export over that budget is refused without a shortfall.
+    let env = Env::with_limits(
+        pg,
+        lytronaut_storage::Limits {
+            reserved_bytes: 1024 * 1024,
+            ..limits()
+        },
+    )
+    .await;
+    let (status, id) = env.upload(archive(0).await).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = id.unwrap();
+    env.assert_ready(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    let (status, body) = env.begin_archive().await;
+    assert_eq!(status, StatusCode::OK);
+    let archived = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&archived).await, JobState::Succeeded);
+    assert_eq!(env.delete(&archived).await, StatusCode::OK);
+    assert_eq!(
+        create(&env.api, "flatten", 2 * 1024 * 1024)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // A body longer than its declared length is cut at the declaration:
+    // nothing past the admitted size is written, and the job is released.
+    let response = restore_upload(
+        Extension(env.api.clone()),
+        Request::builder()
+            .header(header::CONTENT_LENGTH, "64")
+            .body(Body::from(vec![7u8; 128]))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let overlong: String =
+        sqlx::query_scalar("SELECT id FROM export_jobs WHERE kind='restore' AND error='upload'")
+            .fetch_one(env.catalog().pool())
+            .await
+            .unwrap();
+    env.assert_released(&overlong).await;
+    // Imports and exports share the work volume and its writer admission:
+    // each admission counts the other's in-flight reservations, so neither
+    // can pass the free-space check on space the other already reserved.
+    sqlx::query("INSERT INTO intake_jobs(id,kind,state,total,budget,max_files,encoded_limit,reserved) VALUES('synthetic-running-import','directory','running',1,1,1,1,$1)")
+        .bind(i64::MAX / 8)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    let (status, body) = env.begin_archive().await;
+    assert_short_of_space(status, &body, &env);
+    sqlx::query("DELETE FROM intake_jobs WHERE id='synthetic-running-import'")
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    let held = create(&env.api, "archive", 1).await.unwrap();
+    sqlx::query("UPDATE export_jobs SET state='failed',error='failed',reserved=$1 WHERE id=$2")
+        .bind(i64::MAX / 8)
+        .bind(&held)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    // A shortage is retryable and names its numbers (HTTP 429
+    // resource_limit); only a declaration beyond the upload budget is a
+    // permanent Quota (HTTP 413 invalid_input).
+    let import = |declared_bytes| ImportRequest {
+        version: WireVersion::V1,
+        kind: ImportKind::Directory,
+        declared_bytes,
+        declared_files: 1,
+    };
+    match env.store.begin(&import(1)).await {
+        Err(lytronaut_storage::StorageError::Space {
+            required_bytes,
+            available_bytes,
+        }) => assert!(required_bytes > available_bytes && required_bytes >= (i64::MAX / 8) as u64),
+        other => panic!("expected a space shortage, got {other:?}"),
+    }
+    assert_eq!(
+        env.store
+            .begin(&import(env.store.limits().upload_bytes + 1))
+            .await,
+        Err(lytronaut_storage::StorageError::Quota)
+    );
+    assert_eq!(env.delete(&held).await, StatusCode::OK);
+    env.assert_released(&held).await;
+    // Declarations: any positive size is admissible in principle; one no
+    // volume can hold is a free-space refusal, while zero, malformed and
+    // need-overflowing declarations are invalid input. No job is created.
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    let declared = |length: String| {
+        let api = env.api.clone();
+        async move {
+            let response = restore_upload(
+                Extension(api),
+                Request::builder()
+                    .header(header::CONTENT_LENGTH, length)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            let status = response.status();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+            )
+        }
+    };
+    let (status, body) = declared((i64::MAX as u64 / 4).to_string()).await;
+    assert_short_of_space(status, &body, &env);
+    for invalid in [
+        "0".to_owned(),
+        "abc".to_owned(),
+        u64::MAX.to_string(),
+        (i64::MAX as u64 / 2).to_string(),
+    ] {
+        let (status, body) = declared(invalid).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.get("shortfall").is_none());
+    }
+    let jobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    assert_eq!(jobs_before, jobs_after);
+    env.finish().await;
+    // Mid-restore: an original larger than the per-file quota fails after the
+    // owned destination exists; cleanup removes it and releases the reservation.
+    let env = Env::with_limits(
+        pg,
+        lytronaut_storage::Limits {
+            file_bytes: BLOB.len() as u64 - 1,
+            ..limits()
+        },
+    )
+    .await;
+    let (status, id) = env.upload(archive(0).await).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = id.unwrap();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// lytronaut-lbk: a library beyond every single-upload and aggregate budget is
+/// archived, downloaded in bounded frames, uploaded and restored losslessly
+/// through the production handlers and workers.
+async fn library_beyond_upload_budget_archives_and_restores_through_jobs(pg: bool) {
+    use crate::bundle::portable_bundle_tests::{
+        SPARSE_COUNT, SPARSE_SIZE, small_budgets, verify_sparse_originals,
+    };
+    let mut fx = Fixture::new(pg).await;
+    let store = fx.seed_with(small_budgets()).await;
+    let originals = fx.add_sparse_originals(SPARSE_COUNT, SPARSE_SIZE).await;
+    let limits = store.limits().clone();
+    let catalog_maximum = lytronaut_storage::portable::MAX_BYTES as u64;
+    assert!(originals > limits.upload_bytes + catalog_maximum);
+    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    let sentinels = Sentinels::plant(&mut fx, &store).await;
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    // Archive: admitted although its need far exceeds `reserved_bytes`.
+    let (status, body) = env.begin_archive().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let archived = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&archived).await, JobState::Succeeded);
+    let bundle = artifact(&env.api, &archived);
+    let size = fs::metadata(&bundle).unwrap().len();
+    assert!(size > originals);
+    assert!(size > limits.encoded_bytes + catalog_maximum);
+    // Download streams the whole artifact in frames of at most 64 KiB.
+    let response = download(Extension(env.api.clone()), Ok(Path(archived.clone()))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH].to_str().unwrap(),
+        size.to_string()
+    );
+    let mut stream = response.into_body();
+    let (mut streamed, mut largest, mut hash) = (0u64, 0usize, Sha256::new());
+    while let Some(frame) = stream.frame().await {
+        let data = frame.unwrap().into_data().unwrap();
+        largest = largest.max(data.len());
+        streamed += data.len() as u64;
+        hash.update(&data);
+    }
+    drop(stream);
+    assert_eq!(streamed, size);
+    assert!(largest <= crate::bundle::COPY_BUFFER);
+    let expected = {
+        let mut file = fs::File::open(&bundle).unwrap();
+        let (mut whole, mut chunk) = (Sha256::new(), vec![0; 1 << 20]);
+        loop {
+            let n = std::io::Read::read(&mut file, &mut chunk).unwrap();
+            if n == 0 {
+                break whole.finalize();
+            }
+            whole.update(&chunk[..n]);
+        }
+    };
+    assert_eq!(hash.finalize(), expected);
+    // Restore: the upload far exceeds the former transport ceiling.
+    let (status, body) = env.upload_file(&bundle).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let restored = body["id"].as_str().unwrap().to_owned();
+    let journal = env.assert_ready_as_live(&restored).await;
+    verify_sparse_originals(
+        &journal.result(&env.root()).join("store/originals"),
+        SPARSE_COUNT,
+        SPARSE_SIZE,
+    );
+    for id in [&archived, &restored] {
+        assert_eq!(env.delete(id).await, StatusCode::OK);
+    }
+    env.assert_released(&restored).await;
+    assert!(!bundle.exists());
+    assert_eq!(env.job(&archived).await.2, 0);
+    env.finish().await;
+}
+
+/// A logical catalog beyond the 288 MiB v2 section fails at backup time with
+/// a clear non-retryable `resource_limit`, before any artifact exists: never a
+/// partial or corrupt bundle. Its spools are removed and its quota released.
+async fn catalog_beyond_format_bound_fails_backup_cleanly(pg: bool) {
+    let mut fx = Fixture::new(pg).await;
+    let store = fx.seed_with(limits()).await;
+    // Ten 30 MiB opaque records: 300 MiB of logical catalog, each row within
+    // the 32 MiB row bound, together over the 288 MiB section bound.
+    let cell = vec![0x5a_u8; 30 * 1024 * 1024];
+    for ordinal in 0..10_i64 {
+        sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) VALUES($1,'over-format-bound',$2,$3)")
+            .bind(IDS[0])
+            .bind(ordinal)
+            .bind(&cell)
+            .execute(fx.catalog.pool())
+            .await
+            .unwrap();
+    }
+    drop(cell);
+    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    let sentinels = Sentinels::plant(&mut fx, &store).await;
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    let (status, body) = env.begin_archive().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+    let error = report(&env.api, &id).await.unwrap().error.unwrap();
+    assert_eq!(error.code, ErrorCode::ResourceLimit);
+    assert!(!error.retryable);
+    let text = serde_json::to_string(&public_report(&env.api, &id).await.unwrap()).unwrap();
+    assert!(!text.contains(env.fx.root.to_str().unwrap()));
+    let (state, label, reserved, retained) = env.job(&id).await;
+    assert_eq!(
+        (state.as_str(), label.as_deref(), reserved, retained),
+        ("failed", Some("bundle-limit"), 0, 0)
+    );
+    assert!(!artifact(&env.api, &id).exists());
+    assert_eq!(env.owned_entries(&id), Vec::<String>::new());
+    assert!(
+        !crate::transient_owner::Owner::directory(&env.root(), &id).exists(),
+        "spools and the owned transfer directory are removed"
+    );
+    env.finish().await;
+}
+
+/// Bytes free on the filesystem holding `path`, as the volume reports them.
+fn free_bytes(path: &std::path::Path) -> u64 {
+    let fs = rustix::fs::statvfs(path).unwrap();
+    fs.f_bavail
+        * if fs.f_frsize > 0 {
+            fs.f_frsize
+        } else {
+            fs.f_bsize
+        }
+}
+/// lytronaut-lbk B1: every file a job creates costs whole filesystem blocks.
+/// (a) A hostile bundle of very many tiny originals fits its upload-time
+/// reservation (payload bytes) but not its real block cost: the worker's
+/// re-admission refuses it as retryable `space` before extracting anything.
+/// (b) An archive whose library grew after admission stops before its
+/// artifact passes the reservation. Both leave nothing behind.
+async fn per_file_disk_cost_is_admitted_and_enforced(pg: bool) {
+    const TINY: usize = 200_000;
+    let (unit, _) = bundle::block_unit(&std::env::temp_dir()).unwrap();
+    assert!(
+        unit >= 4096,
+        "the scenario sizes its margins for 4 KiB blocks"
+    );
+    let good = archive(0).await;
+    let catalog_bytes = u64::from_le_bytes(good[20..28].try_into().unwrap()) as usize;
+    let mut tiny: Vec<([u8; 32], Vec<u8>)> = (0..TINY)
+        .map(|n| {
+            let payload = format!("tiny-{n:011}").into_bytes();
+            (Sha256::digest(&payload).into(), payload)
+        })
+        .collect();
+    tiny.sort();
+    let mut hostile = good[..60 + catalog_bytes].to_vec();
+    hostile[16..20].copy_from_slice(&(TINY as u32).to_le_bytes());
+    for (hash, payload) in &tiny {
+        hostile.extend_from_slice(hash);
+        hostile.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        hostile.extend_from_slice(payload);
+    }
+    drop(tiny);
+    let declared = hostile.len() as u64;
+    let upload_need = bundle::restore_need(declared).unwrap();
+    // A free-space floor that leaves 400 MiB beyond the upload reservation:
+    // the ~800 MiB of real block cost of 200,000 files cannot fit.
+    let probe = std::env::temp_dir();
+    let floor = free_bytes(&probe).saturating_sub(upload_need + 400 * 1024 * 1024);
+    let env = Env::with_limits(
+        pg,
+        lytronaut_storage::Limits {
+            free_floor: floor,
+            ..limits()
+        },
+    )
+    .await;
+    let probe = super::disk_tests::Probe::arm(&env.api, false, None);
+    let (status, body) = env.upload_json(hostile).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+    let error = report(&env.api, &id).await.unwrap().error.unwrap();
+    assert_eq!(
+        (error.code, error.retryable),
+        (ErrorCode::ResourceLimit, true)
+    );
+    assert_eq!(env.job(&id).await.1.as_deref(), Some("space"));
+    assert!(
+        !probe.started(&id),
+        "readmission refusal never enters extraction/journal preparation"
+    );
+    env.assert_released(&id).await;
+    env.finish().await;
+
+    let mut fx = Fixture::new(pg).await;
+    let store = fx.seed_with(limits()).await;
+    let api = Api::open(fx.catalog.clone(), store.clone()).await.unwrap();
+    // A reservation that covered the library when admitted (4 MiB here, so
+    // the test stays cheap: the real need also carries catalog headroom),
+    // then imports finishing after admission grow the library past it.
+    let job = create(&api, "archive", 4 * 1024 * 1024).await.unwrap();
+    fx.add_sparse_originals(2, 16 * 1024 * 1024).await;
+    let sentinels = Sentinels::plant(&mut fx, &store).await;
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    run(
+        env.api.clone(),
+        job.clone(),
+        ExportRequest::ArchiveOriginals {
+            version: WireVersion::V1,
+        },
+        None,
+    )
+    .await;
+    assert_eq!(env.job(&job).await.1.as_deref(), Some("space"));
+    let error = report(&env.api, &job).await.unwrap().error.unwrap();
+    assert_eq!(
+        (error.code, error.retryable),
+        (ErrorCode::ResourceLimit, true)
+    );
+    assert!(!artifact(&env.api, &job).exists());
+    assert_eq!(env.owned_entries(&job), Vec::<String>::new());
+    assert_eq!(env.job(&job).await.2, 0, "reservation released");
+    env.finish().await;
+}
+
+async fn cancel_and_shutdown_mid_restore_never_publish(pg: bool) {
+    let env = Env::new(pg).await;
+    let bulk = archive(BULK_ROWS).await;
+    let (_, id) = env.upload(bulk.clone()).await;
+    let id = id.unwrap();
+    env.wait_restoring(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    assert_eq!(env.wait_terminal(&id).await, JobState::Cancelled);
+    env.assert_released(&id).await;
+    assert!(env.restart().await);
+    assert_eq!(env.job(&id).await.0, "cancelled");
+    // Graceful service shutdown cancels an in-flight restore before publication.
+    let (_, id) = env.upload(bulk).await;
+    let id = id.unwrap();
+    env.wait_restoring(&id).await;
+    env.api.shutdown().await.unwrap();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Cancelled);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// Re-entered by the SIGKILL test as a separate OS process. Not a test by itself.
+#[tokio::test]
+#[ignore = "child process entry for the SIGKILL restore test"]
+async fn process_kill_child_entry() {
+    let Ok(spec) = std::env::var(KILL_CHILD) else {
+        return;
+    };
+    let spec: serde_json::Value = serde_json::from_str(&spec).unwrap();
+    let fixture = PathBuf::from(spec["root"].as_str().unwrap());
+    let config = match spec["schema"].as_str() {
+        Some(schema) => {
+            DatabaseConfig::Postgres(std::env::var("LYTRONAUT_TEST_POSTGRES_URL").unwrap())
+                .with_schema(schema)
+                .unwrap()
+        }
+        None => DatabaseConfig::Sqlite(fixture.join("catalog.db")),
+    };
+    let catalog = Catalog::open(config).await.unwrap();
+    let store = Store::open(
+        catalog.clone(),
+        &fixture.join("originals"),
+        &fixture.join("staging"),
+        limits(),
+    )
+    .await
+    .unwrap();
+    let api = Api::open(catalog, store).await.unwrap();
+    let bytes = fs::read(spec["archive"].as_str().unwrap()).unwrap();
+    let response = restore_upload(
+        Extension(api),
+        Request::builder()
+            .header(header::CONTENT_LENGTH, bytes.len().to_string())
+            .body(Body::from(bytes))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // Keep the worker running until the parent delivers SIGKILL.
+    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    panic!("child was never killed");
+}
+
+async fn process_kill_mid_restore_then_restart_recovers(pg: bool) {
+    let env = Env::new(pg).await;
+    let archive_path = env.fx.root.join("kill.bundle");
+    fs::write(&archive_path, archive(BULK_ROWS).await).unwrap();
+    // One service process owns the store at a time (exclusive store lock), so
+    // this process stops serving before the child starts, as in a real restart.
+    let Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    } = env;
+    let directory = root(&store);
+    drop(api);
+    drop(store);
+    let spec = serde_json::json!({
+        "root": fx.root,
+        "schema": fx.pg.as_ref().map(|(_, schema)| schema.clone()),
+        "archive": archive_path,
+    });
+    let log = fx.root.join("child.log");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "api::exports::restore_fault_tests::process_kill_child_entry",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(KILL_CHILD, spec.to_string())
+        .stdout(fs::File::create(&log).unwrap())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let job = |id: String| {
+        let catalog = fx.catalog.clone();
+        async move {
+            let row = sqlx::query("SELECT state,reserved FROM export_jobs WHERE id=$1")
+                .bind(id)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+            (
+                row.try_get::<String, _>(0).unwrap(),
+                row.try_get::<i64, _>(1).unwrap(),
+            )
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let id = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!(
+                "restore child exited before SIGKILL: {status}\n{}",
+                fs::read_to_string(&log).unwrap_or_default()
+            );
+        }
+        let running: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM export_jobs WHERE kind='restore' AND state='running'",
+        )
+        .fetch_optional(fx.catalog.pool())
+        .await
+        .unwrap();
+        if let Some(id) = running
+            && Journal::load(&directory, &id)
+                .unwrap()
+                .is_some_and(|j| j.pending(&directory).join("store/originals").exists())
+        {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "child never started");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    let journal = Journal::load(&directory, &id).unwrap().unwrap();
+    assert!(
+        matches!(
+            journal.phase(),
+            Phase::Prepared | Phase::SchemaOwned | Phase::RowsCommitted
+        ),
+        "restore finished before SIGKILL; enlarge the fixture"
+    );
+    assert!(!journal.result(&directory).exists());
+    let (state, reserved) = job(id.clone()).await;
+    assert_eq!(state, "running");
+    assert!(reserved > 0);
+    let store = Store::open(
+        fx.catalog.clone(),
+        &fx.root.join("originals"),
+        &fx.root.join("staging"),
+        limits(),
+    )
+    .await
+    .unwrap();
+    // First restart with ownership proof denied: the service still starts, but
+    // only this job is blocked, visibly, with everything it owns retained.
+    let pending_marker = journal.pending(&directory).join("restore-owner");
+    fs::set_permissions(&pending_marker, fs::Permissions::from_mode(0o000)).unwrap();
+    let api = Api::open(fx.catalog.clone(), store.clone())
+        .await
+        .expect("one unprovable job must not refuse startup");
+    let env = Env {
+        fx,
+        store,
+        api,
+        sentinels,
+    };
+    env.assert_blocked(&id).await;
+    assert!(journal.pending(&directory).exists());
+    // A blocked job retries at every startup and stays blocked while unprovable.
+    assert!(env.restart().await);
+    env.assert_blocked(&id).await;
+    fs::set_permissions(&pending_marker, fs::Permissions::from_mode(0o600)).unwrap();
+    // The next restart proves ownership and removes exactly the owned state.
+    assert!(env.restart().await);
+    let (state, error, _, _) = env.job(&id).await;
+    assert_eq!(
+        (state.as_str(), error.as_deref()),
+        ("failed", Some("interrupted"))
+    );
+    env.assert_released(&id).await;
+    // Dead-session leftovers never block a later restore.
+    let (_, next) = env.upload(fs::read(&archive_path).unwrap()).await;
+    let next = next.unwrap();
+    env.assert_ready(&next).await;
+    assert_eq!(env.delete(&next).await, StatusCode::OK);
+    env.assert_released(&next).await;
+    env.finish().await;
+}
+
+async fn successful_restore_publishes_and_delete_releases(pg: bool) {
+    let env = Env::new(pg).await;
+    let (status, id) = env.upload(archive(0).await).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = id.unwrap();
+    let journal = env.assert_ready(&id).await;
+    let (_, _, reserved, retained) = env.job(&id).await;
+    assert_eq!(reserved, 0);
+    assert!(retained > 0);
+    // Restart keeps a verified ready restore ready.
+    assert!(env.restart().await);
+    assert_eq!(env.job(&id).await.0, "succeeded");
+    assert!(journal.result(&env.root()).exists());
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    assert_eq!(env.job(&id).await.0, "cancelled");
+    env.assert_released(&id).await;
+    assert!(env.restart().await);
+    assert_eq!(env.job(&id).await.0, "cancelled");
+    // Recovery never rewrites a recorded cancellation as an interruption.
+    assert_eq!(env.job(&id).await.1, None);
+    env.finish().await;
+}
+
+// ---- Group 4: denied cleanup, restricted DROP, final UPDATE, late DELETE ---
+
+/// Real permission denial: PostgreSQL revokes the owner's USAGE on its own
+/// restore namespace; SQLite deployments lose read access to the owner marker.
+async fn deny(env: &mut Env, journal: &Journal, denied: bool) {
+    match (journal.namespace(), env.fx.pg.as_mut()) {
+        (Some(namespace), Some((admin, _))) => {
+            let statement = if denied {
+                format!(
+                    "REVOKE USAGE ON SCHEMA \"{}\" FROM CURRENT_USER",
+                    namespace.schema()
+                )
+            } else {
+                format!(
+                    "GRANT USAGE ON SCHEMA \"{}\" TO CURRENT_USER",
+                    namespace.schema()
+                )
+            };
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&mut *admin)
+                .await
+                .unwrap();
+        }
+        _ => {
+            let marker = journal.result(&env.root()).join("restore-owner");
+            let mode = if denied { 0o000 } else { 0o600 };
+            fs::set_permissions(marker, fs::Permissions::from_mode(mode)).unwrap();
+        }
+    }
+}
+
+async fn denied_cleanup_retains_ownership_and_quota_until_retry(pg: bool) {
+    let mut env = Env::new(pg).await;
+    let (_, id) = env.upload(archive(0).await).await;
+    let id = id.unwrap();
+    let journal = env.assert_ready(&id).await;
+    let retained = env.job(&id).await.3;
+    deny(&mut env, &journal, true).await;
+    // Late DELETE: cleanup is denied, so ownership, files and quota remain and
+    // the job is visibly blocked (failed) — never resurrected as ready.
+    assert_ne!(env.delete(&id).await, StatusCode::OK);
+    env.assert_blocked(&id).await;
+    assert_eq!(env.job(&id).await.3, retained, "retained quota kept");
+    let observed = Journal::load(&env.root(), &id).unwrap().unwrap();
+    assert_eq!(observed.phase(), Phase::CleanupPending);
+    assert!(journal.result(&env.root()).exists());
+    // The real retention mechanism: a once-ready restore holds no in-flight
+    // reservation; its bytes stay in `retained` and physically on the work
+    // volume, so free-space admission sees them through the filesystem
+    // (they are not counted a second time), and its report keeps one of the
+    // 128 retained-report slots, never evicted while blocked.
+    assert_eq!(env.job(&id).await.2, 0, "no in-flight reservation");
+    let originals = journal.result(&env.root()).join("store/originals");
+    let on_disk: u64 = fs::read_dir(&originals)
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    assert!(on_disk >= BLOB.len() as u64, "retained files stay on disk");
+    let available = env.store.available_staging_bytes().unwrap();
+    let need = available.saturating_add(1);
+    match admit(&env.api, "archive", need).await {
+        Err(Refusal::Space(shortfall)) => {
+            // Exactly the need plus the (zero) floor and reservations: the
+            // retained bytes are not added again; the filesystem has them.
+            assert_eq!(shortfall.required_bytes, need);
+            assert!(shortfall.available_bytes <= available + 64 * 1024 * 1024);
+        }
+        _ => panic!("an archive beyond free space must be refused for space"),
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM export_jobs")
+        .fetch_one(env.catalog().pool())
+        .await
+        .unwrap();
+    for n in rows..128 {
+        sqlx::query("INSERT INTO export_jobs(id,kind,state,retained,reserved) VALUES($1,'flatten','succeeded',1,0)")
+            .bind(format!("app-{n:064x}"))
+            .execute(env.catalog().pool())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        create(&env.api, "archive", 1).await.unwrap_err().0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        env.job(&id).await.3,
+        retained,
+        "the blocked job is never evicted"
+    );
+    sqlx::query("DELETE FROM export_jobs WHERE kind='flatten' AND id LIKE 'app-0000%'")
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    // The service still starts; the job stays blocked while denied.
+    assert!(
+        env.restart().await,
+        "one blocked job must not refuse startup"
+    );
+    env.assert_blocked(&id).await;
+    deny(&mut env, &journal, false).await;
+    // DELETE retries the owned cleanup and releases everything.
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    assert_eq!(env.job(&id).await.1.as_deref(), Some("interrupted"));
+    assert!(env.restart().await);
+    assert_ne!(env.job(&id).await.0, "succeeded");
+    create(&env.api, "archive", 1).await.unwrap();
+    env.finish().await;
+}
+
+/// PostgreSQL only: an unrelated object outside the namespace depends on a
+/// restored table. Cleanup must refuse rather than CASCADE into unrelated SQL.
+async fn restricted_drop_never_cascades_into_unrelated_objects(mut env: Env) {
+    let (_, id) = env.upload(archive(0).await).await;
+    let id = id.unwrap();
+    let journal = env.assert_ready(&id).await;
+    let namespace = journal.namespace().unwrap().schema().to_owned();
+    let (sentinel, _) = env.sentinels.schemas.clone().unwrap();
+    let (admin, _) = env.fx.pg.as_mut().unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE VIEW \"{sentinel}\".depends_on_restore AS SELECT count(*) AS n FROM \"{namespace}\".catalog_versions"
+    )))
+    .execute(&mut *admin)
+    .await
+    .unwrap();
+    assert_ne!(env.delete(&id).await, StatusCode::OK);
+    let view: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM pg_catalog.pg_views WHERE schemaname='{sentinel}' AND viewname='depends_on_restore'"
+    )))
+    .fetch_one(env.catalog().pool())
+    .await
+    .unwrap();
+    assert_eq!(view, 1, "cleanup must not cascade into unrelated objects");
+    assert!(restore_schemas(env.catalog()).await.contains(&namespace));
+    env.assert_blocked(&id).await;
+    assert!(
+        env.restart().await,
+        "one blocked job must not refuse startup"
+    );
+    env.assert_blocked(&id).await;
+    let (admin, _) = env.fx.pg.as_mut().unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP VIEW \"{sentinel}\".depends_on_restore"
+    )))
+    .execute(&mut *admin)
+    .await
+    .unwrap();
+    assert!(env.restart().await);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// Real database failure of the worker's final status UPDATE: a trigger on the
+/// application's own export_jobs table aborts the matching transition.
+async fn install_update_fault(
+    env: &mut Env,
+    name: &str,
+    condition_pg: &str,
+    condition_sqlite: &str,
+) {
+    match env.fx.pg.as_mut() {
+        Some((admin, schema)) => {
+            for statement in [
+                format!(
+                    "CREATE FUNCTION \"{schema}\".{name}() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'synthetic final update fault'; END$$"
+                ),
+                format!(
+                    "CREATE TRIGGER {name} BEFORE UPDATE ON \"{schema}\".export_jobs FOR EACH ROW WHEN ({condition_pg}) EXECUTE FUNCTION \"{schema}\".{name}()"
+                ),
+            ] {
+                sqlx::query(sqlx::AssertSqlSafe(statement))
+                    .execute(&mut *admin)
+                    .await
+                    .unwrap();
+            }
+        }
+        None => {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE TRIGGER {name} BEFORE UPDATE ON export_jobs WHEN {condition_sqlite} BEGIN SELECT RAISE(ABORT,'synthetic final update fault'); END")))
+                .execute(env.catalog().pool())
+                .await
+                .unwrap();
+        }
+    }
+}
+async fn remove_update_fault(env: &mut Env, name: &str) {
+    match env.fx.pg.as_mut() {
+        Some((admin, schema)) => {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP FUNCTION \"{schema}\".{name}() CASCADE"
+            )))
+            .execute(&mut *admin)
+            .await
+            .unwrap();
+        }
+        None => {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                .execute(env.catalog().pool())
+                .await
+                .unwrap();
+        }
+    }
+}
+async fn failing_final_update_never_reports_ready(pg: bool) {
+    let mut env = Env::new(pg).await;
+    let good = archive(0).await;
+    // (a) Only the success transition fails: the best-effort fallback records
+    // an interruption and owned cleanup releases everything.
+    install_update_fault(
+        &mut env,
+        "deny_ready",
+        "NEW.state='succeeded'",
+        "NEW.state='succeeded'",
+    )
+    .await;
+    let (_, id) = env.upload(good.clone()).await;
+    let id = id.unwrap();
+    assert_eq!(env.wait_terminal(&id).await, JobState::Failed);
+    let (_, error, _, _) = env.job(&id).await;
+    assert_eq!(error.as_deref(), Some("interrupted"));
+    env.assert_released(&id).await;
+    remove_update_fault(&mut env, "deny_ready").await;
+    // (b) Every state transition fails, including the fallback. The job can
+    // never become ready; with no durable terminal state the worker retains
+    // ownership, files and quota, and restart records the interruption.
+    install_update_fault(
+        &mut env,
+        "deny_transition",
+        "NEW.state IS DISTINCT FROM OLD.state AND OLD.state='running'",
+        "NEW.state IS NOT OLD.state AND OLD.state='running'",
+    )
+    .await;
+    let (_, id) = env.upload(good).await;
+    let id = id.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while env.api.0.exports_inflight.load(Ordering::Acquire) != 0
+        || env.job(&id).await.0 == "queued"
+    {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(env.job(&id).await.0, "running");
+    assert_ne!(
+        report(&env.api, &id).await.unwrap().state,
+        JobState::Succeeded
+    );
+    assert!(
+        env.job(&id).await.2 > 0,
+        "quota retained without a durable outcome"
+    );
+    assert!(Journal::load(&env.root(), &id).unwrap().is_some());
+    remove_update_fault(&mut env, "deny_transition").await;
+    // The result was published but no outcome was ever recorded, which is
+    // indistinguishable from a database that regressed after success: restart
+    // keeps it unready and retained, and only DELETE removes it.
+    assert!(env.restart().await);
+    let (state, error, reserved, retained) = env.job(&id).await;
+    assert_eq!(
+        (state.as_str(), error.as_deref()),
+        ("failed", Some("unverified-result"))
+    );
+    assert!(reserved + retained > 0);
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+async fn late_delete_racing_publication_never_resurrects_ready(pg: bool) {
+    let env = Env::new(pg).await;
+    // Hold the reconciliation lock so the worker's success bookkeeping and the
+    // DELETE cleanup contend exactly at publication.
+    let guard = RECONCILE.lock().await;
+    let (_, id) = env.upload(archive(0).await).await;
+    let id = id.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while env.job(&id).await.0 != "succeeded" {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let api = env.api.clone();
+    let job = id.clone();
+    let delete = tokio::spawn(async move { cancel(Extension(api), Ok(Path(job))).await.status() });
+    while env.job(&id).await.0 != "cancelled" {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    drop(guard);
+    assert_eq!(delete.await.unwrap(), StatusCode::OK);
+    while env.api.0.exports_inflight.load(Ordering::Acquire) != 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        report(&env.api, &id).await.unwrap().state,
+        JobState::Cancelled
+    );
+    env.assert_released(&id).await;
+    assert!(env.restart().await);
+    assert_eq!(
+        report(&env.api, &id).await.unwrap().state,
+        JobState::Cancelled
+    );
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// Crash cuts at every journal durability point of a real restore, followed
+/// by restart reconciliation. Unprovable ownership (directory created, marker
+/// never written) fails closed and keeps quota until an operator intervenes.
+async fn journal_fault_matrix_recovers_or_retains(pg: bool) {
+    let env = Env::new(pg).await;
+    let input = env.fx.root.join("fault.bundle");
+    fs::write(&input, archive(0).await).unwrap();
+    let mut points = vec!["prepared", "mkdir", "marker", "rename"];
+    if pg {
+        // Between CREATE SCHEMA+marker commit and the SchemaOwned journal phase.
+        points.push("namespace-created");
+    }
+    points.extend(["files-ready", "files-published"]);
+    for point in points {
+        let id = create(&env.api, "restore", 4096).await.unwrap();
+        crate::restore_journal::inject_fault(point);
+        let result = bundle::restore_owned(
+            &input,
+            env.catalog(),
+            bundle::RestoreOwner {
+                root: &env.root(),
+                job: &id,
+                reserved: 1 << 30,
+            },
+            env.store.limits(),
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .await;
+        assert!(result.is_err(), "fault {point} must interrupt the restore");
+        let journal = Journal::load(&env.root(), &id).unwrap().unwrap();
+        if point == "mkdir" {
+            // An unmarked pending directory is not proof: the job is blocked,
+            // the service still starts.
+            assert!(env.restart().await);
+            env.assert_blocked(&id).await;
+            assert!(journal.pending(&env.root()).exists());
+            assert!(Journal::load(&env.root(), &id).unwrap().is_some());
+            assert_eq!(env.job(&id).await.2, 4096, "quota retained");
+            // Operator removes the verified-empty unmarked directory.
+            assert_eq!(
+                fs::read_dir(journal.pending(&env.root())).unwrap().count(),
+                0
+            );
+            fs::remove_dir(journal.pending(&env.root())).unwrap();
+        }
+        if point == "files-published" {
+            // Published but with no recorded outcome (the row is still queued):
+            // it may have been ready before a database regression, so restart
+            // keeps it unready and retained; only DELETE removes it.
+            assert!(journal.result(&env.root()).exists());
+            assert!(env.restart().await);
+            assert_eq!(env.job(&id).await.1.as_deref(), Some("unverified-result"));
+            assert!(journal.result(&env.root()).join("store").exists());
+            assert!(env.job(&id).await.2 + env.job(&id).await.3 > 0);
+            assert_eq!(env.delete(&id).await, StatusCode::OK);
+            env.assert_released(&id).await;
+            continue;
+        }
+        if let Some(namespace) = journal.namespace()
+            && point == "namespace-created"
+        {
+            assert_eq!(journal.phase(), Phase::Prepared);
+            assert!(
+                restore_schemas(env.catalog())
+                    .await
+                    .contains(&namespace.schema().to_owned())
+            );
+        }
+        assert!(env.restart().await, "fault {point} must reconcile");
+        assert_eq!(env.job(&id).await.0, "failed");
+        env.assert_released(&id).await;
+    }
+    // Crash right after publication when the success commit DID land: restart
+    // verifies the published result and its namespace and keeps it ready.
+    let id = create(&env.api, "restore", 4096).await.unwrap();
+    crate::restore_journal::inject_fault("files-published");
+    assert!(
+        bundle::restore_owned(
+            &input,
+            env.catalog(),
+            bundle::RestoreOwner {
+                root: &env.root(),
+                job: &id,
+                reserved: 1 << 30,
+            },
+            env.store.limits(),
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .await
+        .is_err()
+    );
+    sqlx::query("UPDATE export_jobs SET state='succeeded',reserved=0,retained=1 WHERE id=$1")
+        .bind(&id)
+        .execute(env.catalog().pool())
+        .await
+        .unwrap();
+    assert!(env.restart().await);
+    env.assert_ready(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// Near-limit SOURCE: a cell at exactly the v2 cell limit round trips; one byte
+/// more fails backup with a quota error and leaves no artifact or spool behind.
+async fn near_limit_source_cell_round_trips_and_over_limit_fails_cleanly(pg: bool) {
+    let limit = lytronaut_storage::portable::MAX_CELL;
+    let cell = |len: usize| -> Vec<u8> { (0..len).map(|i| (i % 251) as u8).collect() };
+    let source = Fixture::new(pg).await;
+    let store = source.seed().await;
+    sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) VALUES($1,'near-limit-cell',0,$2)")
+        .bind(IDS[1])
+        .bind(cell(limit))
+        .execute(source.catalog.pool())
+        .await
+        .unwrap();
+    let path = source.root.join("near-limit.bundle");
+    bundle::backup(
+        &source.catalog,
+        &store,
+        &path,
+        u64::MAX,
+        &AtomicBool::new(false),
+        &AtomicU64::new(0),
+    )
+    .await
+    .unwrap();
+    let bytes = fs::read(&path).unwrap();
+    sqlx::query("INSERT INTO catalog_records(version,kind,ordinal,original) VALUES($1,'over-limit-cell',0,$2)")
+        .bind(IDS[2])
+        .bind(cell(limit + 1))
+        .execute(source.catalog.pool())
+        .await
+        .unwrap();
+    let over = source.root.join("over-limit.bundle");
+    assert!(matches!(
+        bundle::backup(
+            &source.catalog,
+            &store,
+            &over,
+            u64::MAX,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0)
+        )
+        .await,
+        Err(lytronaut_storage::StorageError::Quota)
+    ));
+    assert!(!over.exists());
+    assert!(!over.with_extension("snapshot").exists());
+    source.finish().await;
+    let env = Env::new(pg).await;
+    let (_, id) = env.upload(bytes).await;
+    let id = id.unwrap();
+    let journal = env.assert_ready(&id).await;
+    let config = match journal.namespace() {
+        Some(namespace) => env
+            .fx
+            .config
+            .clone()
+            .with_schema(namespace.schema())
+            .unwrap(),
+        None => DatabaseConfig::Sqlite(journal.result(&env.root()).join("store/catalog.db")),
+    };
+    let restored = Catalog::open(config).await.unwrap();
+    let value: Vec<u8> =
+        sqlx::query_scalar("SELECT original FROM catalog_records WHERE kind='near-limit-cell'")
+            .fetch_one(restored.pool())
+            .await
+            .unwrap();
+    assert_eq!(value.len(), limit);
+    assert!(value == cell(limit));
+    restored.pool().close().await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// True while the restore's row-import write transaction is open: PostgreSQL
+/// shows granted RowExclusiveLocks on the private namespace's tables; SQLite's
+/// private destination refuses a second writer immediately (busy_timeout 0).
+async fn import_in_flight(env: &Env, journal: &Journal) -> bool {
+    match journal.namespace() {
+        Some(namespace) => {
+            let held: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_catalog.pg_locks l JOIN pg_catalog.pg_class c ON l.relation=c.oid JOIN pg_catalog.pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname=$1 AND l.mode='RowExclusiveLock' AND l.granted",
+            )
+            .bind(namespace.schema())
+            .fetch_one(env.catalog().pool())
+            .await
+            .unwrap();
+            held > 0
+        }
+        None => {
+            let database = journal.pending(&env.root()).join("store/catalog.db");
+            if !database.exists() {
+                return false;
+            }
+            let mut probe = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&database)
+                    .busy_timeout(std::time::Duration::ZERO),
+            )
+            .await
+            .unwrap();
+            // Only SQLITE_BUSY / SQLITE_LOCKED (primary codes 5 and 6) mean another
+            // writer holds the destination; any other error is a test failure.
+            let busy = match sqlx::query("BEGIN IMMEDIATE").execute(&mut probe).await {
+                Ok(_) => {
+                    sqlx::query("ROLLBACK").execute(&mut probe).await.unwrap();
+                    false
+                }
+                Err(sqlx::Error::Database(error))
+                    if error
+                        .code()
+                        .and_then(|code| code.parse::<i32>().ok())
+                        .is_some_and(|code| matches!(code & 0xff, 5 | 6)) =>
+                {
+                    true
+                }
+                Err(error) => panic!("unexpected SQLite probe error: {error}"),
+            };
+            probe.close().await.unwrap();
+            busy
+        }
+    }
+}
+/// A large row import into the restore's private namespace must not hold the
+/// live deployment's writer admission: live export admission and plain writes
+/// complete promptly (well under the 5 s PostgreSQL lock_timeout) mid-import.
+async fn live_writes_proceed_during_restore_import(pg: bool) {
+    let env = Env::new(pg).await;
+    let (_, id) = env.upload(archive(BULK_ROWS).await).await;
+    let id = id.unwrap();
+    let journal = env.wait_restoring(&id).await;
+    // Positively observe the restore's open row-import write transaction.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !import_in_flight(&env, &journal).await {
+        assert!(std::time::Instant::now() < deadline, "import never started");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    let admitted = create(&env.api, "archive", 1).await.unwrap();
+    let mut tx = env.catalog().begin_write().await.unwrap();
+    sqlx::query("UPDATE export_jobs SET completed=completed WHERE id=$1")
+        .bind(&admitted)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        import_in_flight(&env, &journal).await,
+        "the import transaction must still be open after the live write"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "live writers waited {elapsed:?} behind the restore import"
+    );
+    let observed = Journal::load(&env.root(), &id).unwrap().unwrap();
+    assert!(
+        matches!(observed.phase(), Phase::Prepared | Phase::SchemaOwned),
+        "restore import finished before the live write; enlarge the fixture"
+    );
+    assert!(!journal.result(&env.root()).exists());
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    assert_eq!(env.wait_terminal(&id).await, JobState::Cancelled);
+    env.assert_released(&id).await;
+    assert_eq!(env.delete(&admitted).await, StatusCode::OK);
+    env.finish().await;
+}
+
+/// PostgreSQL only: the success commit lands but the worker's final UPDATE
+/// reports an error (ambiguous outcome). A statement-level trigger makes every
+/// export_jobs UPDATE fail once the job is durably succeeded, which is exactly
+/// what the worker observes. The published result must never be deleted.
+async fn ambiguous_final_update_keeps_published_success(mut env: Env) {
+    let (_, id) = env.upload(archive(BULK_ROWS / 4).await).await;
+    let id = id.unwrap();
+    env.wait_restoring(&id).await;
+    let (admin, schema) = env.fx.pg.as_mut().unwrap();
+    for statement in [
+        format!(
+            "CREATE FUNCTION \"{schema}\".ambiguous() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF EXISTS(SELECT 1 FROM \"{schema}\".export_jobs WHERE id='{id}' AND state='succeeded') THEN RAISE EXCEPTION 'synthetic ambiguous commit'; END IF; RETURN NULL; END$$"
+        ),
+        format!(
+            "CREATE TRIGGER ambiguous BEFORE UPDATE ON \"{schema}\".export_jobs FOR EACH STATEMENT EXECUTE FUNCTION \"{schema}\".ambiguous()"
+        ),
+        // The durable outcome the worker's own commit would have produced.
+        format!("UPDATE \"{schema}\".export_jobs SET state='succeeded' WHERE id='{id}'"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&mut *admin)
+            .await
+            .unwrap();
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while env.api.0.exports_inflight.load(Ordering::Acquire) != 0 {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let journal = Journal::load(&env.root(), &id).unwrap().unwrap();
+    assert!(
+        journal.result(&env.root()).exists(),
+        "a committed success must keep its published result"
+    );
+    let (admin, schema) = env.fx.pg.as_mut().unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP FUNCTION \"{schema}\".ambiguous() CASCADE"
+    )))
+    .execute(&mut *admin)
+    .await
+    .unwrap();
+    assert!(env.restart().await);
+    env.assert_ready(&id).await;
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL service"]
+async fn postgres_ambiguous_final_update() {
+    ambiguous_final_update_keeps_published_success(Env::new(true).await).await;
+}
+
+/// Without a journal, a restore-named result or pending store is not provably
+/// owned: cleanup fails closed, leaves it untouched and keeps the reservation
+/// (no quota released while bytes remain on disk), until it is gone.
+async fn unjournaled_restore_paths_retain_quota(pg: bool) {
+    let env = Env::new(pg).await;
+    for name in ["restored", &format!("pending-{}", random_hex(64))] {
+        let id = create(&env.api, "restore", 4096).await.unwrap();
+        sqlx::query("UPDATE export_jobs SET state='failed',error='failed' WHERE id=$1")
+            .bind(&id)
+            .execute(env.catalog().pool())
+            .await
+            .unwrap();
+        let path = env.root().join(format!("{id}.{name}"));
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("unrelated"), b"not ours").unwrap();
+        assert!(
+            env.restart().await,
+            "one unprovable job must not refuse startup"
+        );
+        env.assert_blocked(&id).await;
+        assert_eq!(
+            env.job(&id).await.2,
+            4096,
+            "quota retained while {name} remains"
+        );
+        assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"not ours");
+        // DELETE retries and still fails closed while the path remains.
+        assert_ne!(env.delete(&id).await, StatusCode::OK);
+        env.assert_blocked(&id).await;
+        fs::remove_dir_all(&path).unwrap();
+        assert!(env.restart().await);
+        env.assert_released(&id).await;
+    }
+    env.finish().await;
+}
+
+/// Whole-store failures still refuse startup: an unreadable restore journal,
+/// an unreadable export root, or an unavailable database.
+async fn whole_store_failures_still_refuse_startup(pg: bool) {
+    let env = Env::new(pg).await;
+    let input = env.fx.root.join("journal.bundle");
+    fs::write(&input, archive(0).await).unwrap();
+    let id = create(&env.api, "restore", 4096).await.unwrap();
+    crate::restore_journal::inject_fault("prepared");
+    assert!(
+        bundle::restore_owned(
+            &input,
+            env.catalog(),
+            bundle::RestoreOwner {
+                root: &env.root(),
+                job: &id,
+                reserved: 1 << 30,
+            },
+            env.store.limits(),
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .await
+        .is_err()
+    );
+    let journal = env.root().join(format!("{id}.restore-journal"));
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        !env.restart().await,
+        "unreadable journal must refuse startup"
+    );
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(env.root(), fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        !env.restart().await,
+        "unreadable export root must refuse startup"
+    );
+    fs::set_permissions(env.root(), fs::Permissions::from_mode(0o700)).unwrap();
+    let unavailable = Catalog::open(env.fx.config.clone()).await.unwrap();
+    unavailable.pool().close().await;
+    assert!(
+        Api::open(unavailable, env.store.clone()).await.is_err(),
+        "an unavailable database must refuse startup"
+    );
+    assert!(env.restart().await);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// A ready restore whose published result can no longer be verified at startup
+/// (here: its private result directory was made group/world accessible) must
+/// fail closed: if its non-ready state cannot even be persisted, startup is
+/// refused (never left ready); otherwise it becomes visibly non-ready while its
+/// files, namespace and quota are retained — never deleted without an explicit
+/// DELETE — across repeated restarts.
+async fn unverifiable_ready_result_fails_closed_and_is_never_auto_deleted(pg: bool) {
+    let mut env = Env::new(pg).await;
+    let (_, id) = env.upload(archive(0).await).await;
+    let id = id.unwrap();
+    let journal = env.assert_ready(&id).await;
+    let retained = env.job(&id).await.3;
+    let result = journal.result(&env.root());
+    fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    // The blocked/unverified state cannot be persisted: refuse startup rather
+    // than keep serving the unverifiable result as ready.
+    install_update_fault(
+        &mut env,
+        "deny_unready",
+        "NEW.state IS DISTINCT FROM OLD.state AND OLD.state='succeeded'",
+        "NEW.state IS NOT OLD.state AND OLD.state='succeeded'",
+    )
+    .await;
+    assert!(
+        !env.restart().await,
+        "an unverifiable ready result must not stay ready"
+    );
+    assert!(result.exists());
+    remove_update_fault(&mut env, "deny_unready").await;
+    for _ in 0..2 {
+        assert!(env.restart().await);
+        let report = report(&env.api, &id).await.unwrap();
+        assert_eq!(report.state, JobState::Failed);
+        assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+        assert!(
+            result.join("store").exists(),
+            "result must never be auto-deleted"
+        );
+        assert!(Journal::load(&env.root(), &id).unwrap().is_some());
+        assert_eq!(env.job(&id).await.3, retained, "quota retained");
+        if let Some(namespace) = journal.namespace() {
+            assert!(
+                restore_schemas(env.catalog())
+                    .await
+                    .contains(&namespace.schema().to_owned())
+            );
+        }
+        env.sentinels.assert_intact(&env.fx).await;
+    }
+    // Only an explicit DELETE, with ownership proof, removes it.
+    fs::set_permissions(&result, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// A transient database read failure in the progress monitor, occurring only
+/// after the restore has succeeded and published, is not a cancellation: the
+/// job must end ready and keep its result. Only a durably recorded cancel
+/// may discard a finished restore.
+async fn monitor_read_error_after_success_never_discards_result(pg: bool) {
+    let env = Env::new(pg).await;
+    let (_, id) = env.upload(archive(BULK_ROWS / 10).await).await;
+    let id = id.unwrap();
+    super::test_seam::arm_monitor_read_failure_after_success(&id);
+    let state = env.wait_terminal(&id).await;
+    assert!(
+        super::test_seam::fired(&id),
+        "seam must have fired after success"
+    );
+    assert_eq!(
+        state,
+        JobState::Succeeded,
+        "a read error is not a cancellation"
+    );
+    env.assert_ready(&id).await;
+    assert!(env.restart().await);
+    env.assert_ready(&id).await;
+    // A durably recorded DELETE still discards it.
+    assert_eq!(env.delete(&id).await, StatusCode::OK);
+    env.assert_released(&id).await;
+    env.finish().await;
+}
+
+/// The filesystem and the database are separate stores (for example the export
+/// root restored from an older host snapshot). A ready restore row without a
+/// loadable journal (M1), or whose journal never reached publication (L2), is
+/// not verifiable: it becomes unready, and nothing it owns is deleted or freed.
+async fn ready_restore_without_published_journal_is_unready_and_retained(pg: bool) {
+    let mut env = Env::new(pg).await;
+    for missing in [true, false] {
+        let (_, id) = env.upload(archive(0).await).await;
+        let id = id.unwrap();
+        let journal = env.assert_ready(&id).await;
+        let retained = env.job(&id).await.3;
+        let path = env.root().join(format!("{id}.restore-journal"));
+        if missing {
+            fs::remove_file(&path).unwrap();
+        } else {
+            let mut record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            record["phase"] = serde_json::json!("RowsCommitted");
+            fs::remove_file(&path).unwrap();
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+                .unwrap();
+            file.write_all(&serde_json::to_vec(&record).unwrap())
+                .unwrap();
+        }
+        for _ in 0..2 {
+            assert!(env.restart().await);
+            let (state, error, _, kept) = env.job(&id).await;
+            assert_eq!(
+                (state.as_str(), error.as_deref()),
+                ("failed", Some("unverified-result")),
+                "journal missing={missing}"
+            );
+            assert_eq!(kept, retained, "quota retained");
+            let report = report(&env.api, &id).await.unwrap();
+            assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+            assert!(
+                journal.result(&env.root()).join("store").exists(),
+                "never auto-deleted"
+            );
+            if let Some(namespace) = journal.namespace() {
+                assert!(
+                    restore_schemas(env.catalog())
+                        .await
+                        .contains(&namespace.schema().to_owned())
+                );
+            }
+            env.sentinels.assert_intact(&env.fx).await;
+        }
+        if missing {
+            // Without a journal ownership is unprovable: DELETE fails closed.
+            assert_ne!(env.delete(&id).await, StatusCode::OK);
+            assert!(journal.result(&env.root()).join("store").exists());
+            assert_eq!(env.job(&id).await.3, retained);
+            // Test teardown of the state the application correctly refused to touch.
+            fs::remove_dir_all(journal.result(&env.root())).unwrap();
+            if let (Some(namespace), Some((admin, _))) = (journal.namespace(), env.fx.pg.as_mut()) {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP SCHEMA \"{}\" CASCADE",
+                    namespace.schema()
+                )))
+                .execute(&mut *admin)
+                .await
+                .unwrap();
+            }
+            assert_eq!(env.delete(&id).await, StatusCode::OK);
+        } else {
+            // With the journal, an explicit DELETE proves ownership and removes it.
+            assert_eq!(env.delete(&id).await, StatusCode::OK);
+        }
+        env.assert_released(&id).await;
+    }
+    env.finish().await;
+}
+
+/// A JobSucceeded journal is durable proof the restore was once ready (the
+/// worker read back its committed success). If the database later goes back in
+/// time (row missing, or regressed to queued/running/cancelling, or failed for
+/// another reason) there was no recorded DELETE: startup must keep everything,
+/// report it unready (re-creating a missing row so it stays visible, counted in
+/// quota and deletable), and only an explicit DELETE with proof removes it.
+async fn ever_ready_restore_with_regressed_row_is_never_auto_deleted(pg: bool) {
+    let env = Env::new(pg).await;
+    for regression in [
+        "DELETE FROM export_jobs WHERE id=$1",
+        "UPDATE export_jobs SET state='queued',retained=0,reserved=0 WHERE id=$1",
+        "UPDATE export_jobs SET state='running' WHERE id=$1",
+        "UPDATE export_jobs SET state='cancelling' WHERE id=$1",
+        "UPDATE export_jobs SET state='failed',error='failed' WHERE id=$1",
+    ] {
+        let (_, id) = env.upload(archive(0).await).await;
+        let id = id.unwrap();
+        let journal = env.assert_ready(&id).await;
+        assert_eq!(journal.phase(), Phase::JobSucceeded);
+        sqlx::query(regression)
+            .bind(&id)
+            .execute(env.catalog().pool())
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert!(env.restart().await);
+            let (state, error, reserved, retained) = env.job(&id).await;
+            assert_eq!(
+                (state.as_str(), error.as_deref()),
+                ("failed", Some("unverified-result")),
+                "{regression}"
+            );
+            assert!(
+                reserved + retained > 0,
+                "quota must stay counted: {regression}"
+            );
+            let report = report(&env.api, &id).await.unwrap();
+            assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+            assert!(
+                journal.result(&env.root()).join("store").exists(),
+                "never auto-deleted: {regression}"
+            );
+            assert!(Journal::load(&env.root(), &id).unwrap().is_some());
+            if let Some(namespace) = journal.namespace() {
+                assert!(
+                    restore_schemas(env.catalog())
+                        .await
+                        .contains(&namespace.schema().to_owned())
+                );
+            }
+            env.sentinels.assert_intact(&env.fx).await;
+        }
+        // An explicit DELETE proves ownership through the journal and releases all.
+        assert_eq!(env.delete(&id).await, StatusCode::OK);
+        env.assert_released(&id).await;
+    }
+    env.finish().await;
+}
+
+macro_rules! matrix {
+    ($($scenario:ident => $sqlite:ident, $postgres:ident;)*) => {$(
+        #[tokio::test]
+        async fn $sqlite() {
+            $scenario(false).await;
+        }
+        #[tokio::test]
+        #[ignore = "requires explicit disposable PostgreSQL service"]
+        async fn $postgres() {
+            $scenario(true).await;
+        }
+    )*};
+}
+matrix! {
+    corrupt_archives_fail_closed_and_release => sqlite_corrupt_archives, postgres_corrupt_archives;
+    quota_failures_fail_closed_and_release => sqlite_quota_failures, postgres_quota_failures;
+    library_beyond_upload_budget_archives_and_restores_through_jobs => sqlite_library_beyond_upload_budget, postgres_library_beyond_upload_budget;
+    catalog_beyond_format_bound_fails_backup_cleanly => sqlite_catalog_beyond_format_bound, postgres_catalog_beyond_format_bound;
+    per_file_disk_cost_is_admitted_and_enforced => sqlite_per_file_disk_cost, postgres_per_file_disk_cost;
+    cancel_and_shutdown_mid_restore_never_publish => sqlite_cancel_and_shutdown, postgres_cancel_and_shutdown;
+    process_kill_mid_restore_then_restart_recovers => sqlite_process_kill, postgres_process_kill;
+    successful_restore_publishes_and_delete_releases => sqlite_publish_and_delete, postgres_publish_and_delete;
+    denied_cleanup_retains_ownership_and_quota_until_retry => sqlite_denied_cleanup, postgres_denied_cleanup;
+    failing_final_update_never_reports_ready => sqlite_failing_final_update, postgres_failing_final_update;
+    late_delete_racing_publication_never_resurrects_ready => sqlite_late_delete, postgres_late_delete;
+    journal_fault_matrix_recovers_or_retains => sqlite_journal_fault_matrix, postgres_journal_fault_matrix;
+    near_limit_source_cell_round_trips_and_over_limit_fails_cleanly => sqlite_near_limit_source, postgres_near_limit_source;
+    live_writes_proceed_during_restore_import => sqlite_live_writes_during_import, postgres_live_writes_during_import;
+    unjournaled_restore_paths_retain_quota => sqlite_unjournaled_paths, postgres_unjournaled_paths;
+    whole_store_failures_still_refuse_startup => sqlite_whole_store_failures, postgres_whole_store_failures;
+    unverifiable_ready_result_fails_closed_and_is_never_auto_deleted => sqlite_unverifiable_ready_result, postgres_unverifiable_ready_result;
+    monitor_read_error_after_success_never_discards_result => sqlite_monitor_read_error_after_success, postgres_monitor_read_error_after_success;
+    ready_restore_without_published_journal_is_unready_and_retained => sqlite_ready_without_published_journal, postgres_ready_without_published_journal;
+    ever_ready_restore_with_regressed_row_is_never_auto_deleted => sqlite_ever_ready_regressed_row, postgres_ever_ready_regressed_row;
+}
+#[tokio::test]
+#[ignore = "requires explicit disposable PostgreSQL service"]
+async fn postgres_restricted_drop() {
+    restricted_drop_never_cascades_into_unrelated_objects(Env::new(true).await).await;
+}

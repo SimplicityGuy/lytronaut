@@ -1,18 +1,18 @@
-# PREVIEW ONLY: no implementation beads have been filed and kickoff is not approved.
+# APPROVED IMPLEMENTATION: epic lytronaut-re8 filed; kickoff approved; delivery active.
 # Provenance: lytronaut-ck2; scope decision: lytronaut-zxk.
 epic:
   complexity: COMPLEX
   title: "Lytronaut: deliver a preservation-first Rust library explorer"
   tag: feature
   description: >-
-    Preview prepared from reviewed research epic lytronaut-ck2 and scope decision
+    Approved implementation from reviewed research epic lytronaut-ck2 and scope decision
     lytronaut-zxk. Deliver private self-hosted schema-23 original-F01 library
     preservation, albums and JPEG browsing, verified discrete JPEG focus stacks,
     gated browser H.264 and optional Rust/wgpu derivative presentation, exports,
     backup and CPU-only Linux containers. Application logic remains Rust/WASM,
     original code MIT. No new calibrated synthesis, Illum claim, native C++/FFmpeg
     codec runtime, guessed Desktop edit parity or automated publication. This spec
-    creates nothing until separately reviewed and filed through bh plan file.
+    is filed as epic lytronaut-re8 with operator-approved kickoff and delivery.
   design: >-
     docs/design/001-lytronaut.md and the four docs/spikes reports define the support
     matrix, privacy and acceptance boundaries. Dependency roots establish target
