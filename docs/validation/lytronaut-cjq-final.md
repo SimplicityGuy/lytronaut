@@ -130,7 +130,9 @@ and close, malformed/incompatible profiles, missing instrumentation and page
 enumeration failures. LLVM diagnostics are checked after per-script exports too.
 The sidebar test keeps its real rendered-selection checks and removes the
 fixture-self comparison; the two 300 ms sleeps now wait for observed UI/fault
-state and bounded network idle. Actual browser and coverage workflows at the
+state. The canvas fault fence requires all six failed thumbnail canvases to be
+zeroed and all their source URLs released, with only the displayed stage URL
+remaining. Actual browser and coverage workflows at the
 resulting revision remain required.
 
 The optional software-adapter run remains optional under the owner clarification;
@@ -142,3 +144,11 @@ the any-size streaming bundle change: sizing now follows unique originals, not
 the configured upload-file limit. The operations guide also distinguishes active
 reservations from completed exports that still occupy disk. Its remaining
 deployment-test follow-ups are still open under that bead.
+
+The first review-repair revision `3d86d2c` failed the browser workflow at
+`canvas-cleanup`: its global network-idle wait timed out and did not establish
+thumbnail settlement. That failure is retained as failed evidence. The next revision uses
+the six-thumbnail cleanup fence above; its exact-revision workflow must pass
+before claiming the correction validated. Local full-check submission attempts
+were interrupted at the host disk safety floor, including a serial retry; those
+attempts do not count as successful checks.

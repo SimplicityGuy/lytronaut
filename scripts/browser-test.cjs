@@ -444,10 +444,34 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
    corrupt=false;await page.setRequestInterception(false);page.off('request',corruptResponse);await click('Retry preview');
    await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
    checkpoint='canvas-cleanup';
-   // Canvas creation failure releases the original URL; revisit recovers thumbnails.
-   await page.evaluate(()=>{window.__canvasGet=HTMLCanvasElement.prototype.getContext;window.__canvasFailures=0;HTMLCanvasElement.prototype.getContext=()=>{window.__canvasFailures++;return null;};});
-   await click('Next page');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 2'&&window.__canvasFailures>0);await page.waitForNetworkIdle({idleTime:250,timeout:30000});
-   await page.evaluate(()=>{HTMLCanvasElement.prototype.getContext=window.__canvasGet;});
+   await page.waitForFunction(()=>{const images=[...document.querySelectorAll('.capture img')];return images.length===24&&images.every(image=>image.complete&&image.naturalWidth>0);},{timeout:120000});
+   // The synthetic second page has six thumbnails. Each downsample creates a
+   // 128² canvas; Rust's error path zeroes it and revokes its source URL before
+   // returning Unavailable. Fence those exact attempts, not unrelated polling.
+   await page.evaluate(()=>{
+    window.__canvasGet=HTMLCanvasElement.prototype.getContext;
+    window.__failedThumbnailCanvases=new Set();
+    HTMLCanvasElement.prototype.getContext=function(kind){
+     if(kind==='2d'&&this.width===128&&this.height===128)window.__failedThumbnailCanvases.add(this);
+     return null;
+    };
+   });
+   try{
+    await click('Next page');
+    await page.waitForFunction(()=>{
+     const canvases=window.__failedThumbnailCanvases,stage=document.querySelector('.stage img');
+     return document.querySelector('.pagination span').textContent==='Page 2'
+      &&document.querySelectorAll('.capture').length===6
+      &&document.querySelectorAll('.capture .thumb-empty').length===6
+      &&document.querySelectorAll('.capture img').length===0
+      &&canvases.size===6&&[...canvases].every(canvas=>canvas.width===0&&canvas.height===0)
+      &&stage?.complete&&stage.naturalWidth>0&&stage.src.startsWith('blob:')
+      &&window.__activeURLs.size===1&&window.__activeURLs.has(stage.src)
+      &&window.__urls.created-window.__urls.revoked===1;
+    },{timeout:120000});
+   }finally{
+    await page.evaluate(()=>{HTMLCanvasElement.prototype.getContext=window.__canvasGet;delete window.__canvasGet;delete window.__failedThumbnailCanvases;});
+   }
    await click('Previous page');await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===24,{timeout:120000});
   }
   await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
