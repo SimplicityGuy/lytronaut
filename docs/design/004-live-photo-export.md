@@ -1,7 +1,7 @@
 # Portable Live Photo export
 
 Status: implementation in progress. Release CPU-mode focus interaction is **not met**
-on the merged tree (p95 138-150 ms against ≤100 ms). Apple Photos recognition is an
+on the merged tree at `b81e689` (p95 137.9–150.4 ms against ≤100 ms). Apple Photos recognition is an
 owner-reported pass. VoiceOver is **not verified**; the owner signed it off as out of
 scope for the initial version. iOS is out of scope for this release. The counted
 memory budget (partial) and GPU submit-to-present latency (unverified) are accepted
@@ -638,7 +638,7 @@ evidence directory, not in the repository or CI.
 | Real-GPU regression | Pass | Adapter `apple`/`metal-3`; `chrome://gpu` reports WebGPU hardware accelerated on ANGLE Metal, no software renderer. The GPU browser suite, `live-photo-gpu-owner-test`, `live-photo-test.cjs` and the CPU browser suite passed |
 | Automatic CPU/GPU selection | Pass | No renderer buttons; five injected faults fell back to CPU within 742 ms; device loss recovered in 52 ms; destroy-reentry kept the newer capture |
 | Counted 64 MiB transient / 32 MiB retained | **Partial; accepted as a known limitation, not proven** | See below and [Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13) |
-| Performance (design 001 targets) | **Not met** | Release CPU-mode focus interaction p95 is 138-150 ms on the merged tree (target ≤100 ms). GPU submit-to-present is not verified (accepted as a known limitation, not proven). Other targets: see below |
+| Performance (design 001 targets) | **Not met** | Merged-tree `b81e689` release CPU-mode focus interaction p95 is 137.9–150.4 ms (target ≤100 ms). GPU submit-to-present is not verified (accepted as a known limitation, not proven). Other targets: see below |
 | Apple Photos recognition | **Owner-reported pass** | Rebuilt pair `9fw-gate5-fbe615a`; see below |
 | VoiceOver | **Not verified** | Owner signed off as out of scope for the initial version (2026-10-13). The only accessibility evidence is the automated accessibility-tree (AXTree) inspection |
 
@@ -801,4 +801,7 @@ Neither limitation is upgraded to passed. Still **open**:
 - A private-corpus export rerun at the current source. Done 2026-10-14 (aggregate results in [the final validation report](../validation/lytronaut-cjq-final.md#private-library)).
 - Checking the 1138×1842 first frame against the H.264 Level 5 per-frame limits.
 - Live Photo export on PostgreSQL end to end.
+- Required-check enforcement on `main`: not yet applied through homelab
+  ([adoption procedure](../operations/required-checks.md)).
+- Exact delivery-revision CI, coverage and container results after final changes.
 - Release CPU-mode focus interaction p95: **not met** (target ≤100 ms).

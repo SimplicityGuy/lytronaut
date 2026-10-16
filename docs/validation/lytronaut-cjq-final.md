@@ -42,9 +42,17 @@ where a newer one must supersede them, inject failures deterministically) and
 in the client (an upload that could not start left its import holding an
 admission slot, which made a later flow fail with a resource limit).
 
-Three sequential runs of one commit gave identical WASM(client) coverage,
-2658 / 2763: 38530962243, 38533389706 and 38535638197. Native varied by two
-lines (8699 or 8697): the PostgreSQL desktop test runs two imports of one
+Three historical runs reported identical aggregate WASM(client) counts,
+2658 / 2763, across two commits. These are not three passing repetitions of one
+commit:
+
+| Run | Source commit | Workflow conclusion |
+|---|---|---|
+| [38530962243](https://github.com/SimplicityGuy/lytronaut/actions/runs/38530962243) | `64fc6a5d9f73918fb38b4843e2df645143352253` | failed (old per-script gate) |
+| [38533389706](https://github.com/SimplicityGuy/lytronaut/actions/runs/38533389706) | `8eb318943480d45a28d427ac1b680ae52bc0dcc8` | failed (old per-script gate) |
+| [38535638197](https://github.com/SimplicityGuy/lytronaut/actions/runs/38535638197) | `8eb318943480d45a28d427ac1b680ae52bc0dcc8` | passed |
+
+Native varied by two lines (8699 or 8697): the PostgreSQL desktop test runs two imports of one
 library concurrently and only sometimes reaches the "already installed" branch
 (`lytronaut-storage/src/desktop.rs`). The gate also checks each browser
 script's own client lines against a reviewed baseline
@@ -89,8 +97,15 @@ host was a shared Apple M1 Pro (MacBookPro18,1) with a load average of about
 
 These stay visible; none is claimed:
 
-- CPU focus p95 at most 100 ms on the release reference host: **not met** (last
-  integrated release measurements 104.7 to 150.7 ms).
+- CPU focus p95 at most 100 ms on the release reference host: **not met**. Earlier
+  post-export runs measured 104.7–150.7 ms ([export report](lytronaut-u8i-export.md));
+  the later merged-tree `b81e689` runs measured 137.9–150.4 ms
+  ([owner results](../design/004-live-photo-export.md#owner-results-and-accepted-limitations-2026-10-13)).
+  These historical stages do not measure the current delivery revision.
+- Required-check enforcement on `main`: open; workflows run but do not yet
+  block merging ([adoption procedure](../operations/required-checks.md)).
+- Exact delivery-revision CI, coverage and container validation must be checked
+  again after changes; historical results above do not attest future revisions.
 - Performance under grid load: open.
 - H.264 Level 5 frame-size check (1138 x 1842) and Live Photo export end to end
   on PostgreSQL: open.
@@ -99,3 +114,31 @@ These stay visible; none is claimed:
   (accepted limitation).
 - VoiceOver: not verified (owner sign-off, out of scope for this version).
   iOS: out of scope (owner sign-off).
+
+## Review corrections (2026-10-16)
+
+The coverage exception still names the same seven scopes (646 source lines).
+The guard now pins each reviewed source range by SHA-256 instead of accepting a
+body containing the word “gpu”; the unused `video.rs` allowance was removed.
+Adversarial unit tests reject changed source, unapproved files, ambiguous or
+missing functions/blocks and growth beyond the existing ceiling. New exceptions
+still require explicit owner approval; changing a digest does not grant it.
+
+Coverage-driver contract tests use mocked browser events and raw profiles, not
+product execution: they verify startup/popup accounting, dumps before navigation
+and close, malformed/incompatible profiles, missing instrumentation and page
+enumeration failures. LLVM diagnostics are checked after per-script exports too.
+The sidebar test keeps its real rendered-selection checks and removes the
+fixture-self comparison; the two 300 ms sleeps now wait for observed UI/fault
+state and bounded network idle. Actual browser and coverage workflows at the
+resulting revision remain required.
+
+The optional software-adapter run remains optional under the owner clarification;
+it does not establish physical-GPU correctness or presentation latency. Access
+documentation now follows ADR 002, CPU timings are attributed to their historical
+stages, and required-check enforcement remains an explicit release prerequisite.
+The earlier archive-admission documentation in `lytronaut-1yn` was superseded by
+the any-size streaming bundle change: sizing now follows unique originals, not
+the configured upload-file limit. The operations guide also distinguishes active
+reservations from completed exports that still occupy disk. Its remaining
+deployment-test follow-ups are still open under that bead.

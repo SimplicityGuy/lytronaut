@@ -27,14 +27,18 @@ const fail = message => {
 function profileSignature(buffer) {
   const mask = (1n << 64n) - 1n;
   const word = index => buffer.readBigUInt64LE(index * 8);
+  if (buffer.length < 16) throw Error('truncated raw profile header');
+  if (word(0) !== 0xff6c70726f665281n) throw Error('invalid raw profile magic');
   const version = word(1);
   const raw = Number(version & 0xffffffffn);
+  if (![10, 11].includes(raw)) throw Error(`unsupported raw profile version ${raw}`);
   const fields = raw >= 11
     ? ['Magic', 'Version', 'BinaryIdsSize', 'NumData', 'PadBeforeCounters', 'NumCounters', 'PadAfterCounters', 'NumBitmapBytes', 'PadAfterBitmap', 'NumUniformCounters', 'PadAfterUniform', 'UniformCountersDelta', 'NamesSize', 'CountersDelta', 'BitmapDelta', 'NamesDelta', 'NumVTables', 'VNamesSize', 'ValueKindLast']
     : ['Magic', 'Version', 'BinaryIdsSize', 'NumData', 'PadBeforeCounters', 'NumCounters', 'PadAfterCounters', 'NumBitmapBytes', 'PadAfterBitmap', 'NamesSize', 'CountersDelta', 'BitmapDelta', 'NamesDelta', 'NumVTables', 'VNamesSize', 'ValueKindLast'];
   if (buffer.length < fields.length * 8) throw Error('truncated raw profile header');
   const header = Object.fromEntries(fields.map((name, index) => [name, word(index)]));
   const dataOffset = fields.length * 8 + Number(header.BinaryIdsSize);
+  if (!Number.isSafeInteger(dataOffset) || dataOffset > buffer.length || (header.NumData > 0n && dataOffset + 8 > buffer.length)) throw Error('truncated raw profile data');
   const firstNameRef = header.NumData > 0n ? buffer.readBigUInt64LE(dataOffset) : 0n;
   return {
     rawVersion: raw,
@@ -113,9 +117,18 @@ async function launch(puppeteer, options) {
   if (!dir) return browser;
   const newPage = browser.newPage.bind(browser);
   browser.newPage = async (...args) => track(await newPage(...args));
+  // launch() can return an existing startup page; do not leave its client
+  // outside the accounting merely because the driver did not call newPage().
+  for (const page of await browser.pages()) track(page);
+  browser.on('targetcreated', async target => {
+    try { const page = await target.page(); if (page) track(page); }
+    catch (error) { fail(`cannot track new browser target: ${error.message}`); }
+  });
   const close = browser.close.bind(browser);
   browser.close = async (...args) => {
-    for (const page of await browser.pages().catch(() => [])) if (page.__lytronautCoverage && !page.isClosed()) await dump(page, 'browser_close');
+    try {
+      for (const page of await browser.pages()) if (page.__lytronautCoverage && !page.isClosed()) await dump(page, 'browser_close');
+    } catch (error) { fail(`cannot enumerate pages before browser close: ${error.message}`); }
     return close(...args);
   };
   return browser;

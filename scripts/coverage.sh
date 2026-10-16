@@ -172,6 +172,10 @@ report() {
             mkdir -p "$dir/scripts"
             "$tools/llvm-cov" export -format=lcov -instr-profile "$dir/script.profdata" -object "$dir/application.wasm" > "$dir/scripts/$script.lcov" 2>> "$dir/export.stderr"
         done
+        # Per-script exports append diagnostics too; inspect after every export.
+        if grep -iE 'warning|error|mismatch|malformed' "$dir/merge.stderr" "$dir/export.stderr"; then
+            die "llvm tools reported problems for $name per-script profiles"
+        fi
         rm -f "$dir/script.profdata"
         args+=(--wasm "$name=$dir")
     done

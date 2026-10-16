@@ -41,7 +41,7 @@ image publication remain disabled; images are built locally.
 |---|---|---|
 | Library browsing, albums, search, original download (no GPU, no codec) | Supported | Actual Rust/WASM client in headless Chrome against the real service in CI (`just browser-test`) |
 | Discrete JPEG focus | Supported | CI synthetic stacks; private 58 stacks / 420 planes validated locally at the release source |
-| CPU focus latency p95 at most 100 ms | **Not met** | Last integrated release runs measured p95 above 100 ms (for example 134.4 ms); the target is kept and the result stays visible ([design 004](../design/004-live-photo-export.md#owner-results-and-accepted-limitations-2026-10-13)) |
+| CPU focus latency p95 at most 100 ms | **Not met** | Release measurements exceed 100 ms; the later merged-tree runs at `b81e689` measured 137.9–150.4 ms. Historical stages and limitations remain visible ([design 004](../design/004-live-photo-export.md#owner-results-and-accepted-limitations-2026-10-13)) |
 | Browser H.264 focus <a id="browser-h264-focus"></a> | Conditional | All 109 private streams / 654 frames decoded on Chrome 154, macOS, Apple M1 Pro, by the actual Rust/WASM decoder path with `prefer-software` retry ([report](../validation/lytronaut-hyy-video.md)); functional only, no latency or hardware-acceleration claim; other browsers unmeasured |
 | Rust/wgpu GPU presentation | Conditional, automatic | Probed automatically, falls back to CPU on any failure. Correctness verified on a physical-GPU reference host (Apple M1 Pro, Chrome 154: exact pixels for all eight EXIF transforms, [report](../validation/lytronaut-us7-gpu.md)). Software adapters (SwiftShader) are never reported as physical-GPU results |
 | GPU compositor presentation target (16.7 ms) | Not verified | Accepted limitation; headless compute timings are not submit-to-present evidence |
@@ -76,6 +76,9 @@ aggregate: see [the final validation report](../validation/lytronaut-cjq-final.m
 
 ## Open items (next evidence prerequisites)
 
+- Required-check enforcement on `main` through homelab (not yet enforced;
+  [adoption procedure](required-checks.md)).
+- Exact delivery-revision CI, coverage and container results after final changes.
 - CPU focus p95 at most 100 ms on the release reference host (not met).
 - Performance under grid load at the current source.
 - H.264 Level 5 frame-size check (1138 x 1842).

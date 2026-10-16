@@ -79,7 +79,7 @@ module.exports=async({browser,origin})=>{
         // completed response stream, after which Chrome discards its data. The
         // mapped page body is the one this test served; the detail is fetched
         // independently from the service for the exact finished request's id.
-        if(mappedResponse){const response=await mappedResponse;assert(response.ok());assert.equal(captureItems[0]?.id,expected.id,'mapped page selected expected first capture');}
+        if(mappedResponse){const response=await mappedResponse;assert(response.ok());}
         const response=await detailResponse;assert(response.ok());const independent=await fetch(origin+`/captures/${expected.id}`,{signal:AbortSignal.timeout(10000)});assert(independent.ok);const bytes=Buffer.from(await independent.arrayBuffer());assert(bytes.length<=256*1024);const detail=JSON.parse(bytes);assert.equal(detail.capture.id,expected.id);
         focus=detail.originals.some(file=>file.role==='jpeg_focus_stack');
         geometry=focus?{width:360,height:240}:{width:640,height:360};

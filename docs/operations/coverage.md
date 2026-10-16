@@ -70,7 +70,7 @@ ran, so a suite that stops early silently lowers it. That is what made early CI
 results swing by up to 4.7 points: when one flow failed (a changed status message,
 or a test that assumed a capture was on the first page), the rest of
 `browser-test` was skipped, and the run reported fewer covered lines without
-any coverage-specific error. Three guards now make the result repeatable or loud:
+any coverage-specific error. The following guards make incomplete execution fail visibly:
 
 - Flows locate captures through the real search control instead of assuming a
   page layout, and every page waits for in-flight work to settle before its
@@ -91,8 +91,11 @@ any coverage-specific error. Three guards now make the result repeatable or loud
   listing must supersede an in-flight one, the suite holds that request so the
   supersede always happens.
 
-Repeated runs of one commit give identical WASM client totals. The native total
-can differ by two lines: `lytronaut-storage/src/desktop.rs`, where the second of
+Three historical runs over two commits reported identical aggregate WASM client
+totals, but two failed the old per-script gate. They do not establish three
+passing repetitions of one commit; the exact revisions and conclusions are in
+[the validation report](../validation/lytronaut-cjq-final.md#repeatability). The
+native total can differ by two lines: `lytronaut-storage/src/desktop.rs`, where the second of
 two concurrent imports of one library (`tokio::join!` in the PostgreSQL desktop
 test) finds the first already installed only if both passed the early
 fingerprint check before either committed. That race is the behaviour under
@@ -133,11 +136,15 @@ totals without the exemption.
 
 Guard rails make the exception reviewable rather than silent:
 
-- Only `gpu.rs`, `browser.rs` and `video.rs` may be named, and only `gpu.rs` may be
+- Only `gpu.rs` and `browser.rs` may be named, and only `gpu.rs` may be
   exempted whole (it must use `wgpu`).
-- Each named function or block must exist exactly once and reference GPU code.
+- Each named function or block must exist exactly once. Its exact source range
+  must match the reviewed SHA-256 digest; a GPU name in a comment, string or
+  unrelated function cannot satisfy the guard.
 - Exempt source is capped at `GPU_EXEMPT_SOURCE_LINE_CEILING` lines, so growth
-  needs a reviewed change.
+  fails even before a new baseline can be considered. Changes to a digest require
+  review of the entire scope; expanding an exception requires explicit owner
+  approval. Updating a digest alone is not that approval.
 
 Shared non-GPU logic such as `model.rs` and generic browser flows is never
 exempt. GPU rendering is verified instead by the physical-GPU reference-host runs, which

@@ -410,7 +410,7 @@ location does. For `N` bytes of unique originals:
 
 - Creating a bundle needs about `N` + 576 MiB free, plus 80 bytes per unique
   original (the bundle itself plus the catalog and inventory spools beside it),
-  in addition to the reservations of other running exports and
+  in addition to outstanding reservations of other export/restore/import jobs and
   `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose).
 - Restoring a bundle of `B` bytes needs about 2 x `B` + 288 MiB free (the upload
   and the extracted copy, plus room for a SQLite catalog), with the same additions.
@@ -443,6 +443,8 @@ larger catalog fails when the backup job runs, with a non-retryable
 stopped-service volume snapshots (SQLite) or `pg_dump` plus file snapshots
 (PostgreSQL) for such a library. Splitting the catalog into chunks is a possible
 later change. A ready bundle or restore keeps its space until you `DELETE` it.
+Retained completed exports also occupy actual disk until deleted; free-space
+checks observe that usage even after the active reservation is released.
 Interrupted transfers are not resumed; start the download or upload again.
 
 ### Limitations

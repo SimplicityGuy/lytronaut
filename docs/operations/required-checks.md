@@ -24,7 +24,7 @@ repository.
 
 1. Confirm all checks are green on the exact `main` commit you are protecting.
 2. Confirm rulesets are available: `gh api repos/SimplicityGuy/lytronaut/rulesets`
-   returns a JSON list (it returned `[]` on 2026-10-13 after the repository became
+   returns a JSON list (it returned `[]` again on 2026-10-16 with the repository
    public; while it was private the same call returned 403, a plan limitation).
 3. Add a `main` ruleset requiring the job names in the table (exact names, so a
    renamed job does not silently stop being required) through the homelab

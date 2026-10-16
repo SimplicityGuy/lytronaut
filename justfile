@@ -20,6 +20,7 @@ lint:
 test:
     cargo test --locked --workspace --all-targets --all-features
     cargo test --locked --workspace --doc
+    node --test scripts/coverage.test.cjs
 
 # Explicit disposable PostgreSQL only; the default SQLite test recipe stays independent.
 # Requires a restricted role, CONNECT+CREATE on its dedicated DB, and the synthetic
@@ -70,7 +71,8 @@ security-scan:
 # First-party line coverage gate: native (stable, cargo-llvm-cov) plus the actual
 # Rust/WASM client instrumented with a dated nightly and executed by the real
 # browser suites; native, WASM(client) and union must each reach 95% of the full
-# crates/*/src inventory. Needs Chrome, Docker (PostgreSQL) and clang with wasm32;
+# crates/*/src inventory, with the owner-approved GPU-only exception itemised
+# separately (docs/operations/coverage.md). Needs Chrome, Docker and clang with wasm32;
 # synthetic fixtures only; report in target/coverage/report/coverage.md.
 # Full native + instrumented Rust/WASM browser coverage gate (>=95% each).
 coverage:
@@ -92,13 +94,13 @@ coverage-native:
 coverage-browser:
     bash scripts/coverage.sh browser
 
-# Export LCOV, merge per target, write JSON/Markdown and enforce the floors.
 # Runnable local demo: synthetic library + fresh app state (no private data).
 # LYTRONAUT_DEMO_VIDEO=1 also generates a synthetic H.264 focus stack (needs Chrome).
 demo: wasm-build
     cargo build --locked -p lytronaut-service --bin lytronaut-service --example synthetic_jpeg
     bash scripts/demo.sh
 
+# Export LCOV, merge per target, write JSON/Markdown and enforce the floors.
 coverage-report:
     bash scripts/coverage.sh report
 

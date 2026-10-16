@@ -45,30 +45,36 @@ struct GpuExemption {
     /// marker (including indentation) inside `function`; it must be unique there.
     block: Option<&'static str>,
     reason: &'static str,
+    /// SHA-256 of the exact reviewed source range; edits require explicit review.
+    source_sha256: &'static str,
 }
 const GPU_EXEMPTIONS: &[GpuExemption] = &[
     GpuExemption {
         path: "crates/lytronaut-client/src/gpu.rs",
         function: None,
         block: None,
+        source_sha256: "1f4ccbbbe28c4635f45f89541108d36d2d0123633ea11f9f4902aef58501119c",
         reason: "WebGPU renderer: adapter/device acquisition, pipeline, texture upload, presentation and device-loss tracking",
     },
     GpuExemption {
         path: "crates/lytronaut-client/src/browser.rs",
         function: Some("gpu_identity"),
         block: None,
+        source_sha256: "4a9e94efad97e6193504cf413c23bd440a925f847f98ab9c772bc3ba1c99be83",
         reason: "fetches and verifies the derivative uploaded to the WebGPU renderer",
     },
     GpuExemption {
         path: "crates/lytronaut-client/src/browser.rs",
         function: Some("present_gpu"),
         block: None,
+        source_sha256: "c05f6c6eface0c15de4d5f0c83a58cb4550ae45d8a0d8ce94e30a4c17cdcf35e",
         reason: "acquires the WebGPU renderer and presents a verified frame, CPU fallback on failure",
     },
     GpuExemption {
         path: "crates/lytronaut-client/src/browser.rs",
         function: Some("watch_gpu"),
         block: None,
+        source_sha256: "9035dc42178b151cf5a0745d7b918db18d0002ee6d74b54eb065cb3989bc6616",
         reason: "polls the WebGPU renderer for device loss and switches to CPU presentation",
     },
     GpuExemption {
@@ -77,18 +83,21 @@ const GPU_EXEMPTIONS: &[GpuExemption] = &[
         block: Some(
             "                if generation == *self.stage_generation.borrow() && self.gpu_enabled.get_untracked()",
         ),
+        source_sha256: "0d22f903b2cb11fa3eaeb8442a106e30299fcdbbf463a5e1636b627168970650",
         reason: "hands a verified focus plane to the WebGPU renderer when GPU presentation is active",
     },
     GpuExemption {
         path: "crates/lytronaut-client/src/browser.rs",
         function: Some("change_focus"),
         block: Some("                if self.gpu_enabled.get_untracked() {"),
+        source_sha256: "f78a44f60680d578d251d6d97e137f4beb1b373775e71219b79fa6a14c6054ea",
         reason: "releases the WebGPU renderer after a rejected focus derivative",
     },
     GpuExemption {
         path: "crates/lytronaut-client/src/browser.rs",
         function: Some("change_video"),
         block: Some("        if self.gpu_visible.get_untracked() {"),
+        source_sha256: "0775f9112fc672f710d6276562b98319c35f0ac85bf55f18a672d38a2ce31a31",
         reason: "keeps the WebGPU device-loss watcher running during video decode",
     },
 ];
@@ -96,7 +105,6 @@ const GPU_EXEMPTIONS: &[GpuExemption] = &[
 const GPU_EXEMPTION_FILES: &[&str] = &[
     "crates/lytronaut-client/src/gpu.rs",
     "crates/lytronaut-client/src/browser.rs",
-    "crates/lytronaut-client/src/video.rs",
 ];
 const GPU_WHOLE_FILE: &str = "crates/lytronaut-client/src/gpu.rs";
 /// Ceiling on exempt source lines. Growth of the exempt code beyond the approved
@@ -107,10 +115,18 @@ const GPU_EXEMPT_SOURCE_LINE_CEILING: usize = 646;
 /// entry that is missing, ambiguous, not GPU-specific or outside the allowed files.
 type ExemptLines = BTreeMap<String, BTreeSet<usize>>;
 fn gpu_exemptions(root: &Path) -> Result<(ExemptLines, Vec<Value>)> {
+    resolve_gpu_exemptions(root, GPU_EXEMPTIONS, GPU_EXEMPT_SOURCE_LINE_CEILING)
+}
+
+fn resolve_gpu_exemptions(
+    root: &Path,
+    entries: &[GpuExemption],
+    ceiling: usize,
+) -> Result<(ExemptLines, Vec<Value>)> {
     let mut lines = ExemptLines::new();
     let mut listed = Vec::new();
     let mut total = 0;
-    for entry in GPU_EXEMPTIONS {
+    for entry in entries {
         if !GPU_EXEMPTION_FILES.contains(&entry.path) {
             return Err(format!("GPU exemption names a non-GPU file: {}", entry.path).into());
         }
@@ -158,22 +174,22 @@ fn gpu_exemptions(root: &Path) -> Result<(ExemptLines, Vec<Value>)> {
                         rust_source::block_lines(&source, line)?
                     }
                 };
-                let body: String = source
-                    .lines()
-                    .skip(start - 1)
-                    .take(end - start + 1)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !body.to_ascii_lowercase().contains("gpu") {
-                    return Err(format!(
-                        "GPU exemption {}::{function} does not reference GPU code",
-                        entry.path
-                    )
-                    .into());
-                }
                 (start, end)
             }
         };
+        // A GPU name (including one in a string/comment) cannot prove that a
+        // scope is GPU-only. Freeze the reviewed scopes instead: even growth
+        // below the line ceiling needs a deliberate exemption review.
+        let body = source
+            .lines()
+            .skip(start - 1)
+            .take(end - start + 1)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+        if digest != entry.source_sha256 {
+            return Err(format!("GPU exemption source changed: {}::{:?}: {digest}; review the exact scope before updating its digest", entry.path, entry.function).into());
+        }
         total += end - start + 1;
         lines
             .entry(entry.path.to_owned())
@@ -181,8 +197,8 @@ fn gpu_exemptions(root: &Path) -> Result<(ExemptLines, Vec<Value>)> {
             .extend(start..=end);
         listed.push(json!({"path": entry.path, "function": entry.function, "block": entry.block, "start": start, "end": end, "reason": entry.reason}));
     }
-    if total > GPU_EXEMPT_SOURCE_LINE_CEILING {
-        return Err(format!("GPU-exempt source grew to {total} lines (approved ceiling {GPU_EXEMPT_SOURCE_LINE_CEILING}); review the exemption list").into());
+    if total > ceiling {
+        return Err(format!("GPU-exempt source grew to {total} lines (approved ceiling {ceiling}); review the exemption list").into());
     }
     Ok((lines, listed))
 }
@@ -900,6 +916,156 @@ pub fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let unique = FIXTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "lytronaut-gpu-exemption-{}-{unique}",
+                std::process::id()
+            ));
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap();
+            for file in GPU_EXEMPTION_FILES {
+                let dest = path.join(file);
+                fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                fs::copy(root.join(file), dest).unwrap();
+            }
+            Self(path)
+        }
+        fn edit(&self, file: &str, from: &str, to: &str) {
+            let path = self.0.join(file);
+            let source = fs::read_to_string(&path).unwrap();
+            assert!(source.contains(from));
+            fs::write(path, source.replacen(from, to, 1)).unwrap();
+        }
+        fn edit_function(&self, entry: &GpuExemption, from: &str, to: &str) {
+            let path = self.0.join(entry.path);
+            let source = fs::read_to_string(&path).unwrap();
+            let (start, end) =
+                rust_source::function_lines(&source, entry.function.unwrap()).unwrap()[0];
+            let body = source
+                .lines()
+                .skip(start - 1)
+                .take(end - start + 1)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(body.contains(from));
+            fs::write(path, source.replacen(&body, &body.replacen(from, to, 1), 1)).unwrap();
+        }
+        fn error(&self, entries: &[GpuExemption], ceiling: usize) -> String {
+            resolve_gpu_exemptions(&self.0, entries, ceiling)
+                .unwrap_err()
+                .to_string()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn approved_gpu_ranges_are_exact_and_bounded() {
+        let f = Fixture::new();
+        let (lines, ranges) = gpu_exemptions(&f.0).unwrap();
+        assert_eq!(ranges.len(), 7);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines.values().map(BTreeSet::len).sum::<usize>(),
+            GPU_EXEMPT_SOURCE_LINE_CEILING
+        );
+        assert!(
+            f.error(GPU_EXEMPTIONS, GPU_EXEMPT_SOURCE_LINE_CEILING - 1)
+                .contains("source grew")
+        );
+    }
+
+    #[test]
+    fn gpu_exemptions_reject_unapproved_paths_and_whole_files() {
+        let f = Fixture::new();
+        let mut entry = GpuExemption {
+            path: "crates/lytronaut-client/src/video.rs",
+            ..GPU_EXEMPTIONS[0]
+        };
+        assert!(f.error(&[entry], usize::MAX).contains("non-GPU file"));
+        entry = GpuExemption {
+            path: GPU_EXEMPTIONS[1].path,
+            ..GPU_EXEMPTIONS[0]
+        };
+        assert!(
+            f.error(&[entry], usize::MAX)
+                .contains("whole-file GPU exemption")
+        );
+        f.edit(GPU_WHOLE_FILE, "wgpu::", "unrelated::");
+        // The remaining wgpu references do not permit changed source either.
+        assert!(
+            f.error(GPU_EXEMPTIONS, usize::MAX)
+                .contains("source changed")
+        );
+    }
+
+    #[test]
+    fn gpu_exemptions_reject_missing_and_ambiguous_functions() {
+        let f = Fixture::new();
+        f.edit(
+            GPU_EXEMPTIONS[1].path,
+            "async fn gpu_identity(",
+            "async fn renamed_identity(",
+        );
+        assert!(f.error(GPU_EXEMPTIONS, usize::MAX).contains("found 0"));
+        f.edit(
+            GPU_EXEMPTIONS[1].path,
+            "async fn renamed_identity(",
+            "fn gpu_identity() {}\n    async fn gpu_identity(",
+        );
+        let error = f.error(GPU_EXEMPTIONS, usize::MAX);
+        assert!(error.contains("found 2"), "{error}");
+    }
+
+    #[test]
+    fn gpu_exemptions_reject_missing_and_ambiguous_blocks() {
+        let f = Fixture::new();
+        let entry = &GPU_EXEMPTIONS[6];
+        let marker = entry.block.unwrap();
+        f.edit_function(entry, marker, &marker.replace("if ", "if true && "));
+        assert!(f.error(GPU_EXEMPTIONS, usize::MAX).contains("found 0"));
+        f.edit_function(
+            entry,
+            &marker.replace("if ", "if true && "),
+            &format!("{marker}\n        }}\n{marker}"),
+        );
+        let error = f.error(GPU_EXEMPTIONS, usize::MAX);
+        assert!(error.contains("found 2"), "{error}");
+    }
+
+    #[test]
+    fn gpu_names_in_comments_or_strings_cannot_approve_unrelated_source() {
+        for replacement in ["let unrelated = 1; // gpu", "let unrelated = \"gpu\";"] {
+            let f = Fixture::new();
+            f.edit(
+                GPU_EXEMPTIONS[2].path,
+                "self.gpu_busy.set(true);",
+                replacement,
+            );
+            assert!(
+                f.error(GPU_EXEMPTIONS, usize::MAX)
+                    .contains("source changed")
+            );
+        }
+        let f = Fixture::new();
+        let entry = &GPU_EXEMPTIONS[6];
+        f.edit(entry.path, "self.watch_gpu(generation);\n        }\n        let result", "self.watch_gpu(generation);\n            unrelated_cpu_work();\n        }\n        let result");
+        assert!(
+            f.error(GPU_EXEMPTIONS, usize::MAX)
+                .contains("source changed")
+        );
+    }
 
     #[test]
     fn script_baseline_parses_and_tolerates_small_drops_only() {

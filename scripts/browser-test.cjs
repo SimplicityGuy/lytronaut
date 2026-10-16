@@ -355,7 +355,7 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
   }
   assert.deepEqual([...memberships].sort((a,b)=>a-b),privateMode?[12,39,58]:[10,10,10]);
   if(!privateMode){
-   await click('All captures');await delay(300);
+   await click('All captures');await page.waitForFunction(()=>document.querySelectorAll('.capture').length===24&&!document.querySelector('.album-item[aria-pressed="true"]'));
    await page.type('#search','Synthetic 029');await click('Search');
    await page.waitForFunction(()=>document.querySelectorAll('.capture').length===1);assert((await page.$eval('.capture',e=>e.textContent)).includes('029'));
    await page.$eval('#search',e=>{e.value='';e.dispatchEvent(new Event('input',{bubbles:true}));});await click('Search');
@@ -445,8 +445,8 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
    await page.waitForFunction(()=>document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
    checkpoint='canvas-cleanup';
    // Canvas creation failure releases the original URL; revisit recovers thumbnails.
-   await page.evaluate(()=>{window.__canvasGet=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=()=>null;});
-   await click('Next page');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 2');await delay(300);
+   await page.evaluate(()=>{window.__canvasGet=HTMLCanvasElement.prototype.getContext;window.__canvasFailures=0;HTMLCanvasElement.prototype.getContext=()=>{window.__canvasFailures++;return null;};});
+   await click('Next page');await page.waitForFunction(()=>document.querySelector('.pagination span').textContent==='Page 2'&&window.__canvasFailures>0);await page.waitForNetworkIdle({idleTime:250,timeout:30000});
    await page.evaluate(()=>{HTMLCanvasElement.prototype.getContext=window.__canvasGet;});
    await click('Previous page');await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===24,{timeout:120000});
   }
