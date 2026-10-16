@@ -1,6 +1,7 @@
 // MIT public synthetic integration test. Test responses expand one lawful fixture
 // into two bounded sidebar pages; the actual Rust UI performs every navigation.
 const assert=require('node:assert/strict');
+const currentRequest=require('./sidebar-request.cjs');
 module.exports=async({browser,origin})=>{
   const response=await fetch(origin+'/libraries?limit=24&offset=0',{signal:AbortSignal.timeout(10000)});
   assert(response.ok);const baseline=await response.json();
@@ -60,9 +61,12 @@ module.exports=async({browser,origin})=>{
     // Fence each real select before clicking: shared fixture pixels need not change URL.
     const selectComplete=async(interact,index,mappedPath=null)=>{
       const expected=captureItems[index];assert(expected,'bounded mapped capture required');
-      // Status only: the app may cancel a response stream once it has what it needs.
-      const detailResponse=page.waitForResponse(response=>new URL(response.url()).pathname===`/captures/${expected.id}`);
-      const mappedResponse=mappedPath?page.waitForResponse(response=>new URL(response.url()).pathname===mappedPath):null;
+      // Capture both the request start and its successful finish. An old
+      // request with the same fixture id cannot satisfy this fence; cancelled
+      // candidates never supply a response. Thumbnail and viewer requests share
+      // the endpoint, so the DOM assertions below prove the actual selection.
+      const detailResponse=currentRequest(page,origin+`/captures/${expected.id}`);
+      const mappedResponse=mappedPath?currentRequest(page,origin+mappedPath+'?limit=24&offset=0&sort=order&search='):null;
       await page.evaluate(()=>{
         const original=document.querySelector('.stage img');
         const state={changed:false,observer:null};
@@ -77,10 +81,10 @@ module.exports=async({browser,origin})=>{
         await interact();
         // Never read bodies back through CDP: the app may cancel a superseded or
         // completed response stream, after which Chrome discards its data. The
-        // mapped page body is the one this test served; the detail is fetched
-        // independently from the service for the exact finished request's id.
-        if(mappedResponse){const response=await mappedResponse;assert(response.ok());}
-        const response=await detailResponse;assert(response.ok());const independent=await fetch(origin+`/captures/${expected.id}`,{signal:AbortSignal.timeout(10000)});assert(independent.ok);const bytes=Buffer.from(await independent.arrayBuffer());assert(bytes.length<=256*1024);const detail=JSON.parse(bytes);assert.equal(detail.capture.id,expected.id);
+        // mapped body is the one this test served; independently fetch the
+        // exact completed detail URL for expected fixture geometry.
+        if(mappedResponse)await mappedResponse.promise;
+        const response=await detailResponse.promise;const independent=await fetch(response.url(),{signal:AbortSignal.timeout(10000)});assert(independent.ok);const bytes=Buffer.from(await independent.arrayBuffer());assert(bytes.length<=256*1024);const detail=JSON.parse(bytes);assert.equal(detail.capture.id,expected.id);
         focus=detail.originals.some(file=>file.role==='jpeg_focus_stack');
         geometry=focus?{width:360,height:240}:{width:640,height:360};
         await page.waitForFunction((expected,focus,geometry)=>{
@@ -96,6 +100,7 @@ module.exports=async({browser,origin})=>{
         console.error(JSON.stringify(diagnostic));
         throw error;
       }finally{
+        detailResponse.cancel();mappedResponse?.cancel();
         await page.evaluate(()=>{window.__sidebarSelectionFence?.observer.disconnect();delete window.__sidebarSelectionFence;});
       }
     };
@@ -192,11 +197,9 @@ module.exports=async({browser,origin})=>{
     for(const kind of ['library','album']){
       phase='failed-'+kind;failKind=kind==='library'?'libraries':'albums';
       // Track this response explicitly; previous failure status is insufficient.
-      const failedResponse=page.waitForResponse(response=>{
-        const url=new URL(response.url());
-        return response.status()===503&&Number(url.searchParams.get('offset'))===24&&(kind==='library'?url.pathname==='/libraries':/^\/libraries\/[^/]+\/albums$/.test(url.pathname));
-      });
-      await click(`#${kind}-next`);await failedResponse;
+      const failedPath=kind==='library'?'/libraries':'/libraries/public-sidebar-library-2/albums';
+      const failedResponse=currentRequest(page,origin+failedPath+'?limit=24&offset=24',503);
+      try{await click(`#${kind}-next`);await failedResponse.promise;}finally{failedResponse.cancel();}
       await page.waitForFunction(kind=>document.querySelector(`#${kind}-prev`)?.disabled===true&&document.querySelector('.status')?.textContent==='The service could not complete this request. Retry or inspect import status',{},kind);
       await waitPage(kind,1,24);
       const preserved=await selected();assert.equal(preserved.capture,completedLibrary.capture);assert.equal(preserved.stage,completedLibrary.stage);
