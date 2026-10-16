@@ -408,7 +408,10 @@ async fn cleanup_result(catalog: &Catalog, store: &Store, id: &str) -> Result<()
         for entry in fs::read_dir(&directory).map_err(storage)? {
             let name = entry.map_err(storage)?.file_name();
             let name = name.to_string_lossy();
-            if name == format!("{id}.restored") || name.starts_with(&pending) {
+            if name == format!("{id}.restored")
+                || name.starts_with(&pending)
+                || name.starts_with(&format!("{id}.deleting-"))
+            {
                 return Err(Failure::invalid());
             }
         }
@@ -490,11 +493,18 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
             ),
             None => (None, None),
         };
-        if error.as_deref() == Some("unverified-result") {
-            // Retained until an explicit DELETE; never cleaned automatically.
-            continue;
-        }
-        if state.as_deref() == Some("succeeded") {
+        let cleanup_started = matches!(
+            journal.phase(),
+            crate::restore_journal::Phase::CleanupPending
+                | crate::restore_journal::Phase::CleanupComplete
+        );
+        let recorded_delete = matches!(state.as_deref(), Some("cancelled" | "cancelling"))
+            || (state.as_deref() == Some("failed") && error.as_deref() == Some("cleanup-blocked"));
+        let retry_verification = error.as_deref() == Some("unverified-result") && !recorded_delete;
+        if !cleanup_started
+            && !recorded_delete
+            && (state.as_deref() == Some("succeeded") || retry_verification)
+        {
             // A previously ready job is never cleaned automatically. Its journal
             // must show publication and its result must verify; otherwise it
             // becomes unready with everything it owns retained until DELETE.
@@ -518,18 +528,24 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
                 store_available(catalog, store).await?;
                 // Never offer an unverifiable result as ready, and never delete
                 // a previously ready result without an explicit DELETE.
-                mark_unverified(catalog, id).await?;
+                mark_unverified(catalog, id, journal.reserved()).await?;
                 continue;
+            }
+            if retry_verification {
+                // Only recover the retained unverified state. Never overwrite
+                // a recorded DELETE, including one racing a future caller.
+                let kept = i64::try_from(journal.reserved()).map_err(storage)?;
+                sqlx::query("UPDATE export_jobs SET state='succeeded',error=NULL,retained=CASE WHEN retained+reserved=0 THEN $1 ELSE retained+reserved END,reserved=0 WHERE id=$2 AND state='failed' AND error='unverified-result'")
+                    .bind(kept).bind(id).execute(catalog.pool()).await?;
             }
             // A failed journal fsync here is retried at the next startup; the
             // database success and verified published files are durable.
             let _ = journal.transition(&directory, crate::restore_journal::Phase::JobSucceeded);
-        } else if (journal.phase() == crate::restore_journal::Phase::JobSucceeded
-            && !(state.as_deref() == Some("cancelled")
-                || (state.as_deref() == Some("failed")
-                    && error.as_deref() == Some("cleanup-blocked"))))
-            || (journal.phase() == crate::restore_journal::Phase::FilesPublished
-                && !matches!(state.as_deref(), Some("cancelled" | "failed")))
+        } else if !cleanup_started
+            && !recorded_delete
+            && (journal.phase() == crate::restore_journal::Phase::JobSucceeded
+                || (journal.phase() == crate::restore_journal::Phase::FilesPublished
+                    && !matches!(state.as_deref(), Some("failed"))))
         {
             // JobSucceeded is durable proof the job was once ready (the worker
             // read back its committed success). Without a recorded DELETE
@@ -543,22 +559,12 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
             if state.is_none() {
                 recreate_unverified(catalog, id, journal.reserved()).await?;
             } else {
-                mark_unverified(catalog, id).await?;
-                // A regressed row may have lost its accounting; the retained
-                // files still occupy staging, so count the journaled amount.
-                let reserved = i64::try_from(journal.reserved()).map_err(storage)?;
-                sqlx::query(
-                    "UPDATE export_jobs SET retained=$1 WHERE id=$2 AND retained+reserved=0",
-                )
-                .bind(reserved)
-                .bind(id)
-                .execute(catalog.pool())
-                .await?;
+                mark_unverified(catalog, id, journal.reserved()).await?;
             }
         } else {
             // Keep an already recorded cancellation/failure reason; only a job
             // that never durably finished is marked interrupted.
-            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state='cancelled' THEN state ELSE 'failed' END,error=CASE WHEN state IN ('cancelled','failed') THEN error ELSE 'interrupted' END WHERE id=$1")
+            sqlx::query("UPDATE export_jobs SET state=CASE WHEN state IN ('cancelled','cancelling') THEN 'cancelled' ELSE 'failed' END,error=CASE WHEN state IN ('cancelled','failed') THEN error WHEN state='cancelling' THEN NULL ELSE 'interrupted' END WHERE id=$1")
                 .bind(id).execute(catalog.pool()).await?;
             if cleanup_result(catalog, store, id).await.is_err() {
                 store_available(catalog, store).await?;
@@ -575,14 +581,14 @@ async fn recover_restores(catalog: &Catalog, store: &Store) -> Result<()> {
             .await?;
     for id in ready {
         if OpaqueId::try_from(id.clone()).is_err() {
-            mark_unverified(catalog, &id).await?;
+            mark_unverified(catalog, &id, 0).await?;
             continue;
         }
         if crate::restore_journal::Journal::load(&directory, &id)
             .map_err(storage)?
             .is_none()
         {
-            mark_unverified(catalog, &id).await?;
+            mark_unverified(catalog, &id, 0).await?;
         }
     }
     Ok(())
@@ -614,16 +620,16 @@ async fn block(catalog: &Catalog, id: &str) -> Result<()> {
     persisted?;
     Ok(())
 }
-/// A ready result that no longer verifies becomes visibly non-ready with all of
-/// it retained. Unlike a blocked cleanup it is not retried automatically: the
-/// user's restored copy is removed only by an explicit DELETE.
-async fn mark_unverified(catalog: &Catalog, id: &str) -> Result<()> {
+/// Persist non-readiness and restore missing accounting in one atomic write.
+/// Every startup retries verification; only explicit DELETE removes the copy.
+async fn mark_unverified(catalog: &Catalog, id: &str, reserved: u64) -> Result<()> {
+    let reserved = i64::try_from(reserved).map_err(storage)?;
     eprintln!(
-        "Lytronaut job {id}: its published restore result failed verification and is no longer ready; it is retained until DELETE"
+        "Lytronaut job {id}: restore readiness could not be established; its result is retained, startup retries verification, and DELETE requests owned cleanup"
     );
     let persisted =
-        sqlx::query("UPDATE export_jobs SET state='failed',error='unverified-result' WHERE id=$1")
-            .bind(id)
+        sqlx::query("UPDATE export_jobs SET state='failed',error='unverified-result',retained=CASE WHEN retained+reserved=0 THEN $1 ELSE retained END WHERE id=$2")
+            .bind(reserved).bind(id)
             .execute(catalog.pool())
             .await;
     if persisted.is_err() {
@@ -636,7 +642,7 @@ async fn mark_unverified(catalog: &Catalog, id: &str) -> Result<()> {
 /// that went back in time, as unready with its full reservation retained.
 async fn recreate_unverified(catalog: &Catalog, id: &str, reserved: u64) -> Result<()> {
     eprintln!(
-        "Lytronaut job {id}: a previously ready restore has no database record; it is retained as unverified until DELETE"
+        "Lytronaut job {id}: a journaled restore has no database record; it is retained as unverified, and startup will retry verification"
     );
     let reserved = i64::try_from(reserved).map_err(storage)?;
     let mut tx = catalog.begin_write().await?;
@@ -794,6 +800,7 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
     let flag = cancelled.clone();
     let progress = bytes.clone();
     let monitor = tokio::spawn(async move {
+        let mut read_failed = false;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             #[cfg(test)]
@@ -806,6 +813,9 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
             let observed = report(&poll_a, &poll_id).await;
             match observed {
                 Ok(r) => {
+                    read_failed = false;
+                    #[cfg(test)]
+                    test_seam::monitor_read_succeeded(&poll_id, flag.load(Ordering::Acquire));
                     if matches!(
                         r.state,
                         JobState::Cancelling | JobState::Cancelled | JobState::Failed
@@ -813,7 +823,12 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                         flag.store(true, Ordering::Release)
                     }
                 }
-                Err(_) => flag.store(true, Ordering::Release),
+                Err(_) => {
+                    if read_failed {
+                        flag.store(true, Ordering::Release);
+                    }
+                    read_failed = true;
+                }
             }
             let n = progress.load(Ordering::Relaxed) as i64;
             let _=sqlx::query("UPDATE export_jobs SET completed=$1,total=CASE WHEN total>$2 THEN total ELSE $2 END WHERE id=$3 AND state IN ('queued','running','cancelling')").bind(n).bind(n).bind(&poll_id).execute(poll_a.0.catalog.pool()).await;
@@ -1653,6 +1668,9 @@ pub(super) mod test_seam {
         AfterSuccess,
         Failing,
         Fired,
+        SingleFailure,
+        SingleFired,
+        Recovered(bool),
     }
     static ARMED: Mutex<Option<HashMap<String, Arm>>> = Mutex::new(None);
     fn with<T>(f: impl FnOnce(&mut HashMap<String, Arm>) -> T) -> T {
@@ -1661,11 +1679,31 @@ pub(super) mod test_seam {
     pub(crate) fn arm_monitor_read_failure_after_success(id: &str) {
         with(|armed| armed.insert(id.to_owned(), Arm::AfterSuccess));
     }
+    pub(crate) fn arm_single_failure(id: &str) {
+        with(|armed| armed.insert(id.to_owned(), Arm::SingleFailure));
+    }
+    pub(crate) fn recovered(id: &str) -> Option<bool> {
+        with(|armed| match armed.get(id) {
+            Some(Arm::Recovered(flag)) => Some(*flag),
+            _ => None,
+        })
+    }
+    pub(super) fn monitor_read_succeeded(id: &str, cancelled: bool) {
+        with(|armed| {
+            if armed.get(id) == Some(&Arm::SingleFired) {
+                armed.insert(id.to_owned(), Arm::Recovered(cancelled));
+            }
+        });
+    }
     pub(crate) fn fired(id: &str) -> bool {
         with(|armed| armed.get(id) == Some(&Arm::Fired))
     }
     pub(super) fn monitor_read_fails(id: &str) -> bool {
         with(|armed| match armed.get(id) {
+            Some(Arm::SingleFailure) => {
+                armed.insert(id.to_owned(), Arm::SingleFired);
+                true
+            }
             Some(Arm::Failing) => {
                 armed.insert(id.to_owned(), Arm::Fired);
                 true

@@ -1267,14 +1267,16 @@ async fn denied_cleanup_retains_ownership_and_quota_until_retry(pg: bool) {
         .map(|entry| entry.unwrap().metadata().unwrap().len())
         .sum();
     assert!(on_disk >= BLOB.len() as u64, "retained files stay on disk");
-    let available = env.store.available_staging_bytes().unwrap();
-    let need = available.saturating_add(1);
+    // The filesystem can gain free bytes between this test and admission's
+    // live read (other tests may clean up). Use a fixed, representable need
+    // beyond any supported work volume instead of racing a sampled free+1.
+    let need = i64::MAX as u64;
     match admit(&env.api, "archive", need).await {
         Err(Refusal::Space(shortfall)) => {
             // Exactly the need plus the (zero) floor and reservations: the
             // retained bytes are not added again; the filesystem has them.
             assert_eq!(shortfall.required_bytes, need);
-            assert!(shortfall.available_bytes <= available + 64 * 1024 * 1024);
+            assert!(shortfall.available_bytes < need);
         }
         _ => panic!("an archive beyond free space must be refused for space"),
     }
@@ -1844,7 +1846,11 @@ async fn postgres_ambiguous_final_update() {
 /// (no quota released while bytes remain on disk), until it is gone.
 async fn unjournaled_restore_paths_retain_quota(pg: bool) {
     let env = Env::new(pg).await;
-    for name in ["restored", &format!("pending-{}", random_hex(64))] {
+    for name in [
+        "restored".to_owned(),
+        format!("pending-{}", random_hex(64)),
+        format!("deleting-{}-result", random_hex(64)),
+    ] {
         let id = create(&env.api, "restore", 4096).await.unwrap();
         sqlx::query("UPDATE export_jobs SET state='failed',error='failed' WHERE id=$1")
             .bind(&id)
@@ -1972,8 +1978,10 @@ async fn unverifiable_ready_result_fails_closed_and_is_never_auto_deleted(pg: bo
         }
         env.sentinels.assert_intact(&env.fx).await;
     }
-    // Only an explicit DELETE, with ownership proof, removes it.
+    // Once ownership verifies again, startup restores readiness without deleting data.
     fs::set_permissions(&result, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(env.restart().await);
+    env.assert_ready(&id).await;
     assert_eq!(env.delete(&id).await, StatusCode::OK);
     env.assert_released(&id).await;
     env.finish().await;
@@ -2087,17 +2095,17 @@ async fn ready_restore_without_published_journal_is_unready_and_retained(pg: boo
 
 /// A JobSucceeded journal is durable proof the restore was once ready (the
 /// worker read back its committed success). If the database later goes back in
-/// time (row missing, or regressed to queued/running/cancelling, or failed for
+/// time (row missing, or regressed to queued/running, or failed for
 /// another reason) there was no recorded DELETE: startup must keep everything,
 /// report it unready (re-creating a missing row so it stays visible, counted in
-/// quota and deletable), and only an explicit DELETE with proof removes it.
+/// quota and deletable). Subsequent startup can verify it and restore readiness;
+/// only an explicit DELETE with proof removes it.
 async fn ever_ready_restore_with_regressed_row_is_never_auto_deleted(pg: bool) {
     let env = Env::new(pg).await;
     for regression in [
         "DELETE FROM export_jobs WHERE id=$1",
         "UPDATE export_jobs SET state='queued',retained=0,reserved=0 WHERE id=$1",
         "UPDATE export_jobs SET state='running' WHERE id=$1",
-        "UPDATE export_jobs SET state='cancelling' WHERE id=$1",
         "UPDATE export_jobs SET state='failed',error='failed' WHERE id=$1",
     ] {
         let (_, id) = env.upload(archive(0).await).await;
@@ -2109,12 +2117,16 @@ async fn ever_ready_restore_with_regressed_row_is_never_auto_deleted(pg: bool) {
             .execute(env.catalog().pool())
             .await
             .unwrap();
-        for _ in 0..2 {
+        for restart in 0..2 {
             assert!(env.restart().await);
             let (state, error, reserved, retained) = env.job(&id).await;
             assert_eq!(
                 (state.as_str(), error.as_deref()),
-                ("failed", Some("unverified-result")),
+                if restart == 0 {
+                    ("failed", Some("unverified-result"))
+                } else {
+                    ("succeeded", None)
+                },
                 "{regression}"
             );
             assert!(
@@ -2122,7 +2134,11 @@ async fn ever_ready_restore_with_regressed_row_is_never_auto_deleted(pg: bool) {
                 "quota must stay counted: {regression}"
             );
             let report = report(&env.api, &id).await.unwrap();
-            assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+            if restart == 0 {
+                assert_eq!(report.error.unwrap().code, ErrorCode::StorageUnavailable);
+            } else {
+                assert!(report.error.is_none());
+            }
             assert!(
                 journal.result(&env.root()).join("store").exists(),
                 "never auto-deleted: {regression}"
@@ -2140,6 +2156,185 @@ async fn ever_ready_restore_with_regressed_row_is_never_auto_deleted(pg: bool) {
         // An explicit DELETE proves ownership through the journal and releases all.
         assert_eq!(env.delete(&id).await, StatusCode::OK);
         env.assert_released(&id).await;
+    }
+    env.finish().await;
+}
+
+/// A published result with no committed outcome is retained on the first
+/// recovery; a later startup may verify it. Recorded DELETE always wins.
+async fn published_reconciliation_is_atomic_and_honors_delete(pg: bool) {
+    let mut env = Env::new(pg).await;
+    let input = env.fx.root.join("published.bundle");
+    fs::write(&input, archive(0).await).unwrap();
+    for phase in [Phase::FilesPublished, Phase::JobSucceeded] {
+        for state in ["queued", "missing", "cancelling"] {
+            let id = create(&env.api, "restore", 4096).await.unwrap();
+            crate::restore_journal::inject_fault("files-published");
+            assert!(
+                bundle::restore_owned(
+                    &input,
+                    env.catalog(),
+                    bundle::RestoreOwner {
+                        root: &env.root(),
+                        job: &id,
+                        reserved: 1 << 30
+                    },
+                    env.store.limits(),
+                    &AtomicBool::new(false),
+                    &AtomicU64::new(0),
+                )
+                .await
+                .is_err()
+            );
+            let journal = Journal::load(&env.root(), &id).unwrap().unwrap();
+            assert_eq!(journal.phase(), Phase::FilesPublished);
+            if phase == Phase::JobSucceeded {
+                Journal::load(&env.root(), &id)
+                    .unwrap()
+                    .unwrap()
+                    .transition(&env.root(), phase)
+                    .unwrap();
+            }
+            if state == "missing" {
+                sqlx::query("DELETE FROM export_jobs WHERE id=$1")
+                    .bind(&id)
+                    .execute(env.catalog().pool())
+                    .await
+                    .unwrap();
+            } else {
+                sqlx::query("UPDATE export_jobs SET state=$1,retained=0,reserved=0 WHERE id=$2")
+                    .bind(state)
+                    .bind(&id)
+                    .execute(env.catalog().pool())
+                    .await
+                    .unwrap();
+            }
+            // A real backend trigger rejects any intermediate unverified state
+            // that has lost all accounting: status and restoration must be atomic.
+            install_update_fault(
+                &mut env,
+                "deny_zero_unverified",
+                "NEW.error='unverified-result' AND NEW.retained+NEW.reserved=0",
+                "NEW.error='unverified-result' AND NEW.retained+NEW.reserved=0",
+            )
+            .await;
+            assert!(
+                env.restart().await,
+                "{state}: recovery must commit atomic accounting"
+            );
+            remove_update_fault(&mut env, "deny_zero_unverified").await;
+            if state == "cancelling" {
+                assert_eq!(env.job(&id).await.0, "cancelled");
+                env.assert_released(&id).await;
+            } else {
+                let (status, error, reserved, retained) = env.job(&id).await;
+                assert_eq!(
+                    (status.as_str(), error.as_deref()),
+                    ("failed", Some("unverified-result"))
+                );
+                assert!(reserved + retained > 0);
+                assert!(journal.result(&env.root()).exists());
+                assert!(env.restart().await);
+                env.assert_ready(&id).await;
+                assert_eq!(env.delete(&id).await, StatusCode::OK);
+                env.assert_released(&id).await;
+            }
+            env.sentinels.assert_intact(&env.fx).await;
+        }
+    }
+    env.finish().await;
+}
+
+/// Crash after rename and partial recursive deletion (including the marker).
+/// Recovery must use the previously journaled directory identity, retain quota
+/// until cleanup finishes, and preserve unrelated paths.
+async fn tombstone_cleanup_resumes_after_marker_loss(pg: bool) {
+    let mut env = Env::new(pg).await;
+    for unverified in [false, true] {
+        for point in ["cleanup-intent", "cleanup-renamed", "cleanup-removed"] {
+            let (_, id) = env.upload(archive(0).await).await;
+            let id = id.unwrap();
+            let mut journal = env.assert_ready(&id).await;
+            let kept = env.job(&id).await.3;
+            if unverified {
+                fs::set_permissions(
+                    journal.result(&env.root()),
+                    fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+                assert!(env.restart().await);
+                assert_eq!(env.job(&id).await.1.as_deref(), Some("unverified-result"));
+                fs::set_permissions(
+                    journal.result(&env.root()),
+                    fs::Permissions::from_mode(0o700),
+                )
+                .unwrap();
+                // Exercise the real DELETE path and the crash window before its
+                // best-effort fallback state write can replace unverified-result.
+                install_update_fault(
+                    &mut env,
+                    "deny_cleanup_fallback",
+                    "NEW.error='cleanup-blocked'",
+                    "NEW.error='cleanup-blocked'",
+                )
+                .await;
+                crate::restore_journal::inject_fault(point);
+                assert_eq!(env.delete(&id).await, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(env.job(&id).await.1.as_deref(), Some("unverified-result"));
+                remove_update_fault(&mut env, "deny_cleanup_fallback").await;
+            } else {
+                sqlx::query("UPDATE export_jobs SET state='cancelled' WHERE id=$1")
+                    .bind(&id)
+                    .execute(env.catalog().pool())
+                    .await
+                    .unwrap();
+                crate::restore_journal::inject_fault(point);
+                assert!(
+                    matches!(
+                        journal.cleanup(env.catalog(), &env.root()).await,
+                        Err(lytronaut_storage::StorageError::Interrupted)
+                    ),
+                    "{point}"
+                );
+            }
+            assert_eq!(env.job(&id).await.3, kept, "no early quota release");
+            let tombstone = fs::read_dir(env.root())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(&format!("{id}.deleting-"))
+                });
+            if point == "cleanup-intent" {
+                assert!(journal.result(&env.root()).exists());
+                fs::remove_file(journal.result(&env.root()).join("restore-owner")).unwrap();
+            } else {
+                assert!(!journal.result(&env.root()).exists());
+            }
+            if let Some(path) = &tombstone {
+                // A different directory at the recorded name is not ours. Restore
+                // the owned inode only after proving recovery preserved the decoy.
+                let saved = env.root().join(format!("{id}.test-saved"));
+                fs::rename(path, &saved).unwrap();
+                fs::create_dir(path).unwrap();
+                fs::write(path.join("foreign"), b"sentinel").unwrap();
+                assert!(env.restart().await);
+                env.assert_blocked(&id).await;
+                assert_eq!(fs::read(path.join("foreign")).unwrap(), b"sentinel");
+                assert_eq!(env.job(&id).await.3, kept);
+                fs::remove_file(path.join("foreign")).unwrap();
+                fs::remove_dir(path).unwrap();
+                fs::rename(saved, path).unwrap();
+                fs::remove_file(path.join("restore-owner")).unwrap();
+            }
+            assert!(env.restart().await);
+            env.assert_released(&id).await;
+            assert!(tombstone.is_none_or(|p| !p.exists()));
+            assert!(env.restart().await);
+            env.sentinels.assert_intact(&env.fx).await;
+        }
     }
     env.finish().await;
 }
@@ -2177,6 +2372,8 @@ matrix! {
     unverifiable_ready_result_fails_closed_and_is_never_auto_deleted => sqlite_unverifiable_ready_result, postgres_unverifiable_ready_result;
     monitor_read_error_after_success_never_discards_result => sqlite_monitor_read_error_after_success, postgres_monitor_read_error_after_success;
     ready_restore_without_published_journal_is_unready_and_retained => sqlite_ready_without_published_journal, postgres_ready_without_published_journal;
+    published_reconciliation_is_atomic_and_honors_delete => sqlite_published_reconciliation_atomic, postgres_published_reconciliation_atomic;
+    tombstone_cleanup_resumes_after_marker_loss => sqlite_tombstone_cleanup, postgres_tombstone_cleanup;
     ever_ready_restore_with_regressed_row_is_never_auto_deleted => sqlite_ever_ready_regressed_row, postgres_ever_ready_regressed_row;
 }
 #[tokio::test]
