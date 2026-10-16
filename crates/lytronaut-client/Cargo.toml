@@ -22,7 +22,7 @@ lytronaut-contracts.workspace = true
 lytronaut-format.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "=0.10.9"
+sha2 = "=0.11.0"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 leptos.workspace = true
 wasm-bindgen.workspace = true
