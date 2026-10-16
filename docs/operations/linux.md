@@ -1,4 +1,4 @@
-# Private Linux operation
+# Self-hosted Linux operation
 
 Build locally for your server architecture; no registry publication is configured:
 
@@ -97,17 +97,22 @@ budgets do not bound the portable backup bundle: a library of any size can be
 backed up and restored when the work location has the free space it needs (see
 [Backup bundle size and free space](#backup-bundle-size-and-free-space)).
 Resource exhaustion rejects requests while preserving already stored originals.
-No GPU device or hardware acceleration runtime mount is required.
+No GPU device or hardware acceleration runtime mount is required. Optional
+browser GPU rendering is verified separately from the 95% line-coverage gate (see
+[coverage](coverage.md#gpu-specific-exception)).
 
 The native `--healthcheck` probes `/healthz` with the configured Host using a
 bounded local TCP request. Readiness requires a live application database pool;
 startup must finish storage recovery, catalog/API migration and loading generated
 client assets before the listener opens. Recovery rehashes sealed originals; it
 does not skip integrity verification to meet a readiness deadline. Docker checks
-every 10 seconds, with a 30-second initial grace period. Increase
-`healthcheck.start_period` in your Compose override if measured recovery of your
-existing library takes longer; synthetic smoke timings do not establish a bound
-for a large library.
+every 10 seconds, with a 30-second initial grace period. Measured with release
+builds on a 109-capture library (728 originals, 2.0 GB) on an Apple M1 Pro
+under heavy unrelated load, a restart reached healthy in 7.4 seconds, so the
+default leaves about four times headroom for a library of that size. Recovery
+time grows with the bytes of sealed originals and the speed of their disk: for
+a much larger library or slower storage, time one restart and set
+`healthcheck.start_period` in your Compose override to at least twice that.
 `LYTRONAUT_LISTEN` is a numeric IPv4/IPv6 socket address; wildcard probes use the
 matching loopback family. SIGTERM stops admission, cancels intake and background
 exports/restores, then drains accepted HTTP work and closes the database pool. Drain and
@@ -372,6 +377,26 @@ PostgreSQL location and restoring a portable bundle or a
 keep the old location until the new deployment is verified. Application upgrades
 migrate the catalog schema additively on startup on either backend.
 
+### Application upgrades and rollback
+
+1. Keep the running image under a second tag, for example
+   `docker tag lytronaut:local lytronaut:previous`.
+2. Stop the service and take an operational backup: with SQLite, snapshot the
+   three locations together; with PostgreSQL, the `pg_dump` and file snapshots
+   above. A portable bundle made beforehand is an additional, backend-independent
+   copy.
+3. Build the new revision as `lytronaut:local` and run
+   `docker compose ... up -d --no-build`. Startup migrates the catalog, rehashes
+   sealed originals and only then reports healthy (see the start period above).
+   Browse the library and check a capture's originals before relying on it.
+
+To roll back, stop the service, put back the step-2 snapshots (or `pg_restore`
+the dump onto an empty schema as described above), retag `lytronaut:previous` as
+`lytronaut:local` and start it. Do not run an older image against a catalog that a
+newer release has already opened: migrations are forward-only and that
+combination is not tested. Restoring the pre-upgrade snapshot is the supported
+rollback.
+
 ### Backup bundle size and free space
 
 A portable bundle carries every unique original plus a logical catalog of at most
@@ -385,7 +410,7 @@ location does. For `N` bytes of unique originals:
 
 - Creating a bundle needs about `N` + 576 MiB free, plus 80 bytes per unique
   original (the bundle itself plus the catalog and inventory spools beside it),
-  in addition to the reservations of other running exports and
+  in addition to outstanding reservations of other export/restore/import jobs and
   `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose).
 - Restoring a bundle of `B` bytes needs about 2 x `B` + 288 MiB free (the upload
   and the extracted copy, plus room for a SQLite catalog), with the same additions.
@@ -418,6 +443,8 @@ larger catalog fails when the backup job runs, with a non-retryable
 stopped-service volume snapshots (SQLite) or `pg_dump` plus file snapshots
 (PostgreSQL) for such a library. Splitting the catalog into chunks is a possible
 later change. A ready bundle or restore keeps its space until you `DELETE` it.
+Retained completed exports also occupy actual disk until deleted; free-space
+checks observe that usage even after the active reservation is released.
 Interrupted transfers are not resumed; start the download or upload again.
 
 ### Limitations

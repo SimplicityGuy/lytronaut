@@ -1,0 +1,2 @@
+minicov 0.3.9 bundles LLVM compiler-rt profile runtime sources (SPDX: Apache-2.0 WITH LLVM-exception)
+https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-23.1.1/compiler-rt/LICENSE.TXT

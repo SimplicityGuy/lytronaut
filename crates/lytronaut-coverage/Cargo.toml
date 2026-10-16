@@ -1,0 +1,25 @@
+[package]
+name = "lytronaut-coverage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Coverage tooling only: exports LLVM counters of an instrumented Rust/WASM browser build"
+
+# Deliberately NOT `[lints] workspace = true`: serialising the LLVM counters needs
+# one documented unsafe call into minicov. This crate is test tooling, not
+# application code. Only lytronaut-client's off-by-default `coverage` feature
+# links it (see `just coverage-wasm`); production and test-harness artifacts never do.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Bundles the LLVM 23.1 profile runtime (raw profile v11) matching the pinned
+# coverage nightly; see docs/operations/coverage.md.
+minicov = "=0.3.9"
+wasm-bindgen.workspace = true
+js-sys = "=0.3.106"

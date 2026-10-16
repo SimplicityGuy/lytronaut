@@ -1,0 +1,13 @@
+# Reviewed baseline: WASM(client) lines each browser script covers on its own,
+# counted like the gate (crates/lytronaut-client/src, minus test/harness
+# exclusions and the GPU exemption). Recorded from CI runs 38530962243 and
+# 38533389706 of one commit. `xtask coverage` fails if a script writes no
+# profile or drops more than max(3 lines, 0.25%) below its count; growth is
+# reported. Update it in the same change that changes the browser suites.
+# build      script                         lines
+client       browser-test                   2587
+client       live-photo-test                802
+client       video-test                     692
+harness      browser-test                   2076
+harness      live-photo-jpeg-stress-test    1916
+harness      video-test                     691

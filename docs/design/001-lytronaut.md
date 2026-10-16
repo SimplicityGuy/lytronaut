@@ -4,7 +4,7 @@ Status: **Approved implementation epic lytronaut-re8; kickoff approved; delivery
 Decision bead: **lytronaut-zxk — Scope verdict and next implementation plan**.
 Evidence date: 2026-10-11. Research epic: **lytronaut-ck2 — Lytronaut: prove
 library compatibility and Rust rendering architecture**.
-Name: **Lytronaut**. Repository: `SimplicityGuy/lytronaut` (private).
+Name: **Lytronaut**. Repository: `SimplicityGuy/lytronaut` (public; private samples remain local).
 Tagline: **an explorer for your light-field library**.
 
 ## Decision and scope
@@ -30,6 +30,13 @@ downloadable even if a feature is unsupported. Preserve unknown formats without
 running them through a guessed adapter. No cloud service or external telemetry
 is required. Camera USB control, native mobile apps, cloud sync, new depth
 estimation, metric stereo reconstruction and lost-data recovery are outside this MVP.
+
+This document preserves the research decisions and original roadmap. Current
+implementation support and release evidence are recorded in the
+[support matrix](../operations/supported-variants.md) and
+[final validation report](../validation/lytronaut-cjq-final.md). The access model
+was superseded by [ADR 002](002-deployment-access.md): access is protected at the
+HTTPS proxy; the application has no login or accounts.
 
 ## Reviewed evidence
 
@@ -69,7 +76,7 @@ the supported baseline when their runtime/release gate fails.
 | Capability | Verdict | Boundary |
 |---|---|---|
 | Schema 23 import, albums/order/events/metadata and original preservation | GO | Stage immutable offline snapshot; preserve unknown fields/files/status codes; synthetic nonzero ratings/flags/captions require tests |
-| Static JPEG browsing and original download | GO | All 109 thumbnails decoded natively; authenticate every asset/download; bound decoded dimensions |
+| Static JPEG browsing and original download | GO | All 109 thumbnails decoded natively; protect every asset/download at the deployment boundary; bound decoded dimensions |
 | F01 container/reference validation and lossless 12-bit extraction | GO | All 109 verified; sensor samples are not photographs; unknown variants preserved-only |
 | LFE 11 JPEG-stack focus selection | GO | 58 stacks / 420 planes; explicit discrete nearest-plane controls using validated lambdas, no continuous optical refocus claim |
 | Standard derivative EXIF orientation | GO with transform tests | Sidecar codes 1/8; preserve catalog code 0 independently and avoid double-applying baked transforms |
@@ -102,7 +109,7 @@ or native codecs. Preserve a deterministic CPU/image baseline; GPU is optional.
 | Layer | Selection and validation status |
 |---|---|
 | Toolchain | Existing mise Rust 1.99.0/just 1.58.0; preserve lockfiles and update pins deliberately |
-| Service | Axum 0.8.9/Tokio; exact Axum native API compilation passed; persistent HTTP/auth behavior remains implementation work |
+| Service | Axum 0.8.9/Tokio; exact Axum native API compilation passed; persistent HTTP behavior is implemented; access protection follows ADR 002 |
 | Catalog/jobs | SQLite with SQLx; selected persistence direction, exact SQLx/Tokio versions and host/WASM separation must pass foundation compile/license audit; migrations/rollback tests required |
 | Browser DOM | Leptos 0.8.22 `csr`, no required SSR; static assets served by Axum |
 | JPEG | image 0.25.9 with jpeg feature / zune-jpeg 0.5.15; actual native decoding 529/529 images; WASM decode path still needs acceptance |
@@ -114,15 +121,16 @@ Pin the actual implementation lockfile after compilation and a complete
 transitive license audit. Version evidence and direct dependency licenses are
 linked in the spike reports; no future dependency graph is claimed audited yet.
 Retain required MIT/Apache or other permitted notices. Validate ordinary storage
-and authentication dependencies before acceptance; do not assume platform
+and deployment access dependencies before acceptance; do not assume platform
 compilation merely because their API is familiar.
 
-### Preservation, authentication and capability rules
+### Preservation, access and capability rules
 
-First-run setup is local and explicitly authenticated before upload/asset access.
-Use secure credential hashing, sessions/CSRF, bounded requests and documented
-reverse-proxy trust; historical album `public=1` is metadata, never permission to
-publish. Originals are immutable content-addressed files on an operator volume,
+Before upload/asset access, configure deployment-level protection at the HTTPS
+proxy as described in ADR 002 and the operations guide. The application has no
+credential store or sessions. Keep bounded requests and the documented
+reverse-proxy trust boundary; historical album `public=1` is metadata, never
+permission to publish. Originals are immutable content-addressed files on an operator volume,
 with separate staging, SQLite catalog and disposable derivative cache. Hash and
 verify before exposing transactional catalog records. Uploaded SQLite is data:
 read-only/query-only staged offline snapshot, no extension loading/attachments,
@@ -179,13 +187,13 @@ It links provenance to research epic `lytronaut-ck2`; implementation epic
 `lytronaut-re8` is now filed and approved for delivery.
 
 1. **Foundations and safe intake.** Separate native and WASM dependencies, validate
-   licenses and contracts, then add authentication before uploads. Implement
+   licenses and contracts, then protect deployment access before uploads. Implement
    bounded ZIP and directory upload, immutable storage, durable jobs and a
    schema-23 catalog adapter. Acceptance includes traversal, symlink, archive
    bomb, collision, quota and WAL rejection. Inject failures around writes,
    fsync, rename and catalog commits. Repeated imports must deduplicate safely;
    altered files create explicit conflicts. Source hashes stay unchanged.
-2. **Usable library browsing.** Add bounded format/JPEG parsing, authenticated
+2. **Usable library browsing.** Add bounded format/JPEG parsing, deployment-protected
    asset APIs and the graphite/cyan Rust client. Validate all 109 pictures,
    three albums and 109 ordered memberships, including events, metadata and
    unknown files. Decode every thumbnail. Test Unicode and nonzero status fields
@@ -205,7 +213,7 @@ It links provenance to research epic `lytronaut-ck2`; implementation epic
    import, restart and restore smoke tests on both architectures without GPU
    devices. Document memory limits and offline operation after installation.
 5. **Acceptance and handoff.** Run meaningful public synthetic CI and a separate
-   private corpus report. Review transitive licenses, notices, authentication,
+   private corpus report. Review transitive licenses, notices, deployment access,
    redacted diagnostics, quotas and recovery. Provide operator guides and a
    verified support matrix. CI may build containers; release and image publishing
    remain disabled pending separate authorization.

@@ -2551,7 +2551,18 @@ impl Ui {
                 self.status.set(format!("Uploading file {} of {}",index+1,files.len()));
                 let route=if kind==ImportKind::Directory {format!("/imports/{}/file",id.as_str())} else {format!("/imports/{}/zip",id.as_str())};
                 let hex=if kind==ImportKind::Directory {let path=Reflect::get(file,&"webkitRelativePath".into()).ok().and_then(|v|v.as_string()).unwrap_or_else(||file.name());Some(path_hex(&path).map_err(str::to_owned)?)}else{None};
-                self.send_file(&route,file,hex.as_deref(),base).await?;base+=file.size() as u64;
+                if let Err(error)=self.send_file(&route,file,hex.as_deref(),base).await {
+                    // This import cannot finish: a retry selects the files again and
+                    // creates a new one. Cancel it so it stops holding one of the
+                    // service's import admission slots; an import the service has
+                    // already ended is unaffected, and committed originals stay
+                    // preserved. A user cancellation has already been sent.
+                    if !*self.upload_cancelled.borrow() {
+                        let _=self.net.mutation(&format!("/imports/{}/cancel",id.as_str()),"mutation").await;
+                    }
+                    return Err(error);
+                }
+                base+=file.size() as u64;
             }
             self.net.mutation(&format!("/imports/{}/finish",id.as_str()),"mutation").await?;
             self.status_job().await

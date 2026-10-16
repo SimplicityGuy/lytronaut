@@ -21,7 +21,7 @@ const server = http.createServer((req, res) => {
   let browser;
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    browser = await pp.launch({ executablePath: process.env.LYTRONAUT_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, userDataDir: path.join(scratch, 'profile') });
+    browser = await require('./coverage.cjs').launch(pp,{ executablePath: process.env.LYTRONAUT_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, userDataDir: path.join(scratch, 'profile') });
     const page = await browser.newPage();
     // Relay only the explicit public synthetic metadata diagnostic. Never print
     // arbitrary browser console text, profile bytes, pixels or pairing IDs.

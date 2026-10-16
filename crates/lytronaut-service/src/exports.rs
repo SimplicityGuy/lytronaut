@@ -20,6 +20,16 @@ fn root(store: &Store) -> PathBuf {
 fn artifact(a: &Api, id: &str) -> PathBuf {
     crate::transient_owner::Owner::directory(&root(&a.0.store), id).join("artifact")
 }
+/// Make a completed artifact's directory entry durable by syncing the job's
+/// owned directory that contains it. `Owner::prepare` already made the job
+/// directory itself durable inside the export root.
+fn persist_artifact_entry(path: &std::path::Path) -> Result<()> {
+    let directory = path.parent().ok_or_else(Failure::invalid)?;
+    fs::File::open(directory)
+        .map_err(storage)?
+        .sync_all()
+        .map_err(storage)
+}
 fn storage(_: impl std::fmt::Debug) -> Failure {
     Failure(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -904,12 +914,7 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                         }
                         f.sync_all().map_err(storage)?;
-                        // The artifact lives in the job's owned directory; persist its entry.
-                        let path = artifact(&worker, &job);
-                        fs::File::open(path.parent().ok_or_else(Failure::invalid)?)
-                            .map_err(storage)?
-                            .sync_all()
-                            .map_err(storage)?;
+                        persist_artifact_entry(&artifact(&worker, &job))?;
                         stored.store(output.len() as u64, Ordering::Relaxed);
                         Ok(None)
                     }
@@ -966,10 +971,9 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             .map_err(storage)?;
                         f.write_all(&output).map_err(storage)?;
                         f.sync_all().map_err(storage)?;
-                        fs::File::open(root(&worker.0.store))
-                            .map_err(storage)?
-                            .sync_all()
-                            .map_err(storage)?;
+                        // Same durability as Live Photo: the PNG/JPEG entry lives in
+                        // <root>/<id>/, not in the export root (lytronaut-0f6).
+                        persist_artifact_entry(&artifact(&worker, &job))?;
                         progress.store(output.len() as u64, Ordering::Relaxed);
                         stored.store(output.len() as u64, Ordering::Relaxed);
                         Ok(Some(serde_json::to_string(&recipe).map_err(storage)?))
@@ -1241,6 +1245,22 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn artifact_entry_durability_syncs_the_owning_job_directory() {
+        let dir = std::env::temp_dir().join(random_id().unwrap());
+        crate::local::private_directory(&dir).unwrap();
+        let job = dir.join("job");
+        crate::local::private_directory(&job).unwrap();
+        let artifact = job.join("artifact");
+        fs::write(&artifact, b"complete artifact").unwrap();
+        persist_artifact_entry(&artifact).unwrap();
+        // A vanished job directory is a storage failure, never silent success.
+        fs::remove_dir_all(&job).unwrap();
+        let failure = persist_artifact_entry(&artifact).unwrap_err();
+        assert_eq!(failure.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(persist_artifact_entry(std::path::Path::new("/")).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[tokio::test]
     async fn unowned_collision_survives_restart_and_delete_with_quota_retained() {
         let dir = std::env::temp_dir().join(random_id().unwrap());
