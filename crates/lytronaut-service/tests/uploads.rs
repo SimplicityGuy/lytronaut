@@ -56,6 +56,9 @@ async fn assert_postgres_boundary(admin: &mut PgConnection, schema: &str) {
 }
 impl Server {
     async fn new() -> Self {
+        Self::with_idle_timeout(std::time::Duration::from_secs(1800)).await
+    }
+    async fn with_idle_timeout(idle: std::time::Duration) -> Self {
         let mut unique = [0; 16];
         getrandom::fill(&mut unique).unwrap();
         let root = std::env::temp_dir().join(format!(
@@ -99,6 +102,7 @@ impl Server {
             &root.join("originals"),
             &root.join("staging"),
             Limits {
+                import_idle_timeout: idle,
                 upload_bytes: 16384,
                 file_bytes: 8192,
                 encoded_bytes: 16384,
@@ -514,4 +518,99 @@ async fn upload_framing_cancel_and_retry_routes_fail_closed_over_http() {
         assert!(!r.2.contains("not-an-import"));
     }
     s.close().await;
+}
+
+/// Runs unchanged on SQLite and the strict PostgreSQL HTTP-upload parity group.
+#[tokio::test]
+async fn abandoned_imports_expire_without_poll_heartbeats_and_release_owned_capacity() {
+    use lytronaut_contracts::{ImportKind, ImportRequest, JobState, WireVersion};
+    use sqlx::Row;
+    use std::time::Duration;
+    let server = Server::with_idle_timeout(Duration::from_secs(2)).await;
+    let request = ImportRequest {
+        version: WireVersion::V1,
+        kind: ImportKind::Directory,
+        declared_bytes: 1024,
+        declared_files: 4,
+    };
+    let first = server.store.begin(&request).await.unwrap();
+    let second = server.store.begin(&request).await.unwrap();
+    assert_eq!(
+        server.store.begin(&request).await.unwrap_err(),
+        lytronaut_storage::StorageError::Busy
+    );
+    let preserved = b"synthetic sealed bytes survive an abandoned import";
+    server
+        .store
+        .append_directory_file(&second, "public-sealed.txt", &preserved[..])
+        .await
+        .unwrap();
+    let source = sqlx::query("SELECT digest,length FROM intake_sources WHERE job=$1")
+        .bind(&second)
+        .fetch_one(server.catalog.pool())
+        .await
+        .unwrap();
+    let entry = lytronaut_storage::SourceEntry {
+        logical_path: "public-sealed.txt".into(),
+        digest: source.get("digest"),
+        length: source.get::<i64, _>("length") as u64,
+    };
+    let mut spool = server.store.spool(&second).await.unwrap();
+    spool.write(b"independent abandoned upload").await.unwrap();
+    // A different job's scratch file must never be removed by prefix cleanup.
+    let untouched = server.root.join("staging/unrelated-synthetic-scratch");
+    fs::write(&untouched, b"leave untouched").unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            // Merely polling status is deliberately not upload progress.
+            if server.store.job(&first).await.unwrap().state == JobState::Cancelled
+                && server.store.job(&second).await.unwrap().state == JobState::Cancelled
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("idle import slots must expire without a service restart");
+    assert_eq!(
+        spool.write(b"too late").await.unwrap_err(),
+        lytronaut_storage::StorageError::Cancelled
+    );
+    drop(spool);
+    let row = sqlx::query(
+        "SELECT CAST(sum(reserved) AS BIGINT) AS reserved FROM intake_jobs WHERE id=$1 OR id=$2",
+    )
+    .bind(&first)
+    .bind(&second)
+    .fetch_one(server.catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.get::<i64, _>("reserved"), 0);
+    let files = fs::read_dir(server.root.join("staging"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        files.len(),
+        2,
+        "only store.lock and unrelated scratch survive"
+    );
+    assert!(files.contains(&"store.lock".into()));
+    assert_eq!(fs::read(&untouched).unwrap(), b"leave untouched");
+    let mut original = Vec::new();
+    server
+        .store
+        .open_blob(&entry)
+        .unwrap()
+        .read_to_end(&mut original)
+        .unwrap();
+    assert_eq!(
+        original, preserved,
+        "expiry never deletes or changes sealed originals"
+    );
+    // Both the slot and the reservation can be reused immediately.
+    let replacement = server.store.begin(&request).await.unwrap();
+    server.store.cancel(&replacement).await.unwrap();
+    server.close().await;
 }

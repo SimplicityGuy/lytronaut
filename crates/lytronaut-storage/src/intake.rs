@@ -16,6 +16,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
@@ -69,6 +70,8 @@ pub struct Limits {
     pub decoders: usize,
     pub reserved_bytes: u64,
     pub free_floor: u64,
+    /// No accepted byte/file progress for this duration cancels a running intake.
+    pub import_idle_timeout: Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -84,6 +87,7 @@ impl Default for Limits {
             decoders: 1,
             reserved_bytes: 84 * 1024 * 1024 * 1024,
             free_floor: 64 * 1024 * 1024,
+            import_idle_timeout: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -105,6 +109,8 @@ impl Limits {
             || self.decoders > Semaphore::MAX_PERMITS
             || self.reserved_bytes > i64::MAX as u64
             || self.free_floor > i64::MAX as u64
+            || self.import_idle_timeout.is_zero()
+            || self.import_idle_timeout > Duration::from_secs(24 * 60 * 60)
         {
             return Err(StorageError::Invalid);
         }
@@ -135,6 +141,14 @@ impl Limits {
         env!(decoders, "LYTRONAUT_IMPORT_DECODERS");
         env!(reserved_bytes, "LYTRONAUT_RESERVED_BYTES");
         env!(free_floor, "LYTRONAUT_FREE_FLOOR");
+        if let Some(value) = std::env::var_os("LYTRONAUT_IMPORT_IDLE_SECONDS") {
+            let seconds = value
+                .to_str()
+                .ok_or(StorageError::Invalid)?
+                .parse()
+                .map_err(|_| StorageError::Invalid)?;
+            l.import_idle_timeout = Duration::from_secs(seconds);
+        }
         l.validate()?;
         Ok(l)
     }
@@ -173,6 +187,7 @@ struct Inner {
     decode: Arc<Semaphore>,
     verify: Arc<Semaphore>,
     uploads: Mutex<HashSet<String>>,
+    activity: Mutex<HashMap<String, tokio::time::Instant>>,
     fault: Mutex<Option<FaultPoint>>,
     _lock: File,
     _stage_lock: File,
@@ -318,12 +333,65 @@ impl Store {
             gate: AsyncMutex::new(()),
             cancel: Mutex::new(HashMap::new()),
             uploads: Mutex::new(HashSet::new()),
+            activity: Mutex::new(HashMap::new()),
             fault: Mutex::new(None),
             _lock: lock,
             _stage_lock: stage_lock,
         }));
         s.recover().await?;
+        // The worker cannot retain the store or its exclusive filesystem locks
+        // across its timer. Restart recovery already ends all prior running jobs.
+        let owner = Arc::downgrade(&s.0);
+        let interval = s.0.limits.import_idle_timeout.min(Duration::from_secs(1));
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(inner) = owner.upgrade() else { break };
+                Store(inner).expire_idle().await;
+            }
+        });
         Ok(s)
+    }
+    fn progress(&self, id: &str) {
+        if let Some(last) = self.0.activity.lock().unwrap().get_mut(id) {
+            *last = tokio::time::Instant::now();
+        }
+    }
+    async fn expire_idle(&self) {
+        let timeout = self.0.limits.import_idle_timeout;
+        if !self
+            .0
+            .activity
+            .lock()
+            .unwrap()
+            .values()
+            .any(|last| last.elapsed() >= timeout)
+        {
+            return;
+        }
+        // Serialize with append/finish and recheck after waiting: an operation
+        // completing while we waited resets the idle clock and must survive.
+        let _gate = self.0.gate.lock().await;
+        let expired: Vec<String> = {
+            let activity = self.0.activity.lock().unwrap();
+            activity
+                .iter()
+                .filter_map(|(id, last)| {
+                    if last.elapsed() < timeout {
+                        return None;
+                    }
+                    if let Ok(flag) = self.flag(id) {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                    Some(id.clone())
+                })
+                .collect()
+        };
+        for id in expired {
+            // Failed cleanup keeps its reservation and clock for a later retry;
+            // one inaccessible spool cannot stop expiry of another abandoned job.
+            let _ = self.stop_locked(&id, "cancelled", None).await;
+        }
     }
     /// Application-owned scratch root, never a source library.
     pub fn available_staging_bytes(&self) -> Result<u64, StorageError> {
@@ -428,6 +496,11 @@ impl Store {
             .lock()
             .unwrap()
             .insert(id.clone(), Arc::new(AtomicBool::new(false)));
+        self.0
+            .activity
+            .lock()
+            .unwrap()
+            .insert(id.clone(), tokio::time::Instant::now());
         Ok(id)
     }
     fn flag(&self, id: &str) -> Result<Arc<AtomicBool>, StorageError> {
@@ -554,6 +627,7 @@ impl Store {
         sqlx::query("UPDATE intake_jobs SET completed=completed+$1,files=files+1,path_bytes=path_bytes+$2 WHERE id=$3 AND state='running'").bind(entry.1 as i64).bind(path.len() as i64).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
         self.fault(FaultPoint::AfterTransaction)?;
+        self.progress(id);
         Ok(())
     }
     fn publish<R: Read>(
@@ -666,6 +740,7 @@ impl Store {
         self.fault(FaultPoint::BeforeTransaction)?;
         sqlx::query("UPDATE intake_jobs SET state='succeeded',total=completed,reserved=0,error=NULL WHERE id=$1 AND state='running'").bind(id).execute(self.0.catalog.pool()).await?;
         self.0.cancel.lock().unwrap().remove(id);
+        self.0.activity.lock().unwrap().remove(id);
         self.fault(FaultPoint::AfterTransaction)?;
         Ok(())
     }
@@ -795,6 +870,17 @@ impl Store {
             f.store(true, Ordering::Relaxed)
         }
         let _g = self.0.gate.lock().await;
+        self.stop_locked(id, state, error).await
+    }
+    async fn stop_locked(
+        &self,
+        id: &str,
+        state: &str,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        // Release capacity only after the job-owned encoded files are gone.
+        // Sealed originals remain immutable and available for dedup/recovery.
+        self.cleanup(id)?;
         sqlx::query(
             "UPDATE intake_jobs SET state=$1,reserved=0,error=$2 WHERE id=$3 AND state='running'",
         )
@@ -804,7 +890,7 @@ impl Store {
         .execute(self.0.catalog.pool())
         .await?;
         self.0.cancel.lock().unwrap().remove(id);
-        self.cleanup(id)?;
+        self.0.activity.lock().unwrap().remove(id);
         Ok(())
     }
     /// Retry starts a new intake with existing verified content dedup; old progress remains durable.
@@ -951,6 +1037,9 @@ impl Spool {
             .ok_or(StorageError::Conflict)?
             .write_all(bytes)
             .await?;
+        if !bytes.is_empty() {
+            self.owner.progress(&self.job);
+        }
         Ok(())
     }
     pub async fn sync(&mut self) -> Result<(), StorageError> {
@@ -1030,6 +1119,119 @@ fn verify_equal(temp: &Path, dest: &Path, digest: &str, len: u64) -> Result<(), 
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+    #[tokio::test]
+    async fn idle_progress_finish_and_failed_cleanup_keep_their_ownership_invariants() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("lytronaut-idle-{}", unique().unwrap()));
+        fs::create_dir(&root).unwrap();
+        let catalog = Catalog::open_application_database(&root.join("app.db"))
+            .await
+            .unwrap();
+        let idle = Duration::from_secs(10);
+        let store = Store::open(
+            catalog.clone(),
+            &root.join("originals"),
+            &root.join("staging"),
+            Limits {
+                free_floor: 0,
+                import_idle_timeout: idle,
+                ..Limits::default()
+            },
+        )
+        .await
+        .unwrap();
+        let request = ImportRequest {
+            version: WireVersion::V1,
+            kind: lytronaut_contracts::ImportKind::Directory,
+            declared_bytes: 128,
+            declared_files: 4,
+        };
+        let id = store.begin(&request).await.unwrap();
+        let mut spool = store.spool(&id).await.unwrap();
+        let stale = tokio::time::Instant::now() - idle;
+        store.0.activity.lock().unwrap().insert(id.clone(), stale);
+        spool.write(b"").await.unwrap();
+        assert_eq!(
+            store.0.activity.lock().unwrap()[&id],
+            stale,
+            "empty frames are not progress"
+        );
+        spool.write(b"public bytes").await.unwrap();
+        assert!(store.0.activity.lock().unwrap()[&id] > stale);
+        store.expire_idle().await;
+        assert_eq!(store.job(&id).await.unwrap().state, JobState::Running);
+        drop(spool);
+        store
+            .append_directory_file(&id, "synthetic.txt", &b"sealed synthetic original"[..])
+            .await
+            .unwrap();
+        store.finish(&id).await.unwrap();
+        assert!(!store.0.activity.lock().unwrap().contains_key(&id));
+        store.expire_idle().await;
+        assert_eq!(store.job(&id).await.unwrap().state, JobState::Succeeded);
+        let entries = store.manifest(&id).await.unwrap();
+        let mut bytes = Vec::new();
+        store
+            .open_blob(&entries[0])
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"sealed synthetic original");
+
+        let blocked = store.begin(&request).await.unwrap();
+        let untouched = root.join("untouched");
+        fs::write(&untouched, b"outside the job").unwrap();
+        let bad = root.join("staging").join(format!("{blocked}-unsafe"));
+        symlink(&untouched, &bad).unwrap();
+        store
+            .0
+            .activity
+            .lock()
+            .unwrap()
+            .insert(blocked.clone(), tokio::time::Instant::now() - idle);
+        store.expire_idle().await;
+        let row = sqlx::query("SELECT reserved,state FROM intake_jobs WHERE id=$1")
+            .bind(&blocked)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("state"), "running");
+        assert!(
+            row.get::<i64, _>("reserved") > 0,
+            "failed cleanup must retain quota"
+        );
+        assert_eq!(fs::read(&untouched).unwrap(), b"outside the job");
+        fs::remove_file(&bad).unwrap();
+        store.expire_idle().await;
+        assert_eq!(
+            store.job(&blocked).await.unwrap().state,
+            JobState::Cancelled
+        );
+        assert!(!store.0.activity.lock().unwrap().contains_key(&blocked));
+        assert_eq!(fs::read(&untouched).unwrap(), b"outside the job");
+        drop(store);
+        catalog.pool().close().await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn idle_timeout_configuration_is_bounded_and_cannot_be_disabled() {
+        for idle in [Duration::ZERO, Duration::from_secs(86401)] {
+            assert_eq!(
+                Limits {
+                    import_idle_timeout: idle,
+                    ..Limits::default()
+                }
+                .validate(),
+                Err(StorageError::Invalid)
+            );
+        }
+        assert_eq!(
+            Limits::default().import_idle_timeout,
+            Duration::from_secs(1800)
+        );
+    }
+
     #[tokio::test]
     async fn shutdown_cancels_intake_and_preserves_existing_originals() {
         let root = std::env::temp_dir().join(format!("lytronaut-shutdown-{}", unique().unwrap()));
