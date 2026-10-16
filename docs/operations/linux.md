@@ -431,14 +431,22 @@ location does. For `N` bytes of unique originals:
 - Creating a bundle needs about `N` + 576 MiB free, plus 80 bytes per unique
   original (the bundle itself plus the catalog and inventory spools beside it),
   in addition to outstanding reservations of other export/restore/import jobs and
-  `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose).
+  `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose). Each output/spool file is rounded
+  using the work filesystem's allocation unit plus a 1 KiB metadata allowance;
+  sixteen auxiliary files/directories are also allowed for. Spools are checked
+  after capture and can transiently exceed the reservation if the library grew;
+  artifact writes are checked before writing.
 - Restoring a bundle of `B` bytes needs about 2 x `B` + 288 MiB free (the upload
   and the extracted copy, plus room for a SQLite catalog), with the same additions.
-  Before extracting, the restore re-checks the exact need with every file rounded
-  up to whole filesystem blocks, and needs about one free inode per original; for
-  a normal library this adds well under 0.1%, while a bundle of very many tiny
-  files needs correspondingly more and fails as a retryable `resource_limit` job
-  error, with nothing extracted, if the space is not there.
+  Before extracting, the restore re-checks a conservative sizing model: whole
+  filesystem blocks plus 1 KiB metadata per file and auxiliary-job allowance.
+  This is not an exact physical usage guarantee; SQLite headroom remains an
+  estimate. Finite free inodes must cover the originals, sixteen auxiliary
+  entries and a 1,024-inode floor. Restore extraction/checks share one serial
+  permit; unrelated filesystem writers can still cause later I/O failures.
+  The unchanged library-shaped fixture adds about 0.100002% (under 0.11%), while
+  many tiny files need materially more and fail retryably as `resource_limit` before extraction when
+  admission cannot cover them. See [the sizing model](../design/007-portable-backup.md).
 - Imports and exports share the work location: an import's admission counts the
   space reserved by running backups and restores, and the reverse, so a refused
   import is also a retryable `resource_limit` with a `shortfall`.

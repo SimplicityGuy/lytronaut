@@ -32,11 +32,31 @@ const MAX_DB: u64 = 32 * 1024 * 1024;
 /// creation and restore never hold an original or the bundle in memory, so a
 /// library of any size needs the same memory (docs/design/007, lytronaut-lbk).
 pub(crate) const COPY_BUFFER: usize = 65536;
-/// Allowance for the few non-original files and directories a job creates
-/// (spools, markers, descriptors, directories), in filesystem blocks.
+/// Conservative allowance for auxiliary job files/directories (ownership
+/// markers, journals and destination database side files). Explicit payload
+/// files and spools are charged separately.
 const JOB_FILES: u64 = 16;
+/// Per-file allowance for inode allocation and directory entries, in addition
+/// to rounded data blocks. This is a sizing model, not an exact filesystem bill.
+const FILE_METADATA: u64 = 1024;
 /// Inodes kept free beyond the files a restore creates.
 pub(crate) const INODE_FLOOR: u64 = 1024;
+/// Inode admission is advisory against other filesystem users; the service's
+/// one validation permit serializes restore checks through extraction.
+pub(crate) fn check_restore_inodes(originals: u64, available: Option<u64>) -> Result<(), E> {
+    let Some(available) = available else {
+        return Ok(());
+    };
+    let required = originals
+        .checked_add(JOB_FILES)
+        .and_then(|n| n.checked_add(INODE_FLOOR))
+        .ok_or(E::Inodes)?;
+    if available < required {
+        Err(E::Inodes)
+    } else {
+        Ok(())
+    }
+}
 /// The filesystem's allocation unit and free inodes (`None` when it does not
 /// report a finite inode count). Every file occupies whole units, so per-file
 /// cost is real disk, not payload bytes.
@@ -49,18 +69,31 @@ pub(crate) fn block_unit(path: &Path) -> Result<(u64, Option<u64>), E> {
     };
     Ok((unit.max(512), (fs.f_files > 0).then_some(fs.f_favail)))
 }
-/// Disk one file of `length` bytes occupies: whole allocation units, and at
-/// least one even when empty (its metadata).
+/// Modeled cost of one file: at least one data allocation unit, plus a
+/// separate inode/directory metadata allowance.
 pub(crate) fn file_cost(length: u64, unit: u64) -> Result<u64, E> {
+    if unit == 0 {
+        return Err(E::Quota);
+    }
     length
         .div_ceil(unit)
         .max(1)
         .checked_mul(unit)
+        .and_then(|bytes| bytes.checked_add(FILE_METADATA))
+        .ok_or(E::Quota)
+}
+fn job_cost(unit: u64) -> Result<u64, E> {
+    file_cost(0, unit)?.checked_mul(JOB_FILES).ok_or(E::Quota)
+}
+fn restore_base_need(upload: u64, unit: u64) -> Result<u64, E> {
+    file_cost(upload, unit)?
+        .checked_add(lytronaut_storage::portable::MAX_BYTES as u64)
+        .and_then(|bytes| bytes.checked_add(job_cost(unit).ok()?))
         .ok_or(E::Quota)
 }
 /// Running work-volume accounting of one job against its reservation: every
-/// file is charged at its real block cost before it is written, so a job can
-/// never write past what admission reserved for it.
+/// extracted file and artifact growth is charged before writing. Backup
+/// capture spools are checked after capture; see `backup` for that limitation.
 pub(crate) struct DiskBudget {
     limit: u64,
     used: u64,
@@ -74,11 +107,19 @@ impl DiskBudget {
     fn unlimited() -> Self {
         Self::new(u64::MAX, 0, 512)
     }
-    /// Charge one new file of `length` bytes at its block cost.
+    /// Charge one new file at its modeled allocation and metadata cost.
     fn charge(&mut self, length: u64) -> Result<(), E> {
         self.grow(file_cost(length, self.unit)?)
     }
-    /// Charge raw growth of an already charged file.
+    /// Grow an already charged file, charging only newly occupied blocks.
+    /// Its inode/directory allowance is paid once, not once per chunk.
+    fn grow_file(&mut self, previous: u64, next: u64) -> Result<(), E> {
+        if next < previous {
+            return Err(E::Invalid);
+        }
+        self.grow(file_cost(next, self.unit)? - file_cost(previous, self.unit)?)
+    }
+    /// Charge additional modeled allocation.
     fn grow(&mut self, bytes: u64) -> Result<(), E> {
         let used = self.used.checked_add(bytes).ok_or(E::Quota)?;
         if used > self.limit {
@@ -91,10 +132,10 @@ impl DiskBudget {
         Ok(())
     }
 }
-/// Exact work-volume need of restoring the uploaded bundle at `input`, read
-/// from its framing without hashing or extracting anything: the upload, one
-/// catalog maximum of SQLite headroom, the spools and every original at its
-/// real block cost. Returns the unique-original count and that need.
+/// Modeled work-volume need of restoring the uploaded bundle at `input`, read
+/// from its framing without hashing or extracting anything: rounded upload,
+/// catalog headroom, auxiliary files, spools and metadata-inclusive originals.
+/// Returns the unique-original count and that conservative sizing estimate.
 pub(crate) fn restore_disk_need(
     input: &Path,
     unit: u64,
@@ -124,11 +165,7 @@ pub(crate) fn restore_disk_need(
     if count.checked_mul(40).is_none_or(|framing| framing > upload) {
         return Err(E::Invalid);
     }
-    let catalog_maximum = lytronaut_storage::portable::MAX_BYTES as u64;
-    let mut need = upload
-        .checked_add(catalog_maximum)
-        .and_then(|n| n.checked_add(JOB_FILES.checked_mul(unit)?))
-        .ok_or(E::Quota)?;
+    let mut need = restore_base_need(upload, unit)?;
     for spool in [catalog, count * 40] {
         need = need.checked_add(file_cost(spool, unit)?).ok_or(E::Quota)?;
     }
@@ -160,33 +197,33 @@ pub(crate) fn archive_framing(files: u64) -> Result<u64, E> {
         .checked_add(files.checked_mul(40).ok_or(E::Quota)?)
         .ok_or(E::Quota)
 }
-/// Work-volume bytes a bundle creation holds at its peak: the logical spool
-/// (at most the v2 catalog maximum) and the 40-byte-per-original inventory
-/// spool beside the growing artifact, which holds the catalog copy, the
-/// framing and every unique original. Only the bounded catalog and the
-/// inventory records are counted twice; originals never are.
-/// The archive's three files (artifact and two spools) are each charged one
-/// extra allocation unit of up to 1 MiB for block rounding.
-pub(crate) fn archive_need(original_bytes: u64, originals: u64) -> Result<u64, E> {
+/// Modeled peak creation cost: rounded catalog spool, inventory spool and
+/// artifact, plus auxiliary-job allowance. Only the bounded catalog and the
+/// inventory records are duplicated; original bytes are counted once. The
+/// allocation unit comes from the actual work filesystem, without a 1 MiB cap.
+pub(crate) fn archive_need(original_bytes: u64, originals: u64, unit: u64) -> Result<u64, E> {
     let catalog = lytronaut_storage::portable::MAX_BYTES as u64;
-    original_bytes
+    let artifact = original_bytes
         .checked_add(archive_framing(originals)?)
-        .and_then(|n| n.checked_add(originals.checked_mul(40)?))
-        .and_then(|n| n.checked_add(2 * catalog))
-        .and_then(|n| n.checked_add(ARCHIVE_ROUNDING))
+        .and_then(|n| n.checked_add(catalog))
+        .ok_or(E::Quota)?;
+    let inventory = originals.checked_mul(40).ok_or(E::Quota)?;
+    job_cost(unit)?
+        .checked_add(file_cost(catalog, unit)?)
+        .and_then(|n| n.checked_add(file_cost(inventory, unit).ok()?))
+        .and_then(|n| n.checked_add(file_cost(artifact, unit).ok()?))
         .filter(|n| *n <= i64::MAX as u64)
         .ok_or(E::Quota)
 }
-const ARCHIVE_ROUNDING: u64 = 3 * 1024 * 1024;
 /// Work-volume bytes a restore of a `declared`-byte upload reserves while it
 /// uploads, before its framing is known:
 /// the upload itself, its extracted originals and logical spool (together at
 /// most the upload again) and headroom of one catalog maximum for a SQLite
 /// destination catalog. Any positive size whose need fits i64 is acceptable;
 /// whether it can run is decided by free-space admission alone. Before it
-/// extracts anything, the restore worker re-admits the exact need from the
-/// uploaded framing (`restore_disk_need`), which adds every file's real block
-/// cost; tiny originals cannot spend disk the upload-time reservation did not
+/// extracts anything, the restore worker re-admits the modeled need from the
+/// uploaded framing (`restore_disk_need`), which adds rounded allocation and
+/// metadata allowances; tiny originals cannot spend disk the upload-time reservation did not
 /// cover.
 pub(crate) fn restore_need(declared: u64) -> Result<u64, E> {
     (declared > 0)
@@ -299,8 +336,11 @@ async fn readonly(path: &Path) -> Result<SqliteConnection, E> {
 ///
 /// `budget` is the job's reserved work-volume bytes. The library can grow
 /// between admission and capture (imports finishing meanwhile), so the
-/// artifact and spools are charged as they are written and creation stops
-/// with a retryable `Space` before it would pass the reservation.
+/// capture spools are checked at their modeled cost after capture completes.
+/// They can transiently exceed this reservation: the logical spool is bounded
+/// by MAX_BYTES and inventory by captured source rows (at most MAX_ROWS * 40).
+/// Refusal cleans both spools before any artifact is created. Once admitted,
+/// artifact growth is charged before each write, with retryable `Space`.
 pub async fn backup(
     catalog: &Catalog,
     store: &Store,
@@ -337,12 +377,13 @@ pub async fn backup(
         let count = u32::try_from(inventory.count).map_err(|_| E::Quota)?;
         let (catalog_hash, catalog_bytes) = hash_file(&snapshot)?;
         let (unit, _) = block_unit(output.parent().ok_or(E::Invalid)?)?;
-        // Spools at their block cost plus the artifact as it grows; the
-        // artifact starts charged with one unit for its final partial block.
-        let mut disk = DiskBudget::new(budget, unit, unit);
+        // Metadata-inclusive spool costs are checked after capture; artifact
+        // writes below are precharged by their rounded growth, not raw bytes.
+        let mut disk = DiskBudget::new(budget, job_cost(unit)?, unit);
         disk.charge(catalog_bytes)?;
         disk.charge(inventory.count * 40)?;
-        disk.grow(60 + catalog_bytes)?;
+        let mut artifact_bytes = 60 + catalog_bytes;
+        disk.charge(artifact_bytes)?;
         let mut out = new_file(output)?;
         created = true;
         out.write_all(PORTABLE_MAGIC)?;
@@ -364,8 +405,12 @@ pub async fn backup(
             let mut record = [0; INVENTORY_RECORD];
             inventory_records.read_exact(&mut record)?;
             let (hash, length) = parse_record(&record);
-            // Raw growth of the single artifact file, checked before writing.
-            disk.grow(40 + length)?;
+            let next = artifact_bytes
+                .checked_add(40)
+                .and_then(|n| n.checked_add(length))
+                .ok_or(E::Quota)?;
+            disk.grow_file(artifact_bytes, next)?;
+            artifact_bytes = next;
             let source = lytronaut_storage::SourceEntry {
                 logical_path: String::new(),
                 digest: digest_hex(&hash),
@@ -882,11 +927,7 @@ pub async fn restore_owned(
     let (unit, _) = block_unit(root)?;
     let mut disk = DiskBudget::new(
         reserved,
-        fs::metadata(input)?
-            .len()
-            .checked_add(lytronaut_storage::portable::MAX_BYTES as u64)
-            .and_then(|n| n.checked_add(JOB_FILES.checked_mul(unit)?))
-            .ok_or(E::Quota)?,
+        restore_base_need(fs::metadata(input)?.len(), unit)?,
         unit,
     );
     let mut journal = Journal::prepare(root, job, namespace, reserved)?;
@@ -1020,6 +1061,67 @@ mod portable_admission_tests {
     use super::*;
 
     #[test]
+    fn accounting_file_cost_covers_metadata_beyond_payload_blocks() {
+        assert_eq!(file_cost(0, 4096).unwrap(), 4096 + 1024);
+        assert_eq!(file_cost(1, 4096).unwrap(), 4096 + 1024);
+        assert_eq!(file_cost(4096, 4096).unwrap(), 4096 + 1024);
+        assert_eq!(file_cost(4097, 4096).unwrap(), 8192 + 1024);
+    }
+
+    #[test]
+    fn accounting_writer_refuses_when_only_the_payload_block_fits() {
+        let mut budget = DiskBudget::new(4096, 0, 4096);
+        assert!(matches!(
+            budget.charge(1),
+            Err(E::Space {
+                required_bytes: 5120,
+                available_bytes: 4096
+            })
+        ));
+    }
+
+    #[test]
+    fn accounting_archive_uses_actual_large_allocation_units() {
+        let unit = 8 * 1024 * 1024;
+        let catalog = lytronaut_storage::portable::MAX_BYTES as u64;
+        // Catalog is aligned; artifact needs one more block, inventory one;
+        // three output files and sixteen job files each need metadata.
+        assert_eq!(
+            archive_need(0, 0, unit).unwrap(),
+            2 * catalog + (JOB_FILES + 2) * unit + (JOB_FILES + 3) * 1024
+        );
+    }
+
+    #[test]
+    fn accounting_file_growth_pays_metadata_once_and_refuses_overflow() {
+        let mut disk = DiskBudget::new(9216, 0, 4096);
+        disk.charge(1).unwrap();
+        disk.grow_file(1, 4096).unwrap();
+        assert_eq!(disk.used, 5120);
+        disk.grow_file(4096, 4097).unwrap();
+        assert_eq!(disk.used, 9216);
+        assert!(matches!(disk.grow_file(4097, 8193), Err(E::Space { .. })));
+        assert!(matches!(disk.grow_file(2, 1), Err(E::Invalid)));
+        assert!(matches!(file_cost(0, 0), Err(E::Quota)));
+        assert!(matches!(file_cost(u64::MAX, 1), Err(E::Quota)));
+    }
+
+    #[test]
+    fn accounting_inode_floor_includes_auxiliary_files_and_unknown_filesystems() {
+        let required = 7 + JOB_FILES + INODE_FLOOR;
+        assert!(check_restore_inodes(7, Some(required)).is_ok());
+        assert!(matches!(
+            check_restore_inodes(7, Some(required - 1)),
+            Err(E::Inodes)
+        ));
+        assert!(check_restore_inodes(7, None).is_ok());
+        assert!(matches!(
+            check_restore_inodes(u64::MAX, Some(u64::MAX)),
+            Err(E::Inodes)
+        ));
+    }
+
+    #[test]
     fn needs_follow_real_bytes_and_ignore_upload_budgets() {
         let catalog = lytronaut_storage::portable::MAX_BYTES as u64;
         assert_eq!(archive_framing(0).unwrap(), 60);
@@ -1029,16 +1131,19 @@ mod portable_admission_tests {
         // library far beyond any single-upload budget is just a bigger number.
         let tib = 1u64 << 40;
         assert_eq!(
-            archive_need(0, 0).unwrap(),
-            60 + 2 * catalog + ARCHIVE_ROUNDING
+            archive_need(0, 0, 4096).unwrap(),
+            2 * catalog + (JOB_FILES + 2) * 4096 + (JOB_FILES + 3) * FILE_METADATA
         );
         assert_eq!(
-            archive_need(5 * tib, 3).unwrap(),
-            5 * tib + 60 + 2 * 3 * 40 + 2 * catalog + ARCHIVE_ROUNDING
+            archive_need(5 * tib, 3, 4096).unwrap(),
+            5 * tib + 2 * catalog + (JOB_FILES + 2) * 4096 + (JOB_FILES + 3) * FILE_METADATA
         );
-        assert!(matches!(archive_need(i64::MAX as u64, 0), Err(E::Quota)));
-        assert!(matches!(archive_need(u64::MAX, 1), Err(E::Quota)));
-        assert!(matches!(archive_need(0, u64::MAX), Err(E::Quota)));
+        assert!(matches!(
+            archive_need(i64::MAX as u64, 0, 4096),
+            Err(E::Quota)
+        ));
+        assert!(matches!(archive_need(u64::MAX, 1, 4096), Err(E::Quota)));
+        assert!(matches!(archive_need(0, u64::MAX, 4096), Err(E::Quota)));
         // Restore: upload plus extracted copy plus one catalog of headroom.
         assert_eq!(restore_need(1).unwrap(), 2 + catalog);
         assert_eq!(restore_need(5 * tib).unwrap(), 10 * tib + catalog);

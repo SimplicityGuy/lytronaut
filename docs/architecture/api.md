@@ -222,7 +222,10 @@ archive and restore jobs are bounded only by free work space (not by the upload
 budgets or `LYTRONAUT_RESERVED_BYTES`, which keeps bounding imports and
 flatten/Live Photo exports); a refusal is a retryable 429 `resource_limit` whose
 optional, additive `shortfall` names the required and available bytes, shown
-by the browser as a sentence with binary units (docs/design/007). An archive
+by the browser as a sentence with binary units (docs/design/007). `POST /imports`
+uses the same free-space `shortfall` shape because its admission also counts
+export/restore reservations; permanent declaration-limit failures stay distinct.
+An archive
 whose logical catalog exceeds the 288 MiB v2 section fails before any artifact
 exists with a non-retryable `resource_limit` job error.
 At most 128 reports/artifacts remain; cancelled/failed reports are evicted oldest

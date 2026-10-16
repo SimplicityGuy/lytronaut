@@ -39,6 +39,8 @@ struct Inner {
     exports_inflight: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     export_gate: Mutex<Option<Arc<exports::control_tests::Gate>>>,
+    #[cfg(test)]
+    disk_probe: Mutex<Option<Arc<exports::disk_tests::Probe>>>,
 }
 #[derive(Default)]
 struct Cache {
@@ -372,6 +374,8 @@ impl Api {
             exports_inflight: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             export_gate: Mutex::new(None),
+            #[cfg(test)]
+            disk_probe: Mutex::new(None),
         })))
     }
     pub fn routes(self) -> Router<AppState> {

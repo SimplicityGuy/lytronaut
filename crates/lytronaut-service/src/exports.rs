@@ -141,7 +141,8 @@ async fn archive_need(a: &Api) -> Result<u64> {
         .await?;
     let bytes = u64::try_from(row.try_get::<i64, _>(0)?).map_err(storage)?;
     let files = u64::try_from(row.try_get::<i64, _>(1)?).map_err(storage)?;
-    bundle::archive_need(bytes, files)
+    let (unit, _) = bundle::block_unit(&root(&a.0.store)).map_err(storage)?;
+    bundle::archive_need(bytes, files, unit)
         .map_err(|_| Failure(StatusCode::TOO_MANY_REQUESTS, ErrorCode::ResourceLimit))
 }
 /// A running job ran short of work space or inodes: retryable, reported as
@@ -157,9 +158,9 @@ fn job_failure(error: lytronaut_storage::StorageError) -> Failure {
         error => storage(error),
     }
 }
-/// Re-admit a restore on its exact disk need before anything is extracted.
+/// Re-admit a restore on its modeled disk need before anything is extracted.
 /// Upload admission could only reserve payload bytes (`restore_need`); the
-/// uploaded framing now gives every file's real block cost and the count of
+/// uploaded framing now gives rounded blocks, metadata allowances and count of
 /// files (inodes) the restore will create. The reservation grows to that need
 /// under the writer admission, counting other jobs and the free-space floor,
 /// or the job fails as retryable `space` before writing anything.
@@ -175,9 +176,9 @@ async fn readmit_restore(
     let (count, need) =
         bundle::restore_disk_need(input, unit, a.0.store.limits().file_bytes, cancel)
             .map_err(job_failure)?;
-    if inodes.is_some_and(|free| free < count.saturating_add(bundle::INODE_FLOOR)) {
-        return Err(short_of_work_space());
-    }
+    #[cfg(test)]
+    let inodes = disk_tests::observe_inode_check(a, inodes);
+    bundle::check_restore_inodes(count, inodes).map_err(job_failure)?;
     if need <= reserved {
         return Ok(reserved);
     }
@@ -823,17 +824,26 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
             .bind(&id)
             .execute(a.0.catalog.pool())
             .await?;
-        let permit = if matches!(request, ExportRequest::ArchiveOriginals { .. }) {
-            Some(
-                a.0.validation
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(storage)?,
-            )
-        } else {
-            None
-        };
+        // Restore uploads use ArchiveOriginals as their worker request too.
+        // Keep the same single permit from inode re-admission through all
+        // extraction, so two restores cannot spend the same free inode count.
+        // No database writer transaction is held across that work.
+        #[cfg(test)]
+        if restore.is_some() {
+            disk_tests::before_restore_permit(&a);
+        }
+        let permit =
+            if restore.is_some() || matches!(request, ExportRequest::ArchiveOriginals { .. }) {
+                Some(
+                    a.0.validation
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .map_err(storage)?,
+                )
+            } else {
+                None
+            };
         if cancelled.load(Ordering::Acquire) || report(&a, &id).await?.state == JobState::Cancelling
         {
             return Err(Failure::invalid());
@@ -862,6 +872,8 @@ async fn run(a: Api, id: String, request: ExportRequest, restore: Option<PathBuf
                             &flag,
                         )
                         .await?;
+                        #[cfg(test)]
+                        disk_tests::before_extraction(&worker, &job).await;
                         crate::bundle::restore_owned(
                             &input,
                             &worker.0.catalog,
@@ -1205,7 +1217,10 @@ async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Respo
                 tokio::select! {
                     frame=body.frame()=>{
                         let Some(frame)=frame else{break};let frame=frame.map_err(storage)?;
-                        if let Ok(data)=frame.into_data(){n=n.checked_add(data.len() as u64).ok_or(Failure::invalid())?;if n>declared{return Err(Failure(StatusCode::PAYLOAD_TOO_LARGE,ErrorCode::ResourceLimit))}f.write_all(&data).await.map_err(storage)?;}
+                        if let Ok(data)=frame.into_data(){
+                            #[cfg(test)]
+                            disk_tests::observe_upload_frame(&a, data.len());
+                            n=n.checked_add(data.len() as u64).ok_or(Failure::invalid())?;if n>declared{return Err(Failure(StatusCode::PAYLOAD_TOO_LARGE,ErrorCode::ResourceLimit))}f.write_all(&data).await.map_err(storage)?;}
                     }
                     _=tick.tick()=>{
                         if matches!(report(&a,&id).await?.state,JobState::Cancelling|JobState::Cancelled){return Err(Failure(StatusCode::CONFLICT,ErrorCode::InvalidInput))}
@@ -1682,3 +1697,7 @@ mod restore_fault_tests;
 #[cfg(test)]
 #[path = "export_control_tests.rs"]
 pub(super) mod control_tests;
+
+#[cfg(test)]
+#[path = "disk_accounting_tests.rs"]
+pub(super) mod disk_tests;
