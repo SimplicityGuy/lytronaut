@@ -107,6 +107,12 @@ full Level 5 conformance, quiet-host latency or canonical validation is claimed.
 The format source has now changed relative to the private-run baseline, so
 that run does not attest these newly emitted SPS bytes.
 
+The [candidate external HRD experiment](lytronaut-re8-3-hrd.md) now records an
+independent actual-NAL parser and rational schedule model, its normative
+coverage, a small public fixture trial and remaining obligations. Fresh review
+and largest padded fixture execution are pending. This candidate does not yet
+close the gate or claim that Apple consumes the externally supplied parameters.
+
 ## Existing private and PostgreSQL evidence
 
 The validation branch's `lytronaut-cjq-final.md` records the private run at

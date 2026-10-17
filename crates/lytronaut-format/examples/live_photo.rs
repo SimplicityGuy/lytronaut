@@ -4,17 +4,24 @@ use lytronaut_format::{
     live_photo::{Builder, Plan, bundle},
 };
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let destination = std::path::PathBuf::from(
-        std::env::args_os()
-            .nth(1)
-            .ok_or("output directory required")?,
-    );
-    std::fs::create_dir_all(&destination)?;
-    let geometry = Geometry {
-        width: 320,
-        height: 240,
+    let mut arguments = std::env::args_os().skip(1);
+    let destination =
+        std::path::PathBuf::from(arguments.next().ok_or("output directory required")?);
+    // Test-only public geometry probes; the ordinary recipe keeps 320x240.
+    // Plan validates all dimensions before any pixel allocation or output.
+    let geometry = match (arguments.next(), arguments.next(), arguments.next()) {
+        (None, None, None) => Geometry {
+            width: 320,
+            height: 240,
+        },
+        (Some(width), Some(height), None) => Geometry {
+            width: width.to_str().ok_or("UTF-8 width required")?.parse()?,
+            height: height.to_str().ok_or("UTF-8 height required")?.parse()?,
+        },
+        _ => return Err("expected output directory and optional width height".into()),
     };
     let plan = Plan::new(geometry, &[0.0, 3.0, -2.0], 0)?;
+    std::fs::create_dir_all(&destination)?;
     let mut builder = Builder::new(plan.clone(), "A8A8A8A8-1111-4444-8888-121212121212")?;
     for (index, rgb) in [[255, 0, 0], [0, 255, 0], [0, 0, 255]]
         .into_iter()
