@@ -168,6 +168,26 @@ three volumes together. Retain originals/catalog consistency; never use an activ
 SQLite database file without its journal/sidecars. Restart the same volumes to
 resume browsing. Do not delete originals merely to clear staging or free space.
 
+### Abandoned imports
+
+An import with no accepted upload bytes or completed file for 30 minutes is
+cancelled automatically on both catalog backends. Override this with
+`LYTRONAUT_IMPORT_IDLE_SECONDS` (1–86400 seconds; default 1800). Status polling
+is not progress. The worker checks once per second (subject to executor and
+I/O scheduling). ZIP decoder admission, preflight,
+file publication and finish verification hold processing leases and do not
+count as network idle. Expiry first stops new writes, then waits for every
+in-flight file operation and open reader to drain, including blocking workers
+whose HTTP caller has already gone away. Only then does cleanup remove that
+job's staging files and release its slot and reservation. A cleanup
+failure retains the reservation and is retried; sealed original bytes are never
+deleted. Restart recovery still marks interrupted running imports as failed.
+
+The browser also attempts cancellation when an import cannot finish or its
+mounted view detaches. Closing or crashing the browser can prevent that request
+from reaching the service, so the server deadline is the final backstop. To
+retry, reselect the original directory or ZIP; preserved bytes deduplicate.
+
 ## Choosing a catalog backend
 
 | | SQLite (default `compose.yaml`) | PostgreSQL (`compose.postgres.yaml` or `compose.postgres-external.yaml`) |
@@ -411,14 +431,22 @@ location does. For `N` bytes of unique originals:
 - Creating a bundle needs about `N` + 576 MiB free, plus 80 bytes per unique
   original (the bundle itself plus the catalog and inventory spools beside it),
   in addition to outstanding reservations of other export/restore/import jobs and
-  `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose).
+  `LYTRONAUT_FREE_FLOOR` (2 GiB with Compose). Each output/spool file is rounded
+  using the work filesystem's allocation unit plus a 1 KiB metadata allowance;
+  sixteen auxiliary files/directories are also allowed for. Spools are checked
+  after capture and can transiently exceed the reservation if the library grew;
+  artifact writes are checked before writing.
 - Restoring a bundle of `B` bytes needs about 2 x `B` + 288 MiB free (the upload
   and the extracted copy, plus room for a SQLite catalog), with the same additions.
-  Before extracting, the restore re-checks the exact need with every file rounded
-  up to whole filesystem blocks, and needs about one free inode per original; for
-  a normal library this adds well under 0.1%, while a bundle of very many tiny
-  files needs correspondingly more and fails as a retryable `resource_limit` job
-  error, with nothing extracted, if the space is not there.
+  Before extracting, the restore re-checks a conservative sizing model: whole
+  filesystem blocks plus 1 KiB metadata per file and auxiliary-job allowance.
+  This is not an exact physical usage guarantee; SQLite headroom remains an
+  estimate. Finite free inodes must cover the originals, sixteen auxiliary
+  entries and a 1,024-inode floor. Restore extraction/checks share one serial
+  permit; unrelated filesystem writers can still cause later I/O failures.
+  The unchanged library-shaped fixture adds about 0.100002% (under 0.11%), while
+  many tiny files need materially more and fail retryably as `resource_limit` before extraction when
+  admission cannot cover them. See [the sizing model](../design/007-portable-backup.md).
 - Imports and exports share the work location: an import's admission counts the
   space reserved by running backups and restores, and the reverse, so a refused
   import is also a retryable `resource_limit` with a `shortfall`.
@@ -427,6 +455,26 @@ location does. For `N` bytes of unique originals:
   both, for example "this needs 5.0 GiB and 1.0 GiB is available"); free space
   (or wait for other exports to finish) and retry. Nothing is created for a
   refused job.
+
+The archive sizing model uses the **actual unique-original count** `F`, not
+`LYTRONAUT_UPLOAD_FILES` (that limit applies to one import). With `C = 288 MiB`,
+work allocation unit `U`, and `cost(x) = max(1, ceil(x/U)) * U + 1024`, the
+reservation is exactly `16 * cost(0) + cost(C) + cost(40 * F) +
+cost(N + 60 + 40 * F + C)`. The 60 bytes are the fixed bundle header; each
+original contributes 40 framing bytes in the artifact and another 40 in the
+inventory spool. Rounding applies separately to each file; there is no fixed
+8 MiB framing allowance. Admission uses all cataloged unique sources, including
+ones capture may later skip, so it can be conservative.
+
+Free-space admission adds the new job's reservation, all outstanding export
+reservations, reservations of running imports and `LYTRONAUT_FREE_FLOOR`, and
+compares that total with the work filesystem's currently available bytes.
+Completed retained files already reduce those available bytes. Separately,
+`LYTRONAUT_RESERVED_BYTES` limits bounded per-asset exports (Flatten and Live
+Photo): the new reservation plus both reserved and retained bytes of existing
+per-asset exports must fit. Finished retained outputs therefore continue to
+consume this budget until deleted; whole-library archives and restores are
+excluded from that aggregate budget.
 
 `LYTRONAUT_FILE_BYTES` must not exceed `LYTRONAUT_UPLOAD_BYTES` (startup refuses
 such a configuration), so raising the per-file limit may require raising the
@@ -485,15 +533,23 @@ path and an externally managed PostgreSQL configured only by URL and secret file
 imports a synthetic library; checks owners and modes, graceful stop, down/up and
 restart-policy restarts on the same storage, that a Compose restart of PostgreSQL
 restarts the application and that a PostgreSQL server crash is recovered, a
-CRLF-terminated password secret, rejection of a multi-byte control character by
+valid non-ASCII UTF-8 CRLF-terminated password secret, rejection of a multi-byte control character by
 both the application and the role bootstrap, the documented `pg_dump`/`pg_restore` recovery
 for the bundled and the external server (the external one beside an
-administrator-owned `public` table; each browsed afterwards), fail-closed
+administrator-owned `public` table; every dumped application table has the same
+row count before recovered startup, and each recovered app is browsed afterwards), fail-closed
 redacted startup with a wrong or ambiguous password, and that no
 generated password appears in Compose configuration, container configuration,
 logs, the image or the report; and restores all four SQLite/PostgreSQL bundle
 combinations, starting and browsing each restored copy through the override
-above. `bind` prepares host directories with the documented owners and requires a
+above. Raw table counts are compared for `pg_dump` recovery, which preserves
+runtime bookkeeping too. Portable bundles intentionally omit export jobs and
+other runtime state, so those four deployment cases compare public library and
+capture identities plus original SHA-256 values instead. The strict
+`postgres-test` suite separately compares every portable table's logical values
+across all four backend combinations. Restart-policy checks require a count
+increase from immediately before each induced application exit or database crash;
+a previous restart cannot satisfy them. `bind` prepares host directories with the documented owners and requires a
 Linux host whose filesystem the engine uses directly; on a VM-backed engine (for
 example Docker on macOS) use `volume`, which checks the same owners and modes
 inside the engine's named volumes. The report records the host, engine and image

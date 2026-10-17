@@ -159,12 +159,11 @@ impl Fixture {
     }
     /// As `add_sparse_originals`, one original per entry of `sizes` (each >= 16).
     pub(crate) async fn add_sparse_sized(&self, sizes: &[u64]) -> u64 {
+        // Hash the potentially multi-GiB fixture before opening a PostgreSQL
+        // transaction: CPU-only preparation must not consume its idle timeout.
+        let digests = sparse_sized_digests(sizes);
         let mut tx = self.catalog.begin_write().await.unwrap();
-        for (index, (digest, &size)) in sparse_sized_digests(sizes)
-            .into_iter()
-            .zip(sizes)
-            .enumerate()
-        {
+        for (index, (digest, &size)) in digests.into_iter().zip(sizes).enumerate() {
             let path = self.root.join("originals").join(format!("{digest}-{size}"));
             let mut file = new_file(&path).unwrap();
             file.write_all(&sparse_prefix(index as u64)).unwrap();
@@ -836,9 +835,9 @@ async fn disk_reservations_are_enforced_per_file_while_writing() {
         4 * file_cost(1024 * 1024, unit).unwrap() + file_cost(BLOB.len() as u64, unit).unwrap();
     assert_eq!(
         need,
-        upload
+        file_cost(upload, unit).unwrap()
             + lytronaut_storage::portable::MAX_BYTES as u64
-            + JOB_FILES * unit
+            + job_cost(unit).unwrap()
             + file_cost(catalog, unit).unwrap()
             + file_cost(5 * 40, unit).unwrap()
             + originals
@@ -923,11 +922,11 @@ async fn disk_reservations_are_enforced_per_file_while_writing() {
 
 /// lytronaut-lbk B1, honest sizing for a real library shape: about 33,800
 /// captures with the surveyed corpus's companions (6.5 files per capture on
-/// average). Block rounding adds well under 0.1%, so the worker's
-/// re-admission grows the upload-time reservation by under 0.1% of the
-/// bundle; only libraries of very many tiny files need materially more.
+/// average). Block rounding alone is under 0.1%; the separate metadata
+/// allowance raises the combined modeled overhead just above 0.1%, within
+/// 0.11%. Keep the payload shape fixed when updating accounting.
 #[test]
-fn library_shaped_restore_need_grows_the_upload_reservation_by_under_a_tenth_percent() {
+fn library_shaped_restore_need_includes_metadata_within_point_one_one_percent() {
     let unit = 4096;
     let captures = 33_800u64;
     let mut files = 0u64;
@@ -944,18 +943,36 @@ fn library_shaped_restore_need_grows_the_upload_reservation_by_under_a_tenth_per
             cost += file_cost(size, unit).unwrap();
         }
     }
-    let catalog = 8_937 * captures;
+    let catalog = 8_934 * captures;
+    assert!(
+        catalog <= lytronaut_storage::portable::MAX_BYTES as u64,
+        "library-shaped catalog must fit its format section"
+    );
     let upload = 60 + catalog + 40 * files + payload;
-    let need = upload
+    let need = file_cost(upload, unit).unwrap()
         + lytronaut_storage::portable::MAX_BYTES as u64
-        + JOB_FILES * unit
+        + job_cost(unit).unwrap()
         + file_cost(catalog, unit).unwrap()
         + file_cost(40 * files, unit).unwrap()
         + cost;
-    assert!(files > 6 * captures && files < 7 * captures);
-    assert!((cost - payload) * 1000 < payload, "rounding under 0.1%");
+    assert_eq!(files, 219_700);
+    assert_eq!(
+        payload, 829_164_700_000,
+        "preserve the existing payload shape"
+    );
+    let metadata = files * FILE_METADATA;
+    assert_eq!(metadata, 224_972_800);
+    assert_eq!(cost - payload, 829_181_600);
+    assert!(
+        (cost - metadata - payload) * 1000 < payload,
+        "data-block rounding remains under 0.1%"
+    );
+    assert!(
+        (cost - payload) * 10_000 < 11 * payload,
+        "rounding plus metadata under 0.11%"
+    );
     assert!(need > restore_need(upload).unwrap());
-    assert!(need - restore_need(upload).unwrap() < upload / 1000);
+    assert!((need - restore_need(upload).unwrap()) * 10_000 < 11 * upload);
 }
 
 /// L6: a library with no originals backs up and restores (zero records).

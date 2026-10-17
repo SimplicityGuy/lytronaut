@@ -37,6 +37,10 @@ struct Inner {
     validation: Arc<Semaphore>,
     cache: Mutex<Cache>,
     exports_inflight: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    export_gate: Mutex<Option<Arc<exports::control_tests::Gate>>>,
+    #[cfg(test)]
+    disk_probe: Mutex<Option<Arc<exports::disk_tests::Probe>>>,
 }
 #[derive(Default)]
 struct Cache {
@@ -368,6 +372,10 @@ impl Api {
             validation: Arc::new(Semaphore::new(1)),
             cache: Mutex::new(Cache::default()),
             exports_inflight: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            export_gate: Mutex::new(None),
+            #[cfg(test)]
+            disk_probe: Mutex::new(None),
         })))
     }
     pub fn routes(self) -> Router<AppState> {

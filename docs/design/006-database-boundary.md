@@ -253,27 +253,39 @@ serially with exact result-count assertions; the expected total is computed from
 its case list:
 
 - Seven actual PostgreSQL storage unit contracts (including actual SQLite oracles).
+- Two idle-import contracts: task-owned writer/reader drains, abandoned upload
+  cleanup and slot/quota reuse; and ZIP decoder admission/preflight through idle
+  deadlines, explicit cancellation and an orphaned caller (`lytronaut-3ep`).
 - One actual Desktop intake/adaptation/originals/conflict/reopen contract.
-- Three HTTP upload-boundary scenarios (streaming progress and Unicode names;
+- Four HTTP upload-boundary scenarios (streaming progress and Unicode names;
   stream overflow, content encoding and unsafe names; malformed declarations
-  never echoed) on an owned schema, rechecking the restricted role and public
+  never echoed; framing, cancellation and retry boundaries) on an owned schema,
+  rechecking the restricted role and public
   sentinel at start and close.
-- Six HTTP scenarios: browse/search/detail/assets/originals and restart,
+- Seven HTTP scenarios: browse/search/detail/assets/originals and restart,
   unsupported input/cancellation, ZIP publication, concurrent publication polling,
   PNG/JPEG export/cancellation/restart, and the lossless portable bundle
-  backup/restore/tamper/conflict/interruption scenario (owned-schema restore).
-- Four Live Photo export scenarios (run separately from the six HTTP scenarios
-  above): create and download complete private-metadata-free pairs in all eight
-  orientations; DELETE of a ready pair releasing its files and quota across
-  restart; DELETE immediately after create (the job may already have finished),
-  which never offers a half-pair; and an out-of-range plane index failing without
-  output and surviving restart. Follow-up `lytronaut-0f6` strengthens the last two.
+  backup/restore/tamper/conflict/interruption scenario (owned-schema restore),
+  plus browse/asset validation before storage access.
+- Five Live Photo export scenarios (separate from the seven HTTP scenarios):
+  complete private-metadata-free pairs in eight orientations; DELETE of a ready
+  pair with cleanup across restart; DELETE after create without offering a half
+  pair (completion may win that race); an out-of-range plane failure across
+  restart; and a real missing stored plane failing in the worker while preserving
+  its original. Admission rejects a non-stack original; stored-plane completeness
+  remains a worker check (`lytronaut-cjq`).
+- Two deterministic native HTTP control contracts (`lytronaut-0f6`): DELETE while
+  rendering and after a real partial artifact write; shutdown draining an active
+  worker before catalog close and immediate reopen without Busy retries. Each
+  runs through the real router, worker, monitor and owned cleanup. These Rust
+  unit-test seams are absent from production builds.
 - Seven portable backup cases with a PostgreSQL destination or source:
   SQLite→PostgreSQL, PostgreSQL→SQLite and PostgreSQL→PostgreSQL round trips, the
   four exact version-1 legacy forms, near-32 MiB legacy files (one large cell;
   many small rows) restored onto PostgreSQL, and a library whose originals exceed
   the former single-upload bundle ceiling round-tripped SQLite→PostgreSQL and
   PostgreSQL→SQLite (`lytronaut-lbk`). SQLite-only counterparts run by default.
+
 - Twenty-two restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
   archives, free-space admission refusals with their shortfall and mid-restore
   quota, a library beyond the single-upload budgets and file count archived,
@@ -294,6 +306,23 @@ its case list:
   refuse startup (per-job blocked cleanup starts the service). Unrelated SQL and
   filesystem sentinels, including restore-named decoys, must survive each case.
 
+The `lytronaut-0f6` transport check exercised a 64 MiB synthetic restore upload
+in actual Chrome 155 against the frozen `3affd39` service and Rust/WASM client,
+with an intentionally unsatisfiable server free-space floor. The service returned
+429 and the client displayed the typed shortfall; no request failure or generic
+“Connection interrupted” message occurred. The earlier report was not reproduced
+on that stack, so this bead makes no transport change. This observation does not
+guarantee that every browser or proxy will preserve an early response if its
+connection is reset; the existing generic interruption path remains distinct
+from a successfully received admission refusal.
+
+Legacy version-1 restore still retains a `BTreeMap` inventory. Its existing
+32 MiB catalog bound and `count <= catalog_bytes / 64` guard limit it to at most
+524,288 entries. The review's roughly 70–100 MiB heap figure is an estimate,
+not a measured memory guarantee; allocator/container overhead was not measured
+here. Streaming that legacy inventory remains an optimization outside this
+export-test change. Version-2 inventory already uses disk spools. No legacy
+peak-memory acceptance result or exception is implied by these source bounds.
 The HTTP fixture selects PostgreSQL only with the explicit
 `LYTRONAUT_TEST_BACKEND=postgres` set by this recipe. The ordinary test recipe
 continues to use SQLite, even if a test PostgreSQL URL is present. Each PG HTTP

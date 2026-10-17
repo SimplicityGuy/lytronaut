@@ -172,6 +172,15 @@ video/browser recipes remove the inherited private-root environment variable so
 public validation cannot accidentally select private corpus mode. Private paths,
 captures and identifiers must never enter public reports or CI artifacts.
 
+This private browser proof intentionally discovers an offline, frozen SQLite
+`app.db` snapshot under the sealed corpus root. It does not connect to the
+deployment's application database, and it is not a PostgreSQL private-corpus
+test. The same sealed bytes drive browser codec/export verification regardless
+of the deployment engine. PostgreSQL service export behavior is covered
+separately by synthetic HTTP API tests. Keeping this harness offline avoids
+introducing deployment credentials or mutable catalog reads into its sealed
+source admission; no PostgreSQL private-corpus execution is claimed.
+
 ## Resource verification still pending
 
 Platform-generated JPEGs use bounded metadata-only inspection for their encoded
@@ -729,15 +738,31 @@ server-side jobs are not covered; launch still rejects a busy lane with a messag
   Live Photo API cases (create/download, DELETE of a ready pair, DELETE
   immediately after create, out-of-range plane index) are now a separate
   exact-count group in `just postgres-parity` (`48bcc66`).
-  These tests have known limits, tracked in follow-up bead `lytronaut-0f6` (Strengthen
-  Live Photo API tests and fix Flatten export durability gap). The
+  At that checkpoint, the tests had limits subsequently addressed in
+  `lytronaut-0f6` (Strengthen Live Photo API tests and fix Flatten export durability
+  gap). The historical
   DELETE-after-create case accepts either a running or an already-finished job,
   so it does not prove cancellation of in-flight work. The failed-plane case uses
   an out-of-range index, not an archived but unavailable plane. The in-process
-  restart helper leaves earlier job workers running. Flatten export still
-  fsyncs the export root rather than the job's own directory.
+  restart helper left earlier job workers running. Flatten export synced the
+  export root rather than the job's own directory; `lytronaut-cjq` corrected
+  that fsync and added the real missing-stored-plane failure case.
   Admission uses the epic's reserved-space, free-floor and job-ordering accounting
   with the 18 MiB bundle reservation.
+
+The current `live_photo_delete_after_create_never_offers_a_half_pair` test
+retains its honest completion-race semantics, and the invalid-index case is named
+`live_photo_out_of_range_plane_fails_without_output_and_survives_restart`.
+The separate native HTTP control tests pause real jobs after a rendered plane
+and after one production-sized artifact chunk, wait for DELETE to reach the
+worker's cancellation flag, and require quota/file cleanup without a download.
+The shutdown test holds a render worker while shutdown waits, then closes the
+catalog and immediately reopens the store without retrying Busy. These controls
+are compiled only into Rust unit tests, on both catalog engines. The HTTP
+integration fixture now calls `Api::shutdown` before closing its catalog and
+removes the old 500-attempt Busy retry. Directory fsync tests establish that the
+owning job directory is synced and errors propagate; they do not simulate power
+loss or establish a filesystem's hardware durability guarantees.
 - **H.264 `idr_pic_id`:** it was derived from source plane parity, so consecutive
   IDR pictures could share an identifier (planes 2, 0, 1 gave 0, 0, 1). It now
   alternates by playback position (`5896bfc`), and a slice-header test enforces

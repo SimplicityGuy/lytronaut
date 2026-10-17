@@ -76,6 +76,16 @@ pub(super) async fn render(
     );
     let mut builder = Builder::new(plan.clone(), &pairing).map_err(err)?;
     for &plane_index in plan.planes() {
+        #[cfg(test)]
+        if progress.load(Ordering::Relaxed) > 0 {
+            super::control_tests::checkpoint(
+                a,
+                super::control_tests::Stage::Render,
+                cancel,
+                progress,
+            )
+            .await;
+        }
         if cancel.load(Ordering::Acquire) {
             return Err(Failure::invalid());
         }
