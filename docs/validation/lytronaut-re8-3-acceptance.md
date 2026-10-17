@@ -314,3 +314,34 @@ experiment. Unit guards cover failed-value retention, source mismatches,
 incompatible modes, missing overlap and nonfinite measurements. No browser run
 of this new focus-only mode or release A/B measurement has occurred yet; the
 final changed source still requires canonical validation before submission.
+
+
+### Release artifacts and largest public writer checks
+
+Release service/WASM programs were compiled and frozen separately for baseline
+`623f2b9892f933d1735c818bd0de3a93517699a0` and integrated application
+`877116cbba57c0232a622ff59d4bc1ab326f8dbe`. Build receipts bind exact source
+paths, commands, fresh first-party compilation and program hashes. An initial
+current WASM attempt exposed stale baseline dependency metadata and failed;
+its receipt is retained. Explicit target-specific first-party cleaning produced
+a successful fresh current WASM build. This is build evidence, not a latency
+measurement. No quiet-host performance pass has been established.
+
+The public default 320×240 writer at `877116c` passed the reviewed HRD model
+and Apple resource checks. Ordinary native generation at 1138×1842 returned
+`Budget`, preserving the existing conservative JPEG working-set limit. The
+explicit prepared-still example at `b3f0850` exercises the browser's existing
+validated-still route without changing product source or limits. Both largest
+padded orientations (1138×1842 and 1842×1138) pass actual NAL/RBSP parsing,
+Type I/II HRD simulation at every initialization, and Apple three-frame decode,
+selected-still/key-time/no-audio, pairing and mismatched-pair rejection. See the
+[HRD scope and results](lytronaut-re8-3-hrd.md). This does not establish that
+Apple consumes the external HRD schedule or accepts a GUI Photos import.
+
+Evidence remains outside the repository in
+`delivery-evidence/re8-3-release-baseline623`,
+`delivery-evidence/re8-3-release-current-877116c` and
+`delivery-evidence/re8-3-prepared-still-b3f0850`. These contain public synthetic
+resources only. Final canonical validation, final exact-source remote checks,
+private export verification, CPU latency and owner Photos observation remain
+open at this checkpoint.

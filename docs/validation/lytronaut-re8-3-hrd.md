@@ -153,12 +153,29 @@ Actual VCL sizes are `[115804,115804,115804]`; reconstructed Type II sizes are
 `[115823,115804,115804]`, including 15-byte SPS and 4-byte PPS. Both candidate
 simulations pass; actual peak macroblock syntax is 3088 bits.
 
-Still required: source-bound runs on newly generated 1138×1842 / 1842×1138
-largest padded cases, final-source canonical validation, and reconciliation of
-the other acceptance gates. The public native
-example now accepts optional `width height` after its output directory, while
-the ordinary recipe remains 320×240. That test-only argument addition has not
-been built or executed yet and needs canonical validation at final source.
+The newly generated `b3f08505d726d0a22a07b639548c8c8af43aa3c4`
+1138×1842 and 1842×1138 public movies both pass the reviewed verifier
+`8e545f942f522a36136f0d4754127e4c7f648c4bd9f867df0be5aa6f00d8bea6`.
+Each contains three pictures with 8352 padded macroblocks and a peak of 3088
+syntax bits per macroblock. Both Type I and Type II pass all three possible
+buffering-period initializations. Apple resource decoding separately decoded
+all three frames, verified the selected still/key time and absence of audio,
+recognized the resource pair and rejected a mismatched pair. No Photos library
+was opened. Logs, programs and resource hashes are retained outside the repo
+under `delivery-evidence/re8-3-prepared-still-b3f0850`.
+
+The example's explicit `width height --prepared-still` test mode encodes the
+selected red frame as a genuine quality-90 JPEG before calling the existing
+`Builder::set_still`, following the browser caller's prepared-still route.
+Plan and JPEG geometry admission remain unchanged. A same-area transposed JPEG
+is rejected by the integration test. Ordinary native generation at the largest
+geometry returned `Budget` under the unchanged 128 MiB JPEG working-set limit;
+that failure is retained in `re8-3-release-current-877116c/public-padded`.
+Prepared-still success is no claim of native JPEG-stack support at that size or
+of the test encoder meeting product memory limits. Application source files
+are byte-identical between `877116c` and `b3f0850`; only the example/test changed.
+Final-source canonical validation and reconciliation of other acceptance gates
+remain required.
 
 This checker intentionally does **not** claim general H.264 syntax/semantics
 conformance outside its supported subset, arbitrary profiles/NAL types/slices,
