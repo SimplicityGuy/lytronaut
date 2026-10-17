@@ -1241,10 +1241,12 @@ mod tests {
                         .ends_with("-index.db")
                 })
                 .unwrap();
-            let held = path.with_extension("held");
-            fs::rename(&path, &held).unwrap();
+            // The paused worker has completed DDL and cancellation is already
+            // requested. Replace its owned path, without retaining a second
+            // staging file that recovery may legally delete in either order.
+            fs::remove_file(&path).unwrap();
             fs::create_dir(&path).unwrap();
-            Some((path, held))
+            Some(path)
         } else {
             None
         };
@@ -1254,7 +1256,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        if let Some((path, held)) = blocked {
+        if let Some(path) = blocked {
             let charged: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")
                 .fetch_one(catalog.pool())
                 .await
@@ -1278,8 +1280,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(charged, 1);
-            fs::remove_dir(path.clone()).unwrap();
-            fs::rename(held, path).unwrap();
+            fs::remove_dir(path).unwrap();
             store = Store::open(
                 catalog.clone(),
                 &root.join("originals"),

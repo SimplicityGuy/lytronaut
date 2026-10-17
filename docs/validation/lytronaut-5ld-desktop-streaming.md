@@ -1,7 +1,9 @@
 # Desktop catalog streaming (lytronaut-5ld)
 
-Status: implementation and independent source review complete; executable
-backend/canonical validation has not run yet. No runtime pass is claimed below.
+Status: implementation and independent source review complete. Focused SQLite
+contracts and actual PostgreSQL parity passed; canonical submission and final
+remote checks remain pending. One Linux-only fault-fixture defect was corrected
+after the first remote run; its corrected-source checks are still required.
 This authorized post-release follow-up does not change the owner's original
 initial-release disposition or introduce a new release gate.
 
@@ -12,9 +14,9 @@ The clean starting tree was main
 Beadhive. Regression checkpoint `56389c3` precedes the production change. The leaf
 then preserved-merge synced landed restore/operations work through main
 `c9090ffce609`. Initially no Cargo work was allowed at about 2.7 GiB free. Cleanup
-restored headroom, but the dispatcher still serializes builds; this bead is queued
-behind acceptance validation. Lightweight formatting/diff and fixture inspection
-are the only checks executed so far.
+restored headroom. After acceptance released its exclusive build lease, this
+bead ran serially with an owned 2 GiB free-space watchdog. The runtime results
+below supersede that earlier source-only checkpoint.
 
 The old adapter retained all `Records`, identity/membership sets and missing-file
 errors. It rejected more than 100,000 rows/cells or 8 MiB of aggregate values.
@@ -73,12 +75,12 @@ were fixed before review clearance:
   alone could adopt another directory's identity.
 
 The reviewer rechecked both fixes and reported no remaining source blockers.
-Runtime verification remains required. `cargo fmt --check` and `git diff --check`
-pass. Host Python SQLite fixture inspection generated 2,048 pictures ×64 columns
+Canonical and final remote verification remain required. `cargo fmt --check`
+and `git diff --check` pass. Host Python SQLite fixture inspection generated 2,048 pictures ×64 columns
 (131,072 picture cells), a 303,104-byte database, and verified the final opaque
 field `00ff`. This proves fixture shape, not application behavior.
 
-## Authored regressions awaiting execution
+## Regression coverage
 
 - SQLite and actual PostgreSQL wide catalogs above the old capture/cell bound:
   exact typed opaque fields, normalized counts, reverse membership order,
@@ -98,9 +100,46 @@ field `00ff`. This proves fixture shape, not application behavior.
   schema forms restore with and without the new empty table on both engines.
 - 8 MiB filesystem allocation units and checked quota-arithmetic boundaries.
 
+## Executed evidence and corrected failures
+
+- Regression checkpoint `56389c3` failed the new wide-catalog assertion exactly
+  as intended: old adapter returned `PreservedOnly`, expected `Ready`.
+- The first shared-target final-source invocation reused the old nine-test binary
+  without recompiling. That invocation is invalid final-source evidence. Cleaning
+  affected workspace packages forced real recompilation; it found a cancellation
+  predicate shadowing error, corrected in `7d05915`.
+- A historical 30,000-picture-list assertion expected the removed cell ceiling to
+  reject input. `0532da4` changes that one expected behavior to `Ready` and exact
+  30,000 count; all schema, CHECK-expression and per-value defenses remain tested.
+- At that corrected Rust source, Desktop integration passed nine tests with one
+  explicit PostgreSQL ignore; six private Desktop tests passed, including caller
+  cancellation/shutdown and cleanup-error quota retention/recovery. SQLite scratch
+  ownership/quota, export/restore quota, eight legacy physical schema forms and
+  portable live-ownership exclusion each passed their focused case.
+- Full pinned task-owned PostgreSQL parity at `b64c23b` passed **64 tests, zero
+  failed and zero ignored**. This includes the wide 2,048-capture test, scratch
+  ownership/restart/root replacement, export/restore quota, seven portable matrix
+  cases (423.81 seconds) and 24 restore fault cases (335.79 seconds). The exact
+  task-owned container and volume were removed after the run.
+- Initial remote CI `39016005899` failed the cleanup-error test on Linux at its
+  attempt to restore a `.held` file inside staging. Startup recovery can legally
+  delete that regular file before encountering the injected directory; APFS had
+  visited the directory first. Quota-retention/startup-refusal assertions already
+  passed. The corrected fixture unlinks the paused, cancelled worker's index and
+  injects a directory at that exact path, then removes only that directory before
+  retrying recovery. It has no second staging file or readdir-order assumption.
+  It still checks SQLite close/drain, retained quota, denied restart, later clean
+  recovery, zero partial versions and preserved original bytes.
+
+Logs, original failures and source provenance are retained in the private
+`/private/tmp/lytronaut-5ld-evidence` directory. The remote workflows for `b64c23b`
+are CI `39016005899`, coverage `39016015112` and containers `39016018801`; their
+results do not substitute for fresh checks of the corrected fixture source.
+
 ## Remaining delivery gates
 
-Focused SQLite/PostgreSQL execution, fail-first application evidence where feasible,
-canonical clean-checkout `mise exec -- just check`, remote CI/coverage/containers,
-and the normal human review gate remain outstanding. No gate was approved and no
-branch was submitted or merged by this developer.
+Re-run the corrected cleanup fixture, then canonical clean-checkout
+`mise exec -- just check` and fresh remote CI/coverage/containers. The shared
+workspace package outputs must be cleaned before the pristine checkout is bound:
+mtime-based cross-checkout freshness was demonstrably insufficient. No human
+gate was approved and no branch was submitted or merged by this developer.
