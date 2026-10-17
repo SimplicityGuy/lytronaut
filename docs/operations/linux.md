@@ -456,6 +456,26 @@ location does. For `N` bytes of unique originals:
   (or wait for other exports to finish) and retry. Nothing is created for a
   refused job.
 
+The archive sizing model uses the **actual unique-original count** `F`, not
+`LYTRONAUT_UPLOAD_FILES` (that limit applies to one import). With `C = 288 MiB`,
+work allocation unit `U`, and `cost(x) = max(1, ceil(x/U)) * U + 1024`, the
+reservation is exactly `16 * cost(0) + cost(C) + cost(40 * F) +
+cost(N + 60 + 40 * F + C)`. The 60 bytes are the fixed bundle header; each
+original contributes 40 framing bytes in the artifact and another 40 in the
+inventory spool. Rounding applies separately to each file; there is no fixed
+8 MiB framing allowance. Admission uses all cataloged unique sources, including
+ones capture may later skip, so it can be conservative.
+
+Free-space admission adds the new job's reservation, all outstanding export
+reservations, reservations of running imports and `LYTRONAUT_FREE_FLOOR`, and
+compares that total with the work filesystem's currently available bytes.
+Completed retained files already reduce those available bytes. Separately,
+`LYTRONAUT_RESERVED_BYTES` limits bounded per-asset exports (Flatten and Live
+Photo): the new reservation plus both reserved and retained bytes of existing
+per-asset exports must fit. Finished retained outputs therefore continue to
+consume this budget until deleted; whole-library archives and restores are
+excluded from that aggregate budget.
+
 `LYTRONAUT_FILE_BYTES` must not exceed `LYTRONAUT_UPLOAD_BYTES` (startup refuses
 such a configuration), so raising the per-file limit may require raising the
 upload budget too. Each original must still be at most `LYTRONAUT_FILE_BYTES` (512 MiB with Compose),
@@ -513,15 +533,23 @@ path and an externally managed PostgreSQL configured only by URL and secret file
 imports a synthetic library; checks owners and modes, graceful stop, down/up and
 restart-policy restarts on the same storage, that a Compose restart of PostgreSQL
 restarts the application and that a PostgreSQL server crash is recovered, a
-CRLF-terminated password secret, rejection of a multi-byte control character by
+valid non-ASCII UTF-8 CRLF-terminated password secret, rejection of a multi-byte control character by
 both the application and the role bootstrap, the documented `pg_dump`/`pg_restore` recovery
 for the bundled and the external server (the external one beside an
-administrator-owned `public` table; each browsed afterwards), fail-closed
+administrator-owned `public` table; every dumped application table has the same
+row count before recovered startup, and each recovered app is browsed afterwards), fail-closed
 redacted startup with a wrong or ambiguous password, and that no
 generated password appears in Compose configuration, container configuration,
 logs, the image or the report; and restores all four SQLite/PostgreSQL bundle
 combinations, starting and browsing each restored copy through the override
-above. `bind` prepares host directories with the documented owners and requires a
+above. Raw table counts are compared for `pg_dump` recovery, which preserves
+runtime bookkeeping too. Portable bundles intentionally omit export jobs and
+other runtime state, so those four deployment cases compare public library and
+capture identities plus original SHA-256 values instead. The strict
+`postgres-test` suite separately compares every portable table's logical values
+across all four backend combinations. Restart-policy checks require a count
+increase from immediately before each induced application exit or database crash;
+a previous restart cannot satisfy them. `bind` prepares host directories with the documented owners and requires a
 Linux host whose filesystem the engine uses directly; on a VM-backed engine (for
 example Docker on macOS) use `volume`, which checks the same owners and modes
 inside the engine's named volumes. The report records the host, engine and image
