@@ -4,7 +4,7 @@ use lytronaut_storage::{Catalog, StorageError as E, restore_namespace::RestoreNa
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -29,6 +29,17 @@ pub struct Journal {
     namespace: Option<RestoreNamespace>,
     reserved: u64,
     phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    removing: Option<Removal>,
+}
+/// A verified directory's identity survives removal of its inner marker. This
+/// intent is durable before renaming; filenames alone never grant ownership.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Removal {
+    published: bool,
+    device: u64,
+    inode: u64,
 }
 impl std::fmt::Debug for Journal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -54,6 +65,7 @@ impl Journal {
             namespace,
             reserved,
             phase: Phase::Prepared,
+            removing: None,
         };
         value.validate()?;
         let result = value.result(root);
@@ -128,6 +140,9 @@ impl Journal {
             || !identity(&self.nonce)
             || self.reserved > i64::MAX as u64
         {
+            return Err(E::Invalid);
+        }
+        if self.removing.is_some() && self.phase != Phase::CleanupPending {
             return Err(E::Invalid);
         }
         if let Some(namespace) = &self.namespace {
@@ -268,7 +283,10 @@ impl Journal {
         if let Some(namespace) = &self.namespace {
             namespace.cleanup(catalog).await?;
         }
-        for result in [self.pending(root), self.result(root)] {
+        if self.removing.is_some() {
+            self.finish_removal(root)?;
+        }
+        for (published, result) in [(false, self.pending(root)), (true, self.result(root))] {
             match fs::symlink_metadata(&result) {
                 Ok(metadata) => {
                     if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -286,14 +304,80 @@ impl Journal {
                     if nonce.as_slice() != self.nonce.as_bytes() {
                         return Err(E::Conflict);
                     }
-                    fs::remove_dir_all(result)?;
-                    File::open(root)?.sync_all()?;
+                    let removal = Removal {
+                        published,
+                        device: metadata.dev(),
+                        inode: metadata.ino(),
+                    };
+                    // Never overwrite a pre-existing tombstone, even an empty
+                    // directory: it has no durable ownership proof from us.
+                    match fs::symlink_metadata(self.tombstone(root, removal)) {
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                        _ => return Err(E::Conflict),
+                    }
+                    self.removing = Some(removal);
+                    self.persist(root)?;
+                    fault("cleanup-intent")?;
+                    self.finish_removal(root)?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => return Err(E::Unavailable),
             }
         }
         self.transition(root, Phase::CleanupComplete)
+    }
+    fn tombstone(&self, root: &Path, removal: Removal) -> PathBuf {
+        let kind = if removal.published {
+            "result"
+        } else {
+            "pending"
+        };
+        root.join(format!("{}.deleting-{}-{kind}", self.job, self.nonce))
+    }
+    fn finish_removal(&mut self, root: &Path) -> Result<(), E> {
+        let removal = self.removing.ok_or(E::Conflict)?;
+        let source = if removal.published {
+            self.result(root)
+        } else {
+            self.pending(root)
+        };
+        let tombstone = self.tombstone(root, removal);
+        let metadata = |path: &Path| -> Result<Option<fs::Metadata>, E> {
+            match fs::symlink_metadata(path) {
+                Ok(value) => Ok(Some(value)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.into()),
+            }
+        };
+        let verify = |value: &fs::Metadata| -> Result<(), E> {
+            if !value.is_dir()
+                || value.file_type().is_symlink()
+                || value.dev() != removal.device
+                || value.ino() != removal.inode
+            {
+                return Err(E::Conflict);
+            }
+            Ok(())
+        };
+        if let Some(value) = metadata(&source)? {
+            verify(&value)?;
+            if metadata(&tombstone)?.is_some() {
+                return Err(E::Conflict);
+            }
+            fs::rename(&source, &tombstone)?;
+            File::open(root)?.sync_all()?;
+            fault("cleanup-renamed")?;
+        }
+        if let Some(value) = metadata(&tombstone)? {
+            verify(&value)?;
+            // The durable directory identity, checked above, is independent of
+            // the inner marker that a previous remove_dir_all may have removed.
+            fs::remove_dir_all(&tombstone)?;
+            fault("cleanup-removed")?;
+        }
+        File::open(root)?.sync_all()?;
+        self.removing = None;
+        self.persist(root)
     }
     /// Only call AFTER retained/reserved SQL accounting is durably cleared.
     pub fn forget_after_quota_release(&self, root: &Path) -> Result<(), E> {
