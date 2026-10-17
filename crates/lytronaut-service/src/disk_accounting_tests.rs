@@ -336,3 +336,66 @@ async fn postgres_inode_checks_are_serialized_before_extraction() {
 async fn postgres_real_http_upload_frames_and_missing_length_refusal() {
     real_http_frames(true).await;
 }
+
+// A reservation belonging to a completed intake remains independent of the
+// original intake budget and must participate in every work-volume admission.
+async fn catalog_scratch_blocks_exports_and_restore_readmission(pg: bool) {
+    let (fixture, store, api, bytes) = source(pg, 0).await;
+    let restore = create(&api, "restore", bytes.len() as u64).await.unwrap();
+    let input = fixture.root.join("synthetic-scratch-readmission.bundle");
+    fs::write(&input, &bytes).unwrap();
+    let parent: String =
+        sqlx::query_scalar("SELECT id FROM intake_jobs WHERE state='succeeded' LIMIT 1")
+            .fetch_one(fixture.catalog.pool())
+            .await
+            .unwrap();
+    // Deliberate quota fault injection: this is far above any filesystem free
+    // count and independent of concurrent CI disk writes/cleanup.
+    sqlx::query("INSERT INTO intake_scratch(owner,root,job,bytes) VALUES('synthetic-owner','synthetic-other-root',$1,$2)")
+        .bind(parent).bind(i64::MAX/4).execute(fixture.catalog.pool()).await.unwrap();
+    for kind in ["archive", "restore"] {
+        assert!(
+            matches!(admit(&api, kind, 1).await, Err(Refusal::Space(_))),
+            "{kind} must count scratch reservations"
+        );
+    }
+    assert!(
+        readmit_restore(&api, &restore, &input, 0, &AtomicBool::new(false))
+            .await
+            .is_err(),
+        "extraction re-admission must count scratch too"
+    );
+    sqlx::query("DELETE FROM intake_scratch WHERE owner='synthetic-owner'")
+        .execute(fixture.catalog.pool())
+        .await
+        .unwrap();
+    assert!(
+        readmit_restore(&api, &restore, &input, 0, &AtomicBool::new(false))
+            .await
+            .unwrap()
+            > 0
+    );
+    let archive = create(&api, "archive", 1).await.unwrap();
+    assert!(!archive.is_empty());
+    fs::remove_file(input).unwrap();
+    // Direct admission in this test does not start a worker.
+    sqlx::query("UPDATE export_jobs SET state='cancelled',reserved=0 WHERE id IN ($1,$2)")
+        .bind(restore)
+        .bind(archive)
+        .execute(fixture.catalog.pool())
+        .await
+        .unwrap();
+    api.shutdown().await.unwrap();
+    drop(api);
+    drop(store);
+    fixture.finish().await;
+}
+#[tokio::test]
+async fn sqlite_catalog_scratch_is_counted_by_export_and_restore_admission() {
+    catalog_scratch_blocks_exports_and_restore_readmission(false).await;
+}
+#[tokio::test]
+#[ignore = "requires disposable actual PostgreSQL; deployment CI invokes explicitly"]
+async fn postgres_catalog_scratch_is_counted_by_export_and_restore_admission() {
+    catalog_scratch_blocks_exports_and_restore_readmission(true).await;
+}

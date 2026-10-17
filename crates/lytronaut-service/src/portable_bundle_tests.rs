@@ -498,6 +498,7 @@ async fn round_trip(source_pg: bool, destination_pg: bool) {
     let source = Fixture::new(source_pg).await;
     let store = source.seed().await;
     verify(&source.catalog, &source.root.join("originals")).await;
+    sqlx::query("INSERT INTO intake_scratch(owner,root,job,bytes) VALUES('synthetic-live-owner','synthetic-source-root','synthetic-job-0',4096)").execute(source.catalog.pool()).await.unwrap();
     let destination = Fixture::new(destination_pg).await;
     let archive = source.root.join("synthetic.bundle");
     let cancel = AtomicBool::new(false);
@@ -515,6 +516,14 @@ async fn round_trip(source_pg: bool, destination_pg: bool) {
     let (reopened, result, journal) =
         restore_and_reopen(&destination, &archive, store.limits()).await;
     verify(&reopened, &result.join("originals")).await;
+    let transient: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        transient, 0,
+        "runtime scratch ownership must never cross hosts in a portable catalog"
+    );
     assert!(logical_tables(&source.catalog, &[]).await == logical_tables(&reopened, &[]).await);
     release(&destination, reopened, journal).await;
     source.finish().await;
@@ -1270,6 +1279,14 @@ async fn legacy_archive(
     has_auth: bool,
     bulk: Bulk,
 ) -> (Vec<u8>, i64, Option<Logical>) {
+    legacy_archive_with_scratch(has_order, has_auth, bulk, false).await
+}
+async fn legacy_archive_with_scratch(
+    has_order: bool,
+    has_auth: bool,
+    bulk: Bulk,
+    has_scratch: bool,
+) -> (Vec<u8>, i64, Option<Logical>) {
     let source = Fixture::new(false).await;
     source.seed().await;
     let mut small_rows = 0;
@@ -1320,6 +1337,12 @@ async fn legacy_archive(
     let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&file))
         .await
         .unwrap();
+    if !has_scratch {
+        sqlx::query("DROP TABLE intake_scratch")
+            .execute(&mut db)
+            .await
+            .unwrap();
+    }
     if !has_order {
         sqlx::query("DROP TABLE application_job_order")
             .execute(&mut db)
@@ -1382,7 +1405,17 @@ async fn legacy_archive(
     (archive, small_rows, logical)
 }
 async fn legacy_restore(destination_pg: bool, has_order: bool, has_auth: bool, bulk: Bulk) {
-    let (archive, small_rows, logical) = legacy_archive(has_order, has_auth, bulk).await;
+    legacy_restore_with_scratch(destination_pg, has_order, has_auth, bulk, false).await
+}
+async fn legacy_restore_with_scratch(
+    destination_pg: bool,
+    has_order: bool,
+    has_auth: bool,
+    bulk: Bulk,
+    has_scratch: bool,
+) {
+    let (archive, small_rows, logical) =
+        legacy_archive_with_scratch(has_order, has_auth, bulk, has_scratch).await;
     let destination = Fixture::new(destination_pg).await;
     let input = destination.root.join("legacy.bundle");
     fs::write(&input, &archive).unwrap();
@@ -1499,14 +1532,18 @@ async fn legacy_count_beyond_its_catalog_file_is_rejected() {
 #[tokio::test]
 async fn legacy_four_exact_forms_restore_onto_sqlite() {
     for (has_order, has_auth) in [(true, false), (true, true), (false, false), (false, true)] {
-        legacy_restore(false, has_order, has_auth, Bulk::None).await;
+        for has_scratch in [false, true] {
+            legacy_restore_with_scratch(false, has_order, has_auth, Bulk::None, has_scratch).await;
+        }
     }
 }
 #[tokio::test]
 #[ignore = "requires explicit disposable PostgreSQL service"]
 async fn postgres_matrix_legacy_four_exact_forms_restore_onto_postgres() {
     for (has_order, has_auth) in [(true, false), (true, true), (false, false), (false, true)] {
-        legacy_restore(true, has_order, has_auth, Bulk::None).await;
+        for has_scratch in [false, true] {
+            legacy_restore_with_scratch(true, has_order, has_auth, Bulk::None, has_scratch).await;
+        }
     }
 }
 #[tokio::test]

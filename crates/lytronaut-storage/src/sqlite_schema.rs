@@ -3,6 +3,7 @@
 pub(crate) const INTAKE: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS intake_jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, total INTEGER NOT NULL, budget INTEGER NOT NULL, max_files INTEGER NOT NULL, encoded_limit INTEGER NOT NULL, zip_complete INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, files INTEGER NOT NULL DEFAULT 0, path_bytes INTEGER NOT NULL DEFAULT 0, reserved INTEGER NOT NULL, error TEXT)",
     "CREATE TABLE IF NOT EXISTS intake_sources (job TEXT NOT NULL REFERENCES intake_jobs(id), path TEXT NOT NULL, canonical TEXT NOT NULL, digest TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(job,path), UNIQUE(job,canonical))",
+    "CREATE TABLE IF NOT EXISTS intake_scratch (owner TEXT PRIMARY KEY, root TEXT NOT NULL, job TEXT NOT NULL REFERENCES intake_jobs(id), bytes INTEGER NOT NULL CHECK(bytes>0))",
 ];
 
 pub(crate) const CATALOG: &[&str] = &[

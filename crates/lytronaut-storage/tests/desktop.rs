@@ -21,6 +21,12 @@ impl Fixture {
         Self::with_database(None).await
     }
     async fn with_database(config: Option<DatabaseConfig>) -> Self {
+        Self::with_database_and_limits(config, None).await
+    }
+    async fn with_database_and_limits(
+        config: Option<DatabaseConfig>,
+        limits: Option<Limits>,
+    ) -> Self {
         let mut b = [0; 16];
         getrandom::fill(&mut b).unwrap();
         let root = std::env::temp_dir().join(format!(
@@ -38,14 +44,14 @@ impl Fixture {
             catalog.clone(),
             &root.join("originals"),
             &root.join("staging"),
-            Limits {
+            limits.unwrap_or(Limits {
                 upload_bytes: 4 * 1024 * 1024,
                 file_bytes: 2 * 1024 * 1024,
                 files: 32,
                 free_floor: 0,
-                reserved_bytes: 16 * 1024 * 1024,
+                reserved_bytes: 64 * 1024 * 1024,
                 ..Limits::default()
-            },
+            }),
         )
         .await
         .unwrap();
@@ -95,7 +101,7 @@ CREATE TABLE future_table(secret BLOB);INSERT INTO future_table VALUES(X'ffff');
             .begin(&ImportRequest {
                 version: WireVersion::V1,
                 kind: ImportKind::Directory,
-                declared_bytes: 4 * 1024 * 1024,
+                declared_bytes: self.store.limits().upload_bytes,
                 declared_files: 32,
             })
             .await
@@ -234,6 +240,49 @@ async fn assert_wide_catalog(f: &Fixture) {
 #[tokio::test]
 async fn wide_catalog_above_old_capture_and_cell_limit() {
     assert_wide_catalog(&Fixture::new().await).await;
+}
+
+#[tokio::test]
+async fn aggregate_values_above_old_eight_mib_limit_are_streamed() {
+    let f = Fixture::with_database_and_limits(
+        None,
+        Some(Limits {
+            upload_bytes: 32 * 1024 * 1024,
+            file_bytes: 32 * 1024 * 1024,
+            files: 32,
+            free_floor: 0,
+            reserved_bytes: 1024 * 1024 * 1024,
+            ..Limits::default()
+        }),
+    )
+    .await;
+    let source = wide_source(
+        &f,
+        "UPDATE picture SET caption=CAST(zeroblob(4096) AS TEXT)",
+    )
+    .await;
+    assert!(source.len() > 8 * 1024 * 1024);
+    assert!(source.len() < 32 * 1024 * 1024);
+    let job = f.intake(source, false, false).await;
+    let summary = desktop::import_desktop(&f.catalog, &f.store, &job)
+        .await
+        .unwrap();
+    assert_eq!(summary.state, CatalogState::Ready);
+    assert_eq!(summary.pictures, 2048);
+    let caption: Vec<u8> = sqlx::query_scalar(
+        "SELECT CAST(caption AS BLOB) FROM catalog_pictures WHERE version=$1 AND uuid=$2",
+    )
+    .bind(summary.version_id)
+    .bind(f.catalog.encode_source_key("p2048"))
+    .fetch_one(f.catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(caption, vec![0; 4096]);
+    let scratch: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")
+        .fetch_one(f.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(scratch, 0);
 }
 
 #[tokio::test]

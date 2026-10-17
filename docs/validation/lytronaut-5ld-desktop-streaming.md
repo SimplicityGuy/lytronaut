@@ -1,85 +1,104 @@
 # Desktop catalog streaming (lytronaut-5ld)
 
-Status: implementation in progress; executable backend/canonical validation has
-not run. This post-release follow-up does not change the owner's initial-release
-disposition or turn catalog size into a new release gate.
+Status: implementation and independent source review complete; executable
+backend/canonical validation has not run yet. No runtime pass is claimed below.
+This authorized post-release follow-up does not change the owner's original
+initial-release disposition or introduce a new release gate.
 
-## Baseline and boundaries
+## Baseline and change
 
-The clean starting tree is main `069dec523271907e50467126c10f52a3a7ebfc1e`.
-`bh work claim` refreshed the previously empty assigned leaf to that baseline.
-The old adapter gathers every known table into a `Records` map, then creates
-additional identity sets, membership sets and a missing-companion error list.
-It refuses more than 100,000 cells/rows or 8 MiB of aggregate decoded values.
-Replacing only `fetch_all` therefore would not bound the total live data.
+The clean starting tree was main
+`069dec523271907e50467126c10f52a3a7ebfc1e`; the assigned leaf was refreshed through
+Beadhive. Regression checkpoint `56389c3` precedes the production change. The leaf
+then preserved-merge synced landed restore/operations work through main
+`c9090ffce609`. Initially no Cargo work was allowed at about 2.7 GiB free. Cleanup
+restored headroom, but the dispatcher still serializes builds; this bead is queued
+behind acceptance validation. Lightweight formatting/diff and fixture inspection
+are the only checks executed so far.
 
-No Cargo test or build was allowed during this initial source work: the host had
-about 2.7 GiB free and the previous validator reached its 2 GiB safety floor.
-This is an explicit environment limitation, not passing validation. Lightweight
-Rust formatting and synthetic-fixture SQL inspection are permitted.
+The old adapter retained all `Records`, identity/membership sets and missing-file
+errors. It rejected more than 100,000 rows/cells or 8 MiB of aggregate values.
+The new adapter buffers one source row, builds disk-backed exact typed-ID/UUID
+and reference indexes, validates them, then streams a second pass directly into
+one atomic destination publication transaction. Errors stream without an
+all-catalog list. Source row ordinal, opaque typed values, UTF-8 validation for
+semantic fields, duplicate detection, membership ordering, version identity and
+quarantine/reimport behavior are preserved.
 
-The intended boundary is bounded source-row decoding, disk-backed semantic
-identity/reference validation, and one atomic destination publication transaction.
-Opaque typed values and input row ordinal stay byte-exact; duplicate detection,
-reference integrity, membership order, quarantine/reimport semantics, private
-source protection and cancellation rollback stay intact. Source files remain
-read-only; private temporary copies are independently verified before publication.
-The 32 MiB source-file limit, 1 MiB cell limit and schema/parser safety bounds
-remain resource limits. There is no promise of unlimited source size. The separate
-288 MiB portable catalog section bound is unchanged.
+The same independently copied, SHA-256-verified private 0400 source snapshot is
+held for both passes under Store's exclusive root ownership. The original sealed
+blob is never opened writable. Existing limits remain: 32 MiB source file,
+1 MiB value, 128 columns and bounded schema/VM/parser work. The former 8 MiB
+whole-catalog bound becomes a per-row bound, so no formerly admitted individual
+row is narrowed. The separate 288 MiB portable logical catalog bound is unchanged.
+There is no promise of unlimited source size or unlimited disk/allocator use.
 
-Strict validation is appropriate for the publication boundary: focused positive
-and adversarial tests, actual SQLite and PostgreSQL parity, fresh peer review,
-then the mandatory clean-checkout `mise exec -- just check` gate. Builds remain
-serialized under the dispatcher's exclusive build budget.
+## Ownership and reservation decision
 
-## Synthetic fixture evidence
+Holding PostgreSQL writer admission across copy/hash/validation was rejected:
+production idle-in-transaction timeout is ten seconds and competing admission
+would stall. Reusing succeeded `intake_jobs.reserved` was also rejected: existing
+columns cannot identify which root owns a crash-window reservation.
 
-The independently authored fixture contains 2,048 pictures with 64 picture
-columns: 131,072 picture cells before metadata or other tables are counted. It
-therefore exceeds the old 100,000-cell admission ceiling. Host Python SQLite
-inspection generated a 303,104-byte database, below the existing test fixture's
-2 MiB file budget, and verified the final opaque field as bytes `00ff`.
-This is fixture-shape evidence, not an application or backend test pass.
+The additive `intake_scratch(owner,root,job,bytes)` table records independent
+transient ownership. Source-copy plus enforced index capacity is reserved in a
+short writer transaction before files exist; all intake/export/restore admission
+sums include it. The index page cap is `4 MiB + 16 * source_size`, rounded to
+SQLite pages. Both files' physical costs use actual staging allocation units plus
+1 KiB metadata per file. Retained export artifacts remain separate; scratch is
+counted once per admission sum and retained in full through cleanup, conservatively
+including already materialized scratch bytes.
 
-The shared test assertion is called by the normal SQLite case and the existing
-explicit actual-PostgreSQL integration case. It checks normalized counts,
-reverse membership order, a late original record, opaque typed fields, original
-source byte preservation, and idempotent reimport. Adversarial late rows cover
-duplicate typed IDs, orphan references, duplicate membership index and an
-oversized value; they must retain originals without partial semantic records.
+A task-owned worker receives caller-drop/Store-shutdown cancellation. Its registered
+lifetime includes manifest hashing, source work, publication rollback and cleanup.
+SQLx workers close before files are unlinked/fsynced and reservation released.
+Ordinary unwind is caught so the same cleanup runs. Cleanup errors retain quota.
+Root-exclusive startup drains staging before releasing only its own reservations;
+a held directory FD anchors device/inode identity and replaced paths fail closed.
 
-## Outstanding evidence
+Portable v2's fixed table list omits runtime scratch ownership. The wire version,
+table ordering and section bound are unchanged. Exact older physical schemas
+without the new table remain accepted; newer physical schemas require it empty.
 
-- Implementation and fresh source review.
-- Fail-first application regression result against the baseline.
-- Actual SQLite and PostgreSQL positive/adversarial cases.
-- Cancellation/drain and source-mutation refusal evidence.
-- Bounded memory/disk accounting evidence.
-- Canonical submission validation and remote checks at the final source tree.
+## Source review and lightweight evidence
 
-## Reservation/ownership investigation
+An independent developer reviewed production ownership, quota, recovery, source
+parity, PostgreSQL transaction lifetimes and backup compatibility. Two findings
+were fixed before review clearance:
 
-Production PostgreSQL connections set `idle_in_transaction_session_timeout=10s`,
-`lock_timeout=5s` and `statement_timeout=10s` (`database.rs`). Holding the global
-writer transaction throughout source copying and semantic validation is therefore
-unsafe: source inspection itself permits ten seconds, and other adapters/jobs
-would block on that transaction's advisory key. Production lifecycle edits remain
-paused while the reservation surface is resolved; no long-held transaction has
-been introduced.
+- Use actual filesystem allocation units and per-file metadata, rather than
+  assuming a 4096-byte allocation unit for quota.
+- Capture the locked directory identity at Store open, hold its FD and verify the
+  pathname before admission/release/recovery; re-statting a replaceable path
+  alone could adopt another directory's identity.
 
-Current intake admission (`Store::begin`) counts running `intake_jobs.reserved`
-and all `export_jobs.reserved` under `Catalog::begin_write`; export admission and
-restore re-admission count those same running intake reservations. Completion
-sets the intake reservation to zero. Running export cleanup releases its durable
-reservation only after filesystem reconciliation. Reusing either reservation
-without extending its ownership/drain semantics would be incorrect.
+The reviewer rechecked both fixes and reported no remaining source blockers.
+Runtime verification remains required. `cargo fmt --check` and `git diff --check`
+pass. Host Python SQLite fixture inspection generated 2,048 pictures ×64 columns
+(131,072 picture cells), a 303,104-byte database, and verified the final opaque
+field `00ff`. This proves fixture shape, not application behavior.
 
-`Store::open` holds exclusive locks on both original and staging roots for the
-Store lifetime, and recovery removes interrupted flat staging files before
-normal admission. That is useful evidence for Store-owned scratch ownership,
-but it does not by itself make a new scratch allocation visible to every quota
-reader. Any reservation must cover source-copy bytes plus the scratch database's
-enforced page cap, remain charged until every SQLite worker/file is closed,
-and coexist with running-job reservations without counting the same reservation
-twice. A new durable schema is not yet justified by this investigation.
+## Authored regressions awaiting execution
+
+- SQLite and actual PostgreSQL wide catalogs above the old capture/cell bound:
+  exact typed opaque fields, normalized counts, reverse membership order,
+  original byte preservation and idempotent reimport.
+- More than 8 MiB aggregate typed values with individually bounded rows.
+- Late duplicate ID, orphan reference, membership index collision and oversized
+  value: preservation-only without partial semantic records.
+- A same-length changed source copy is rejected by its digest.
+- Caller cancellation retains quota until SQLite drain/unlink; Store shutdown
+  cannot pass a paused task-owned worker; cancelled work publishes no version.
+- SQLite/PostgreSQL shared quotas, parent FK retention, foreign-root isolation,
+  own-root restart and directory replacement refusal.
+- Export/restore admission and extraction re-admission include scratch quota.
+- Portable v2 round trips omit live scratch ownership, and legacy order/auth
+  schema forms restore with and without the new empty table on both engines.
+- 8 MiB filesystem allocation units and checked quota-arithmetic boundaries.
+
+## Remaining delivery gates
+
+Focused SQLite/PostgreSQL execution, fail-first application evidence where feasible,
+canonical clean-checkout `mise exec -- just check`, remote CI/coverage/containers,
+and the normal human review gate remain outstanding. No gate was approved and no
+branch was submitted or merged by this developer.

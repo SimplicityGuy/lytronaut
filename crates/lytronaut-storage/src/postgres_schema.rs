@@ -4,6 +4,7 @@
 pub(crate) const INTAKE: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS intake_jobs (id TEXT COLLATE \"C\" PRIMARY KEY, kind TEXT COLLATE \"C\" NOT NULL, state TEXT COLLATE \"C\" NOT NULL, total BIGINT NOT NULL, budget BIGINT NOT NULL, max_files BIGINT NOT NULL, encoded_limit BIGINT NOT NULL, zip_complete BIGINT NOT NULL DEFAULT 0, completed BIGINT NOT NULL DEFAULT 0, files BIGINT NOT NULL DEFAULT 0, path_bytes BIGINT NOT NULL DEFAULT 0, reserved BIGINT NOT NULL, error TEXT COLLATE \"C\")",
     "CREATE TABLE IF NOT EXISTS intake_sources (job TEXT COLLATE \"C\" NOT NULL REFERENCES intake_jobs(id), path TEXT COLLATE \"C\" NOT NULL, canonical TEXT COLLATE \"C\" NOT NULL, digest TEXT COLLATE \"C\" NOT NULL, length BIGINT NOT NULL, PRIMARY KEY(job,path), UNIQUE(job,canonical))",
+    "CREATE TABLE IF NOT EXISTS intake_scratch (owner TEXT COLLATE \"C\" PRIMARY KEY, root TEXT COLLATE \"C\" NOT NULL, job TEXT COLLATE \"C\" NOT NULL REFERENCES intake_jobs(id), bytes BIGINT NOT NULL CHECK(bytes>0))",
 ];
 
 pub(crate) const CATALOG: &[&str] = &[

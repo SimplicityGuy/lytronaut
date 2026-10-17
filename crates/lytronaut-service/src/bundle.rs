@@ -572,11 +572,9 @@ async fn restore_legacy(
         return Err(E::Quota);
     }
     let actual = schema(&mut c).await?;
-    let pre_order: Schema = expected
-        .iter()
-        .filter(|(_, name, _)| name != "application_job_order")
-        .cloned()
-        .collect();
+    // Exact previously shipped shapes remain readable. Scratch reservations
+    // are transient runtime ownership, absent from older physical snapshots and
+    // always absent from the version-2 logical catalog wire format.
     let with_auth = |mut shape: Schema| {
         for (name, sql) in LEGACY_AUTH {
             shape.push(("table".into(), name.into(), sql.into()));
@@ -584,17 +582,26 @@ async fn restore_legacy(
         shape.sort();
         shape
     };
-    let (has_order, legacy_auth) = if actual == *expected {
-        (true, false)
-    } else if actual == pre_order {
-        (false, false)
-    } else if actual == with_auth(expected.clone()) {
-        (true, true)
-    } else if actual == with_auth(pre_order) {
-        (false, true)
-    } else {
-        return Err(E::Invalid);
-    };
+    let mut accepted = None;
+    for has_order in [true, false] {
+        for has_scratch in [true, false] {
+            let shape: Schema = expected
+                .iter()
+                .filter(|(_, name, _)| {
+                    (has_order || name != "application_job_order")
+                        && (has_scratch || name != "intake_scratch")
+                })
+                .cloned()
+                .collect();
+            if actual == shape {
+                accepted = Some((has_order, false, has_scratch));
+            }
+            if actual == with_auth(shape) {
+                accepted = Some((has_order, true, has_scratch));
+            }
+        }
+    }
+    let (has_order, legacy_auth, has_scratch) = accepted.ok_or(E::Invalid)?;
     let ok: String = sqlx::query_scalar("PRAGMA quick_check(1)")
         .fetch_one(&mut c)
         .await?;
@@ -614,6 +621,14 @@ async fn restore_legacy(
             .fetch_one(&mut c)
             .await?;
         if n != 0 {
+            return Err(E::Invalid);
+        }
+    }
+    if has_scratch {
+        let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")
+            .fetch_one(&mut c)
+            .await?;
+        if pending != 0 {
             return Err(E::Invalid);
         }
     }
