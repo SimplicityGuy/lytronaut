@@ -164,8 +164,9 @@ private source identifiers, paths, hashes, pixels or calibration into this repo.
 
 ## Runtime work still required
 
-The current host has insufficient free disk for a fresh build and excessive
-load for reliable latency acceptance. No local browser, private-corpus,
+The earlier investigation stopped with insufficient free disk and excessive
+load for reliable latency acceptance. Disk cleanup has since completed; that
+historical resource condition is not a current blocker. No local browser, private-corpus,
 PostgreSQL or performance rerun has been performed for this bead. The existing
 remote PostgreSQL result above is retained instead. The bounded AVC probe above
 and focused Cargo regression above are the executable correctness experiments.
@@ -203,3 +204,49 @@ unit cases pass (including adversarial missing/late body and decode cases), and
 syntax checks pass. This verifies evidence rejection only; it establishes no
 runtime overlap or latency result. A quiet reference host with built release
 artifacts remains necessary for the actual acceptance measurement.
+
+## Resumed delivery work (2026-10-17)
+
+Preserved merge `41c1a90` incorporates delivered main `c9090ff`, including the
+restore reconciliation and PostgreSQL operations follow-ups. The only textual
+merge conflict was the Node test recipe: both the sidebar request tests and the
+grid evidence guard remain in the canonical test command. This integration is
+not a validation result. Builds remain serialized with the other dispatched
+beads; no competing build or latency run is authorized by this report.
+
+The next executable work is staged as follows:
+
+1. On receiving the machine lease, record source/tree, tool versions, free disk,
+   process ownership and load. Use one Cargo job, no incremental compilation,
+   and no dev/test debug information. Clean the cached `xtask` package before
+   a pristine checkout check so its compiled manifest path names that checkout.
+   Run `bh work check lytronaut-re8.3` through the mise-pinned environment.
+2. Generate public native resources with `mise exec -- just live-photo-apple`
+   and an external task-specific output directory. Preserve the new JPEG/MOV
+   hashes and Apple verifier result. Run the public Rust/WASM Live Photo
+   browser harness against same-source artifacts. These test platform decoding
+   and resource-loader recognition; neither replaces isolated Photos import.
+3. Build release service and WASM artifacts once, record their hashes and source
+   identity, and prepare the public synthetic fixture. Run
+   `scripts/browser-test.cjs` with `LYTRONAUT_RELEASE_BENCHMARK=1`,
+   `LYTRONAUT_GRID_LOAD_TEST=1`, explicit release `LYTRONAUT_BINARY` and
+   `LYTRONAUT_CLIENT`, and external `LYTRONAUT_TEST_ROOT`/report paths. Require
+   real response/decode overlap and both unchanged ≤100 ms gates. The shell
+   wrapper defaults to debug artifacts, so it is not a release recipe merely
+   because the benchmark flag is set. Keep a failed result as failed.
+4. Use the same quiet-host protocol for the `623f2b9` A/B baseline. A failed or
+   noisy comparison does not establish a regression cause. Schedule the private
+   export rerun separately against an authorized sealed copy; retain only
+   aggregate evidence outside source control.
+
+The H.264 first-access-unit question also remains independent work. Annex E.2.1
+requires application-derived HRD parameters when HRD signaling is absent; the
+absence does not waive Annex A.3.1 or Annex C. Any proof must state arrival,
+nominal/actual removal and output schedules, CPB size, rate and clock tick, use
+actual access-unit byte counts, and check each applicable inequality. A decoder
+pass, average bitrate or total movie bound is insufficient by itself.
+
+Only the isolated Photos GUI import requires new owner observation after the
+SPS change. Do not open the System/iCloud library to attempt it. Existing written
+VoiceOver/iOS exclusions and partial memory/GPU limitations retain exactly their
+recorded scope; no CPU latency or new-byte Photos exception has been granted.
