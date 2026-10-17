@@ -211,7 +211,10 @@ mod tests {
     }
     impl Reader {
         fn new(nal: &[u8]) -> Self {
-            assert_eq!(nal[0], 0x67);
+            Self::with_header(nal, 0x67)
+        }
+        fn with_header(nal: &[u8], header: u8) -> Self {
+            assert_eq!(nal[0], header);
             let mut bytes = Vec::new();
             let mut zeros = 0;
             for &byte in &nal[1..] {
@@ -305,8 +308,30 @@ mod tests {
         );
         let restrictions = read_restrictions(width, height);
         assert_eq!(restrictions[1], 0, "permitted no-picture-byte-limit signal");
-        // I_PCM macroblock_layer: ue(25), at most seven alignment bits,
-        // and 384 PCM bytes. E-80 counts RBSP syntax bits, not NAL escaping.
-        assert!(9 + 7 + 384 * 8 <= (3072 + 128) / restrictions[2]);
+        // Independently walk the actual slice RBSP, not just a declared
+        // denominator or an aggregate NAL byte count. E-80 counts RBSP syntax
+        // bits, excluding emulation-prevention bytes.
+        let mut slice = Reader::with_header(&nal, 0x65);
+        assert_eq!([slice.ue(), slice.ue(), slice.ue()], [0, 2, 0]);
+        assert_eq!(slice.n(4), 0); // frame_num
+        assert_eq!(slice.ue(), 0); // idr_pic_id
+        assert_eq!([slice.n(1), slice.n(1)], [0, 0]);
+        assert_eq!(slice.ue(), 0); // slice_qp_delta, signed zero
+        assert_eq!(slice.ue(), 1); // disable_deblocking_filter_idc
+        for _ in 0..width.div_ceil(16) * height.div_ceil(16) {
+            let start = slice.bit;
+            assert_eq!(slice.ue(), 25, "every macroblock must be I_PCM");
+            while !slice.bit.is_multiple_of(8) {
+                assert_eq!(slice.n(1), 0, "pcm_alignment_zero_bit");
+            }
+            slice.bit += 384 * 8; // 256 luma + 64 Cb + 64 Cr samples
+            assert!(slice.bit < slice.bytes.len() * 8, "PCM extent");
+            assert!(slice.bit - start <= 3088, "actual PCM syntax bound");
+            assert!(slice.bit - start <= (3072 + 128) / restrictions[2] as usize);
+        }
+        assert_eq!(slice.n(1), 1, "slice RBSP stop bit");
+        while slice.bit < slice.bytes.len() * 8 {
+            assert_eq!(slice.n(1), 0, "slice RBSP alignment");
+        }
     }
 }
