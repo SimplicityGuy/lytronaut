@@ -208,7 +208,6 @@ fn copy_verified(
     entry: &SourceEntry,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), CatalogError> {
-    use io::{Read, Write};
     let mut hash = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0u8; 65536];
@@ -477,7 +476,7 @@ fn scratch_plan(source_bytes: u64, unit: u64) -> Result<(u64, u64), CatalogError
     Ok((pages, reserved))
 }
 async fn scratch(path: &std::path::Path, pages: u64) -> Result<SqliteConnection, CatalogError> {
-    let mut conn = SqliteConnection::connect_with(
+    Ok(SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
             .filename(path)
             .row_buffer_size(1)
@@ -489,14 +488,16 @@ async fn scratch(path: &std::path::Path, pages: u64) -> Result<SqliteConnection,
             .pragma("temp_store", "MEMORY")
             .pragma("max_page_count", pages.to_string()),
     )
-    .await?;
+    .await?)
+}
+async fn initialize_scratch(conn: &mut SqliteConnection) -> Result<(), CatalogError> {
     sqlx::raw_sql("CREATE TABLE identities(kind TEXT NOT NULL,value BLOB NOT NULL,PRIMARY KEY(kind,value)) WITHOUT ROWID;
 CREATE TABLE ids(kind TEXT NOT NULL,value BLOB NOT NULL,PRIMARY KEY(kind,value)) WITHOUT ROWID;
 CREATE TABLE pictures(uuid BLOB PRIMARY KEY,bin BLOB NOT NULL,event BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE events(uuid BLOB PRIMARY KEY,library BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE members(album BLOB NOT NULL,picture BLOB NOT NULL,idx INTEGER NOT NULL,PRIMARY KEY(album,picture),UNIQUE(album,idx)) WITHOUT ROWID;")
-        .execute(&mut conn).await?;
-    Ok(conn)
+        .execute(conn).await?;
+    Ok(())
 }
 async fn validate(
     decoded: &mut Decoded,
@@ -719,6 +720,10 @@ async fn import_with_resources(
     let store = store.clone();
     let job = job.to_string();
     tokio::spawn(async move {
+        let _permit = IMPORTS
+            .acquire()
+            .await
+            .map_err(|_| CatalogError::Unavailable)?;
         use futures_util::FutureExt;
         let result = std::panic::AssertUnwindSafe(import_owned(
             &catalog,
@@ -744,10 +749,7 @@ async fn import_owned(
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     resources: &mut Resources,
 ) -> Result<ImportSummary, CatalogError> {
-    let _permit = IMPORTS
-        .acquire()
-        .await
-        .map_err(|_| CatalogError::Unavailable)?;
+    cancelled(&cancel)?;
     migrate(catalog).await?;
     cancelled(&cancel)?;
     let entries = store.catalog_manifest(job, cancel.clone()).await?;
@@ -826,6 +828,7 @@ async fn import_owned(
                 .open(&path)?;
             resources.scratch_file = Some(Snapshot { path: path.clone() });
             resources.scratch = Some(scratch(&path, pages).await?);
+            initialize_scratch(resources.scratch.as_mut().unwrap()).await?;
             #[cfg(test)]
             if let Some(probe) = resources.probe.as_ref() {
                 probe.entered.notify_one();
@@ -1142,6 +1145,13 @@ mod tests {
     }
     #[tokio::test]
     async fn dropped_caller_keeps_quota_until_worker_drains_and_unlinks() {
+        dropped_caller_case(false).await;
+    }
+    #[tokio::test]
+    async fn cleanup_error_retains_quota_until_owned_restart_can_reconcile() {
+        dropped_caller_case(true).await;
+    }
+    async fn dropped_caller_case(cleanup_error: bool) {
         use crate::Limits;
         use lytronaut_contracts::{ImportKind, ImportRequest, WireVersion};
         let root =
@@ -1154,7 +1164,7 @@ mod tests {
         let catalog = Catalog::open_application_database(&root.join("app.db"))
             .await
             .unwrap();
-        let store = Store::open(
+        let mut store = Store::open(
             catalog.clone(),
             &root.join("originals"),
             &root.join("staging"),
@@ -1220,12 +1230,65 @@ mod tests {
             !shutdown.is_finished(),
             "shutdown cannot pass a paused scratch owner"
         );
+        let blocked = if cleanup_error {
+            let path = fs::read_dir(store.staging_root())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .ends_with("-index.db")
+                })
+                .unwrap();
+            let held = path.with_extension("held");
+            fs::rename(&path, &held).unwrap();
+            fs::create_dir(&path).unwrap();
+            Some((path, held))
+        } else {
+            None
+        };
         probe.release.notify_one();
         tokio::time::timeout(Duration::from_secs(10), shutdown)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
+        if let Some((path, held)) = blocked {
+            let charged: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+            assert_eq!(charged, 1, "cleanup failure must retain durable quota");
+            let limits = store.limits().clone();
+            drop(store);
+            assert!(
+                Store::open(
+                    catalog.clone(),
+                    &root.join("originals"),
+                    &root.join("staging"),
+                    limits.clone()
+                )
+                .await
+                .is_err(),
+                "startup must refuse non-file scratch ownership without releasing quota"
+            );
+            let charged: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+            assert_eq!(charged, 1);
+            fs::remove_dir(path.clone()).unwrap();
+            fs::rename(held, path).unwrap();
+            store = Store::open(
+                catalog.clone(),
+                &root.join("originals"),
+                &root.join("staging"),
+                limits,
+            )
+            .await
+            .unwrap();
+        }
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")

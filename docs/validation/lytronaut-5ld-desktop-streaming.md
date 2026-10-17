@@ -89,6 +89,8 @@ field `00ff`. This proves fixture shape, not application behavior.
 - A same-length changed source copy is rejected by its digest.
 - Caller cancellation retains quota until SQLite drain/unlink; Store shutdown
   cannot pass a paused task-owned worker; cancelled work publishes no version.
+  Injected unlink failure retains quota and blocks restart until the owned path
+  is reconciled; recovery then drains it and releases only its reservation.
 - SQLite/PostgreSQL shared quotas, parent FK retention, foreign-root isolation,
   own-root restart and directory replacement refusal.
 - Export/restore admission and extraction re-admission include scratch quota.
