@@ -123,6 +123,20 @@ fn platform_jpeg_metadata_at_two_million_pixels_keeps_real_decode_admission() {
     let mut builder = Builder::new(Plan::new(geometry, &[-1.0, 1.0], 0).unwrap(), ID).unwrap();
     builder.set_still(&jpeg).unwrap();
     assert!(builder.finish().is_err());
+    let mut mismatched = Builder::new(
+        Plan::new(
+            Geometry {
+                width: 1024,
+                height: 2048,
+            },
+            &[-1.0, 1.0],
+            0,
+        )
+        .unwrap(),
+        ID,
+    )
+    .unwrap();
+    assert_eq!(mismatched.set_still(&jpeg), Err(FormatError::Extent));
 }
 fn geometry() -> Geometry {
     Geometry {
