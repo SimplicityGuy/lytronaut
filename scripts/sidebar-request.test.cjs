@@ -53,3 +53,26 @@ test('intentional rejected body may be cancelled after exact current-request hea
 test('successful responses cannot opt out of actual request completion',()=>{
  assert.throws(()=>fence(page(),url,200,true),/limited to rejected/);
 });
+
+test('deadline distinguishes a cancelled exact response from an absent request',async()=>{
+ const p=page();p.getDefaultTimeout=()=>5;
+ const f=fence(p,url),req=request();req.failure=()=>({errorText:'net::ERR_ABORTED'});
+ p.emit('request',req);p.emit('response',req.response());p.emit('requestfailed',req);
+ await assert.rejects(f.promise,error=>{
+  assert.deepEqual(error.requestLifecycle,{seen:1,active:0,requests:[{sequence:1,headers:true,finished:false,failed:true,status:200,fromCache:false,error:'net::ERR_ABORTED'}]});return /deadline/.test(error.message);
+ });assert.equal(p.eventNames().length,0);
+ const absent=fence(p,url);await assert.rejects(absent.promise,error=>{
+  assert.deepEqual(error.requestLifecycle,{seen:0,active:0,requests:[]});return true;
+ });assert.equal(p.eventNames().length,0);
+});
+
+test('diagnostics retain only eight exact request objects and expose cache completion',async()=>{
+ const p=page(),f=fence(p,url);
+ for(let i=0;i<12;i++){const req=request();p.emit('request',req);p.emit('requestfailed',req);}
+ const req=request();const response=req.response();response.fromCache=()=>true;
+ p.emit('request',req);p.emit('response',response);p.emit('requestfinished',req);await f.promise;
+ const state=f.snapshot();assert.equal(state.seen,13);assert.equal(state.active,0);assert.equal(state.requests.length,8);
+ assert.equal(state.requests[0].sequence,6);assert.equal(state.requests.at(-1).fromCache,true);assert.equal(state.requests.at(-1).finished,true);
+ state.requests[0].sequence=0;assert.equal(f.snapshot().requests[0].sequence,6,'diagnostic snapshots cannot mutate correlation state');
+ assert.equal(p.eventNames().length,0);
+});
