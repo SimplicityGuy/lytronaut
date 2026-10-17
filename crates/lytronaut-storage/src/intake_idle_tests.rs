@@ -3,14 +3,14 @@ use super::*;
 use sqlx::{ConnectOptions, Connection, PgConnection, postgres::PgConnectOptions};
 use std::str::FromStr;
 
-struct Fixture {
-    root: PathBuf,
-    store: Store,
-    catalog: Catalog,
+pub(super) struct Fixture {
+    pub(super) root: PathBuf,
+    pub(super) store: Store,
+    pub(super) catalog: Catalog,
     postgres: Option<(PgConnection, String)>,
 }
 impl Fixture {
-    async fn new(postgres: bool) -> Self {
+    pub(super) async fn new(postgres: bool) -> Self {
         let name = format!("lytronaut_idle_{}", unique().unwrap());
         let root = std::env::temp_dir().join(&name);
         fs::create_dir(&root).unwrap();
@@ -84,7 +84,7 @@ impl Fixture {
             .await
             .unwrap()
     }
-    async fn close(self) {
+    pub(super) async fn close(self) {
         drop(self.store);
         self.catalog.pool().close().await;
         if let Some((mut connection, name)) = self.postgres {

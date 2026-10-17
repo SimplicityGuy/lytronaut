@@ -44,8 +44,11 @@ SQLite database, without assigning semantics or projecting their rows.
 Imports admit at most two concurrent adapters. `Store::manifest` checks sealed
 blobs on its bounded blocking worker; only the active database is opened again
 with `Store::open_blob`, also on a bounded blocking task. A private create-new
-0700 temporary directory contains a <=32 MiB read-only 0400 DB copy. Copies are
-removed by an owned RAII guard. SQLite uses read-only, immutable, query-only,
+0700 staging root contains a <=32 MiB read-only 0400 DB copy and a private 0600
+SQLite semantic index. Copying hashes the actual copied bytes against the sealed
+manifest; both passes read that same application-owned copy. Source libraries
+are never opened writable. A task-owned worker drains SQLite, unlinks its files
+and syncs staging before releasing its scratch reservation. SQLite uses read-only, immutable, query-only,
 trusted-schema-off, ignore-check-constraints, disabled mmap and a 2 MiB cache.
 No extension loading, attachments or source writes are enabled. WAL, SHM or
 journal companions prohibit semantic import. Only the main `lytrolibrary.db`
@@ -57,15 +60,43 @@ All tables must be ordinary physical tables without generated columns; source
 views are never queried. Virtual tables are refused globally before integrity
 hooks can run. CHECK expressions are not evaluated. Fixed table names and quoted,
 doubled identifiers are the only interpolated SQL. Read admission caps each table
-at 128 columns, all known rows at 100,000, all cells at 100,000, each text/blob at
-1 MiB, and aggregate cell bytes at 8 MiB before fetching records. A SQLx progress
-handler interrupts after approximately 20 million VM instructions or ten seconds.
-These deliberately conservative semantic limits yield preservation-only versions;
-they do not discard originals or enlarge the intake budget. SQLx's 0.9 safe
-`LockedSqliteHandle::set_progress_handler` API is used without unsafe application
-code. Source schema expressions never become application SQL or migrations.
+at 128 columns, each text/blob at 1 MiB, and each decoded row at 8 MiB (every
+formerly admitted row already fit that old whole-catalog byte bound). It no
+longer caps capture count, row count, table cells or aggregate decoded bytes.
+SQLx buffers one source row at a time; validation and installation each scan the
+same immutable private copy. Exact typed-ID uniqueness, UUIDs, foreign references
+and membership ordering use indexed disk tables instead of all-catalog Rust maps.
+Original records and missing-companion errors stream directly into the destination.
+The manifest itself remains subject to the existing intake file/path budgets.
 
-The final installation is one SQLite transaction: assert intake still succeeded,
+Source inspection retains the 20-million-instruction/ten-second safety budget.
+Each row scan has a VM-work budget and renews its deadline when requesting the
+next row, excluding downstream destination-write backpressure. These are parser
+resource limits; support is not unlimited source size. No source schema expression
+becomes application SQL, a migration or an extension hook.
+
+`intake_scratch` is additive application-owned transient quota state, separate
+from succeeded intake rows and retained export artifacts. It records a random
+owner nonce, the locked staging directory's device/inode identity, source job and
+reserved bytes. A short writer transaction counts all intake/export/scratch
+reservations before creating files; source copy/hash/validation holds no target
+SQL transaction. Intake, export and restore re-admission include scratch quota.
+The SQLite index has an enforced 4096-byte page cap of `4 MiB + 16 * source_size`
+rounded up; reservation costs both files using the staging filesystem's actual
+allocation unit plus 1 KiB metadata per file. The full reservation remains charged
+until cleanup, conservatively including materialized bytes, exactly once in each
+admission sum. This does not reserve permanent destination catalog growth.
+
+Startup holds exclusive root locks, deletes interrupted staging files and syncs
+the directory before releasing only that root's reservations. The held directory
+FD anchors identity; replacing the pathname fails closed. A live reservation's
+foreign key prevents deleting its source job. Cancellation, caller drop and Store
+shutdown request the worker to stop and wait for drain/cleanup. Cleanup errors
+retain quota for startup reconciliation. Portable v2's fixed logical table list
+excludes this transient table; exact older physical schemas without it remain
+readable, and a physical snapshot containing live scratch reservations is refused.
+
+The final installation is one SQLite or PostgreSQL transaction: assert intake still succeeded,
 insert exactly one completed intake reference per source, then original records,
 normalized associations and item errors, and finally publish the state. Fingerprint
 uniqueness serializes concurrent/repeated imports. Failures roll back all new

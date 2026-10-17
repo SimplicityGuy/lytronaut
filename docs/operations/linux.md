@@ -497,10 +497,12 @@ Interrupted transfers are not resumed; start the download or upload again.
 
 ### Limitations
 
-- A single Lytro Desktop library database is read semantically only up to
-  100,000 table cells (about 1,700 captures with the Desktop schema's usual
-  columns); a larger one is preserved byte-exact but imported as preserved-only.
-  This is a known limit of the Desktop adapter, tracked separately.
+- The Desktop adapter streams catalogs without a fixed capture-count or
+  100,000-cell limit. The source database must still fit 32 MiB, each value
+  1 MiB and each row 8 MiB; schema/parser and scratch-space bounds also apply.
+  Unsupported or structurally oversized databases remain byte-exact originals.
+  Scratch copy/index work reserves space before allocation and remains charged
+  until cleanup; see [the catalog boundary](../architecture/catalog.md).
 - A portable bundle's logical catalog holds about 33,800 captures; see
   [Backup bundle size and free space](#backup-bundle-size-and-free-space).
 - One application instance per catalog: do not run two services against the same

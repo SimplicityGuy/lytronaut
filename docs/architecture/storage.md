@@ -87,7 +87,10 @@ active jobs and checked conservatively on both volumes against actual available
 space; on the staging volume the in-flight reservations of export and restore jobs
 are added, under the same writer admission, so an import cannot claim space a
 backup or restore already reserved (export admission counts running imports in
-turn). A shortage is a retryable `StorageError::Space` naming the required and
+turn). Post-intake Desktop adaptation has separate durable `intake_scratch`
+reservations, included by intake, export and restore re-admission until its owned
+SQLite workers/files are drained and cleaned; succeeded intake reservations stay
+unchanged ([catalog ownership](catalog.md)). A shortage is a retryable `StorageError::Space` naming the required and
 available bytes (HTTP 429 `resource_limit` with a `shortfall`); a declaration
 beyond the upload budget remains `Quota` (HTTP 413). One encoded spool per job prevents concurrent requests exceeding that
 reservation. Process-exclusive locks own both roots; reservation/terminal changes

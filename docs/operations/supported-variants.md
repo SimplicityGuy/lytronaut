@@ -17,7 +17,7 @@ image publication remain disabled; images are built locally.
 |---|---|---|
 | Lytro Desktop library, schema 23 | Supported | Synthetic import, album order, metadata and restore tests in CI; private 109-capture library validated locally (aggregate counts only, [validation](#private-library-validation)) |
 | Desktop library, other schema versions | Preserved only | Byte-exact preservation; no semantic import (synthetic schema-99 fixture) |
-| Desktop library larger than about 1,700 captures | Preserved only | The Desktop adapter reads at most 100,000 table cells semantically; larger databases are preserved byte-exact ([limitations](linux.md#limitations)) |
+| Desktop library larger than about 1,700 captures | Bounded streaming | No fixed capture/cell-count ceiling; source DB <=32 MiB and value/parser/scratch bounds still apply ([limitations](linux.md#limitations), [validation](../validation/lytronaut-5ld-desktop-streaming.md)) |
 | Original Lytro camera (F01) containers | Supported: preserve, validate, download | Container/reference validation and lossless 12-bit extraction; sensor samples are not shown as photographs |
 | LFE 11 JPEG focus stacks | Supported: discrete focus | Nearest stored plane by validated lambda; no continuous optical refocus |
 | LFE 10/11 archived H.264 focus stacks | Conditional | Browser WebCodecs only; decode failure falls back to JPEG/static ([H.264](#browser-h264-focus)) |
