@@ -149,13 +149,16 @@ def movie_samples(data):
     for track in children(root[2]):
         if track[0] != b'trak':
             continue
-        mdia = children(one(children(track), b'mdia'))
+        track_boxes = children(track)
+        mdia = children(one(track_boxes, b'mdia'))
         handler = one(mdia, b'hdlr')
         if data[handler[1] + 8:handler[1] + 12] == b'vide':
+            require(not any(box[0] == b'edts' for box in track_boxes), 'video edit lists unsupported')
             tracks.append(mdia)
     require(len(tracks) == 1, 'one video track required')
     mdia = tracks[0]
     tables = children(one(children(one(mdia, b'minf')), b'stbl'))
+    require(sorted(box[0] for box in tables) == sorted([b'stsd', b'stts', b'stsc', b'stsz', b'stco']), 'unsupported or duplicate video sample table; CTTS is not supported')
     offsets, sizes = one(tables, b'stco'), one(tables, b'stsz')
     n = at(offsets, 4)
     require(at(offsets, 0) == at(sizes, 0) == 0, 'sample table version/flags')
@@ -198,25 +201,28 @@ def movie_samples(data):
     return sps, pps, samples, dimensions
 
 
-def schedule(byte_counts, macroblocks, rate, capacity):
+def schedule(byte_counts, macroblocks, rate, capacity, original_count=None, init_index=0):
     """E.2.2 inferred VBR parameters; external BP/timing values, never stream edits."""
     n = len(byte_counts)
-    require(2 <= n <= 64, 'picture count')
+    original_count = n if original_count is None else original_count
+    require(1 <= n <= original_count <= 64 and original_count >= 2, 'picture count')
+    require(init_index >= 0 and init_index + n == original_count, 'initialization suffix identity')
     require(1 <= macroblocks <= MAX_FS and all(isinstance(size, int) and size > 0 for size in byte_counts), 'picture geometry/byte counts')
-    tick = Q(3, 2 * n)
+    tick = Q(3, 2 * original_count)
     initial = Q(1, 90000)
-    require(0 < 3 < 2**32 and 0 < 2 * n < 2**32, 'external clock field widths')
+    require(0 < 3 < 2**32 and 0 < 2 * original_count < 2**32, 'external clock field widths')
     require(rate % 64 == 0 and 0 <= rate // 64 - 1 <= 2**32 - 2, 'E-81 representation')
     require(capacity % 16 == 0 and 0 <= capacity // 16 - 1 <= 2**32 - 2, 'E-82 representation')
     require(1 <= 90000 * Q(capacity, rate), 'D.2.2 initial delay bound')
-    # Inferred cbr_flag=0. One external BP, initial_delay=1, offset=89999.
-    # This supplies a one-second earliest-arrival window in C-4.
-    require(89999 < 2**24 and 1 + 2 * (n - 1) < 2**24, '24-bit delay fields')
+    # D.2.2 requires an external BP at EVERY IDR once BP presence is asserted.
+    # Each uses initial_delay=1, offset=0, SPS0; picture timing delay=2 ticks.
+    # C-8 advances nominal time from the preceding BP. C-5, not C-4, applies.
+    require(2 < 2**24, '24-bit delay fields')
     initial_arrival, final_arrival, actual, output = [], [], [], []
     rows = []
     for i, count in enumerate(byte_counts):
-        nominal = initial if i == 0 else initial + tick * (1 + 2 * i)
-        start = Q(0) if i == 0 else max(final_arrival[-1], nominal - 1)  # C-3/C-4
+        nominal = initial + tick * 2 * i  # C-7/C-8 with every-AU BP
+        start = Q(0) if i == 0 else max(final_arrival[-1], nominal - initial)  # C-3/C-5
         finish = start + Q(count * 8, rate)  # C-6
         late = max(Q(0), (finish - nominal) / tick)
         rounded = (late.numerator + late.denominator - 1) // late.denominator
@@ -226,6 +232,9 @@ def schedule(byte_counts, macroblocks, rate, capacity):
         if i == 0:
             limit = 192 * (max(Q(macroblocks), Q(MBPS, 172)) + MBPS * (removed - nominal))
         else:
+            bp_interval = 90000 * (nominal - final_arrival[-1])
+            maximum_initial_delay = (bp_interval.numerator + bp_interval.denominator - 1) // bp_interval.denominator
+            require(1 <= maximum_initial_delay, 'C.3(1) subsequent buffering-period initial delay')
             require(nominal - actual[-1] >= max(Q(macroblocks, MBPS), Q(1, 172)), 'A.3.1(a) removal spacing')
             limit = 192 * MBPS * (removed - actual[-1])
             require(removed - output[-1] >= max(Q(macroblocks, MBPS), Q(1, 172)), 'A.3.1(b)/C.3(7) output spacing')
@@ -250,7 +259,14 @@ def schedule(byte_counts, macroblocks, rate, capacity):
     # Max(max_num_ref_frames,1) rule permits this even with declared count zero
     # (7.4.3.3/8.2.5). Output at removal and zero reordering need one DPB frame.
     require(1 <= min(MAX_DPB // macroblocks, 16), 'C.3(5) DPB limit')
-    return {'rateBitsPerSecond': rate, 'cpbBits': capacity, 'inferredCbrFlag': 0, 'inferredLowDelay': 1, 'externalNumUnitsInTick': 3, 'externalTimeScale': 2 * n, 'externalBufferingPeriodIndices': [0], 'externalInitialDelay90k': 1, 'externalInitialDelayOffset90k': 89999, 'externalCpbRemovalDelays': [0] + [1 + 2 * i for i in range(1, n)], 'externalDpbOutputDelay': 0, 'peakCpbBits': str(peak), 'rows': rows}
+    return {'rateBitsPerSecond': rate, 'cpbBits': capacity, 'inferredCbrFlag': 0, 'inferredLowDelay': 1, 'externalNumUnitsInTick': 3, 'externalTimeScale': 2 * original_count, 'hrdInitializedAtOriginalAu': init_index, 'externalBufferingPeriodIndices': list(range(init_index, init_index + n)), 'externalBufferingPeriodSpsId': 0, 'externalInitialDelay90k': 1, 'externalInitialDelayOffset90k': 0, 'externalCpbRemovalDelays': [2] * n, 'externalDpbOutputDelay': 0, 'peakCpbBits': str(peak), 'rows': rows}
+
+
+def every_initialization(byte_counts, macroblocks, rate, capacity):
+    # The same externally supplied messages and clock must work when the HRD
+    # initializes at ANY BP, including the final IDR with only one AU remaining.
+    n = len(byte_counts)
+    return [schedule(byte_counts[start:], macroblocks, rate, capacity, n, start) for start in range(n)]
 
 
 def admitted_bound(macroblocks, pictures):
@@ -266,6 +282,12 @@ def admitted_bound(macroblocks, pictures):
     # nominal removal, and even the conservative first AU arrives within one tick.
     require(Q(384 * 8, 162000000) > Q(1, 90000), 'minimum first AU arrival')
     require(Q(first * 8, 135000000) < tick < 1, 'first AU/earliest arrival margin')
+    # Every BP yields tai(i)=2*i*tc, taf(i)<tai(i)+tc and
+    # tr(i)=initial+(2*i+1)*tc. Thus each next nominal gap from the prior
+    # actual removal is tc (not the output spacing2tc), and C.3(1) has
+    # nominal(i)-taf(i-1)>initial+tc. These hold for every suffix/init point.
+    require(tick >= max(Q(macroblocks, MBPS), Q(1, 172)), 'every-BP nominal/actual spacing')
+    require(90000 * tick >= 1, 'every-BP initial delay margin')
     require(first <= 192 * (max(Q(macroblocks), Q(MBPS, 172)) + MBPS * tick), 'conservative first AU limit')
     require(frame <= 192 * MBPS * 2 * tick, 'conservative later AU limit')
     require(2 * tick >= max(Q(macroblocks, MBPS), Q(1, 172)), 'conservative output/removal spacing')
@@ -284,7 +306,7 @@ def verify(data):
     nal = vcl.copy()
     nal[0] += len(sps) + len(pps)  # avcC parameters supplied before first IDR
     require(sum(nal) <= len(data), 'exact reconstructed NAL stream cap')
-    return {'status': 'experiment passed; acceptance gate remains open pending independent review', 'standard': 'ITU-T H.264 (08/2024)', 'verifierSha256': hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(), 'movieSha256': hashlib.sha256(data).hexdigest(), 'width': width, 'height': height, 'macroblocks': macroblocks, 'pictures': len(pictures), 'actualPeakMacroblockSyntaxBits': max(peaks), 'spsBytes': len(sps), 'ppsBytes': len(pps), 'typeI': schedule(vcl, macroblocks, 135000000, 135000000), 'typeII': schedule(nal, macroblocks, 162000000, 162000000), 'externalParametersEmbeddedInStream': False, 'appleConsumesThisScheduleVerified': False, 'uncoveredObligations': UNCOVERED}
+    return {'status': 'experiment passed; acceptance gate remains open pending independent review', 'standard': 'ITU-T H.264 (08/2024)', 'verifierSha256': hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(), 'movieSha256': hashlib.sha256(data).hexdigest(), 'width': width, 'height': height, 'macroblocks': macroblocks, 'pictures': len(pictures), 'actualPeakMacroblockSyntaxBits': max(peaks), 'spsBytes': len(sps), 'ppsBytes': len(pps), 'externalPresence': {'NalHrdBpPresentFlag': 1, 'VclHrdBpPresentFlag': 1, 'CpbDpbDelaysPresentFlag': 1}, 'typeIAllInitializations': every_initialization(vcl, macroblocks, 135000000, 135000000), 'typeIIAllInitializations': every_initialization(nal, macroblocks, 162000000, 162000000), 'externalParametersEmbeddedInStream': False, 'externallyConveyedSeiBytesCountedInNalStream': False, 'appleConsumesThisScheduleVerified': False, 'uncoveredObligations': UNCOVERED}
 
 
 if __name__ == '__main__':
