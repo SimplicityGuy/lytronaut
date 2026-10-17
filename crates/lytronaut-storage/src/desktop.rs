@@ -812,9 +812,9 @@ async fn import_owned(
             resources.reservation = Some(owner.clone());
             let s = store.clone();
             let e = db.clone();
-            let cancelled = cancel.clone();
+            let source_cancel = cancel.clone();
             resources.snapshot = Some(
-                tokio::task::spawn_blocking(move || snapshot(s, e, Some(&cancelled)))
+                tokio::task::spawn_blocking(move || snapshot(s, e, Some(&source_cancel)))
                     .await
                     .map_err(|_| CatalogError::Unavailable)??,
             );
