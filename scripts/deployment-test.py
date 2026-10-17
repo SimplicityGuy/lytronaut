@@ -239,11 +239,12 @@ def persistent_restarts(project, service_checks):
     checked(f"{project.name}: down/up recreated containers on persistent storage")
     # unless-stopped: an application exit is restarted by the engine.
     container = project.container()
+    restart_count = project.inspect()["RestartCount"]
     docker("exec", container, "sh", "-c", "kill -TERM 1")
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         info = json.loads(docker("inspect", container))[0]
-        if info["RestartCount"] >= 1 and info["State"].get("Health", {}).get("Status") == "healthy":
+        if info["RestartCount"] > restart_count and info["State"].get("Health", {}).get("Status") == "healthy":
             break
         time.sleep(1)
     else:
@@ -252,6 +253,29 @@ def persistent_restarts(project, service_checks):
     assert project.client().ready().snapshot() == before
     checked(f"{project.name}: restart policy restarted an exited application healthy")
     return before
+
+
+def postgres_table_counts(container, database="lytronaut"):
+    """Count every table in the same application schemas selected by pg_dump.
+
+    Call with the application stopped and compare before recovered startup, so
+    runtime reconciliation cannot change job/bookkeeping counts between samples.
+    No row values (including credentials) are read or placed in the report.
+    """
+    def sql(statement):
+        return docker("exec", container, "psql", "--no-psqlrc", "-v", "ON_ERROR_STOP=1",
+                      "-U", "postgres", "-d", database, "-Atqc", statement)
+
+    tables = sql("SELECT schemaname, tablename FROM pg_tables "
+                 "WHERE schemaname LIKE 'lytronaut%' ORDER BY schemaname, tablename").splitlines()
+    assert tables, "no application tables found for recovery comparison"
+    counts = {}
+    for table in tables:
+        schema, name = table.split("|", 1)
+        # Quote identifiers from the catalog rather than interpolating raw names.
+        quoted = ['"' + part.replace('"', '""') + '"' for part in (schema, name)]
+        counts[f"{schema}.{name}"] = int(sql(f"SELECT count(*) FROM {'.'.join(quoted)}").strip())
+    return counts
 
 
 def redaction_audit(projects):
@@ -354,10 +378,11 @@ def main():
         # 2. Bundled PostgreSQL Compose path with file secrets.
         secrets_dir = SCRATCH / "secrets"
         secrets_dir.mkdir(mode=0o700)
-        app_password = secrets.token_hex(16) + "%@:/?#&'\" +"
+        app_password = secrets.token_hex(16) + "%@:/?#&'\" +\u20ac"
         bootstrap_password = secrets.token_hex(24)
         SENSITIVE.extend([app_password, bootstrap_password, app_password.split("%")[0]])
-        # CRLF ending: the application reader and the role bootstrap must both strip it.
+        # Valid non-ASCII UTF-8 plus CRLF: bootstrap and application must accept
+        # the same password, stripping only the line ending.
         write_secret(secrets_dir, "lytronaut-database-password", app_password + "\r\n", f"{APP_UID}:{PG_UID}", "0440")
         write_secret(secrets_dir, "postgres-bootstrap-password", bootstrap_password, f"{PG_UID}:{PG_UID}", "0400")
         postgres_env = storage_env("postgres", extra=("postgres",))
@@ -388,7 +413,7 @@ def main():
         checked(f"PostgreSQL {version} Compose: healthy restricted role, owned schema only, synthetic import")
         host_permissions(postgres_env)
         persistent_restarts(postgres, ["lytronaut", "postgres"])
-        checked("bundled PostgreSQL and the application both accept a CRLF-terminated password secret")
+        checked("bundled PostgreSQL and the application both accept a non-ASCII UTF-8 CRLF-terminated password secret")
         # Compose-controlled PostgreSQL restart restarts the dependent application.
         application = postgres.container()
         started = json.loads(docker("inspect", application))[0]["State"]["StartedAt"]
@@ -401,6 +426,7 @@ def main():
         # Engine-level crash: the postmaster dies without Compose; the restart policy
         # brings PostgreSQL back and the running application reconnects by itself.
         database = postgres.container("postgres")
+        restart_count = postgres.inspect("postgres")["RestartCount"]
         application_started = json.loads(docker("inspect", application))[0]["State"]["StartedAt"]
         # The exec may itself be cut off when the container's main process exits.
         docker("exec", database, "pg_ctl", "stop", "-m", "immediate", "-D", "/var/lib/postgresql/18/docker",
@@ -408,7 +434,7 @@ def main():
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             info = json.loads(docker("inspect", database))[0]
-            if info["RestartCount"] >= 1 and info["State"].get("Health", {}).get("Status") == "healthy":
+            if info["RestartCount"] > restart_count and info["State"].get("Health", {}).get("Status") == "healthy":
                 break
             time.sleep(1)
         else:
@@ -426,6 +452,7 @@ def main():
         # empty bootstrap schema, pg_restore as the role through `exec -T`, start.
         dump = SCRATCH / "lytronaut-catalog.dump"
         postgres.compose("stop", "lytronaut", timeout=120)
+        bundled_counts = postgres_table_counts(postgres.container("postgres"))
         with open(dump, "wb") as out:
             postgres.stream("exec", "-T", "postgres", "pg_dump", "-U", "postgres", "-d", "lytronaut",
                             "--schema=lytronaut*", "--format=custom", stdout=out)
@@ -441,6 +468,10 @@ def main():
         with open(dump, "rb") as source:
             postgres.stream("exec", "-T", "postgres", "pg_restore", "-U", "postgres", "-d", "lytronaut",
                             "--no-owner", "--no-acl", "--role=lytronaut", "--exit-on-error", stdin=source)
+        recovered_counts = postgres_table_counts(postgres.container("postgres"))
+        assert recovered_counts == bundled_counts, (recovered_counts, bundled_counts)
+        report["bundledPostgresRecoveryTableCounts"] = recovered_counts
+        checked("bundled pg_dump/pg_restore preserves every application table row count")
         postgres.up()
         assert postgres.client().ready().snapshot() == ACTIVE[postgres.name]
         owner = postgres.compose("exec", "-T", "postgres", "psql", "--no-psqlrc", "-U", "postgres", "-d", "lytronaut",
@@ -520,7 +551,12 @@ def main():
         assert pg_name
         checked("fixture failure output withholds bootstrap SQL and passwords")
 
-        # 3. All four backup→restore combinations, each copy started and browsed.
+        # 3. All four portable backup→restore combinations, each copy started
+        # and browsed. Portable catalogs intentionally exclude export jobs and
+        # other runtime bookkeeping: raw all-table counts are not equivalent
+        # across this boundary. Logical table values are checked separately by
+        # the strict postgres-test portable round trips; here verify the public
+        # library/capture identities and exact original hashes after startup.
         for target, bundle, origin in [(sqlite, sqlite_bundle, sqlite), (sqlite, postgres_bundle, postgres),
                                        (postgres, sqlite_bundle, sqlite), (postgres, postgres_bundle, postgres)]:
             job = target.client().ready().restore(bundle)
@@ -560,6 +596,7 @@ def main():
         # Documented external recovery: dump, prepare an empty database (role and
         # grants, no schema), restore as the role, point the URL at it and start.
         external.compose("stop", "lytronaut", timeout=120)
+        external_counts = postgres_table_counts(fixture.name)
         dump = SCRATCH / "external-catalog.dump"
         with open(dump, "wb") as out:
             # Only the application's schemas: the fixture's administrator-owned public
@@ -578,6 +615,10 @@ def main():
                                      "-d", "lytronaut_recovered", "--no-owner", "--no-acl", "--role=lytronaut",
                                      "--exit-on-error"], stdin=source, stderr=subprocess.PIPE, timeout=600)
         assert result.returncode == 0, result.stderr[-500:]
+        recovered_counts = postgres_table_counts(fixture.name, "lytronaut_recovered")
+        assert recovered_counts == external_counts, (recovered_counts, external_counts)
+        report["externalPostgresRecoveryTableCounts"] = recovered_counts
+        checked("external pg_dump/pg_restore preserves every application table row count")
         recovered_url = fixture.url(host=fixture.name, password=False).replace("/lytronaut?", "/lytronaut_recovered?")
         external.up(env={"LYTRONAUT_DATABASE_URL": recovered_url}, recreate=True)
         assert external.client().ready().snapshot() == ACTIVE[external.name]
