@@ -624,15 +624,15 @@ async fn schema_admission_and_check_expressions_are_bounded() {
         CatalogState::Ready
     );
     let f = Fixture::new().await;
+    // This formerly exceeded100,000cells. Count alone is no longer a reason
+    // for preservation-only; all schema/parser/value limits above remain tested.
     let db=f.source("WITH RECURSIVE n(x) AS (VALUES(2) UNION ALL SELECT x+1 FROM n WHERE x<30000) INSERT INTO picture_list SELECT x,'list-'||x,0,1 FROM n").await;
     let id = f.intake(db, false, false).await;
-    assert_eq!(
-        desktop::import_desktop(&f.catalog, &f.store, &id)
-            .await
-            .unwrap()
-            .state,
-        CatalogState::PreservedOnly
-    );
+    let summary = desktop::import_desktop(&f.catalog, &f.store, &id)
+        .await
+        .unwrap();
+    assert_eq!(summary.state, CatalogState::Ready);
+    assert_eq!(summary.picture_lists, 30000);
 }
 
 #[tokio::test]
