@@ -110,7 +110,8 @@ that run does not attest these newly emitted SPS bytes.
 The [candidate external HRD experiment](lytronaut-re8-3-hrd.md) now records an
 independent actual-NAL parser and rational schedule model, its normative
 coverage, a small public fixture trial and remaining obligations. Fresh review
-and largest padded fixture execution are pending. This candidate does not yet
+of `4e93d9b` found no remaining blocker within that narrow scope; largest padded
+final-source execution is pending. This candidate does not yet
 close the gate or claim that Apple consumes the externally supplied parameters.
 
 ## Existing private and PostgreSQL evidence

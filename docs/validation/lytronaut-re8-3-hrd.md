@@ -1,17 +1,20 @@
 # Candidate external HRD conformance experiment
 
-Status: **not accepted as a completed release gate**. The implementation and
-interpretation require fresh independent review, followed by execution on the
-largest padded generated resources. A small public fixture trial is useful
-candidate evidence only. No production timing syntax is changed to suit this
-experiment, and no overall Level 5 conformance pass is claimed.
+Status: **not accepted as a completed release gate**. Fresh independent review
+of `4e93d9b` found no remaining blocker within the narrow model/source-review
+scope. Largest padded final-source execution and the other acceptance work
+remain required. No production timing syntax is changed to suit this experiment,
+and no overall Level 5 conformance pass is claimed.
 
 Independent review rejected two parts of checkpoint `f55300a`: the single
 external buffering period violated the every-IDR requirement, and composition
 offsets/video edits were not rejected. That checkpoint and its original trial
 remain historical candidate evidence, not a valid proof. The revised model
 below supplies a buffering period at every IDR, checks every initialization
-point, and rejects CTTS and video edit lists. Fresh review remains required.
+point, and rejects CTTS and video edit lists. Independent re-review confirmed
+both corrections and independently ran the seven tests and the small fixture's
+three Type I / three Type II initialization runs. The reviewed verifier SHA-256
+is `8e545f942f522a36136f0d4754127e4c7f648c4bd9f867df0be5aa6f00d8bea6`.
 
 The primary reference is [ITU-T H.264 (08/2024)](https://www.itu.int/rec/T-REC-H.264-202408-S/en),
 especially Annex A.3.1/Table A-1; C.1–C.3; D.2.2–D.2.3; E.2.1–E.2.2.
@@ -150,8 +153,9 @@ Actual VCL sizes are `[115804,115804,115804]`; reconstructed Type II sizes are
 `[115823,115804,115804]`, including 15-byte SPS and 4-byte PPS. Both candidate
 simulations pass; actual peak macroblock syntax is 3088 bits.
 
-Still required: a fresh independent normative review and source-bound runs on
-newly generated 1138×1842 / 1842×1138 largest padded cases. The public native
+Still required: source-bound runs on newly generated 1138×1842 / 1842×1138
+largest padded cases, final-source canonical validation, and reconciliation of
+the other acceptance gates. The public native
 example now accepts optional `width height` after its output directory, while
 the ordinary recipe remains 320×240. That test-only argument addition has not
 been built or executed yet and needs canonical validation at final source.
