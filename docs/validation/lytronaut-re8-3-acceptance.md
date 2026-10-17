@@ -299,7 +299,9 @@ Set `LYTRONAUT_ARTIFACT_PROFILES='native release; wasm release'` only after
 recording the actual release build commands and source provenance. This label
 and the sidecars do not independently establish compiler profile. The report
 hashes the actual native binary, raw/generated WASM, glue and all three benchmark
-harness modules. It writes measured native/grid/warm values and `passed=false`
+harness modules. It preserves all 24 warm samples in acquisition order, checks
+percentile summaries against those samples and the 24 grid intervals, and
+writes measured native/grid/warm values and `passed=false`
 before failing unchanged 100 ms thresholds, and refuses to overwrite an earlier
 experiment. Unit guards cover failed-value retention, source mismatches,
 incompatible modes, missing overlap and nonfinite measurements. No browser run

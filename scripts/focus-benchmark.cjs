@@ -25,9 +25,14 @@ function save({env,focusProof,focusUiLoadContendedTimes,focusUiTimes,browser,err
  assert.equal(focusUiLoadContendedTimes.samples,24);
  assert.equal(focusUiLoadContendedTimes.actualGridResponseAndDecodeOverlap,true);
  assert.equal(focusUiLoadContendedTimes.intervals.length,24);
- for(const row of focusUiLoadContendedTimes.intervals)requireOverlap(row);
+ const grid=focusUiLoadContendedTimes.intervals.map(requireOverlap).sort((a,b)=>a-b);
+ assert.deepEqual([focusUiLoadContendedTimes.p50InputToDecodedFrameReadyMs,focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs,focusUiLoadContendedTimes.maxInputToDecodedFrameReadyMs],[grid[11],grid[22],grid[23]],'grid summaries must match actual intervals');
  assert.equal(focusUiTimes.samples,24);assert.equal(focusUiTimes.pendingGridAtStart,0,'warm batch must have no pending grid image');
  for(const batch of [focusUiLoadContendedTimes,focusUiTimes])for(const key of ['p50InputToDecodedFrameReadyMs','p95InputToDecodedFrameReadyMs','maxInputToDecodedFrameReadyMs'])assert(finite(batch[key]),`finite ${key} required`);
+ const raw=focusUiTimes.inputToDecodedFrameReadySamplesMs;
+ assert(Array.isArray(raw)&&raw.length===24&&raw.every(finite),'24 finite raw warm samples required');
+ const sorted=[...raw].sort((a,b)=>a-b);
+ assert.deepEqual([focusUiTimes.p50InputToDecodedFrameReadyMs,focusUiTimes.p95InputToDecodedFrameReadyMs,focusUiTimes.maxInputToDecodedFrameReadyMs],[sorted[11],sorted[22],sorted[23]],'warm summaries must match actual raw samples');
  assert.deepEqual(errors,[],'benchmark page must not have application errors');
  const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
  const passed=focusProof.p95NativeHttpDecodeMs<=100&&focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs<=100&&focusUiTimes.p95InputToDecodedFrameReadyMs<=100;

@@ -14,7 +14,7 @@ function fixture(t){
  const env={LYTRONAUT_FOCUS_BENCHMARK_ONLY:'1',LYTRONAUT_RELEASE_BENCHMARK:'1',LYTRONAUT_GRID_LOAD_TEST:'1',LYTRONAUT_TEST_REVISION:revision,LYTRONAUT_ARTIFACT_PROFILES:'native release; wasm release',LYTRONAUT_FOCUS_BENCHMARK_REPORT:path.join(root,'result.json'),LYTRONAUT_BINARY:binary,LYTRONAUT_CLIENT:client};
  const batch={samples:24,pendingGridAtStart:0,p50InputToDecodedFrameReadyMs:70,p95InputToDecodedFrameReadyMs:90,maxInputToDecodedFrameReadyMs:95};
  const rows=Array.from({length:24},(_,sample)=>({sample,start:10,end:100,pendingGridAtStart:1,bodyBytes:1000,bodyFinished:30,gridDecoded:50}));
- return {env,focusProof:{stacks:1,planes:3,p95NativeHttpDecodeMs:10},focusUiTimes:{...batch},focusUiLoadContendedTimes:{...batch,pendingGridAtStart:1,actualGridResponseAndDecodeOverlap:true,intervals:rows},browser:'synthetic unit fixture',errors:[]};
+ return {env,focusProof:{stacks:1,planes:3,p95NativeHttpDecodeMs:10},focusUiTimes:{...batch,inputToDecodedFrameReadySamplesMs:[...Array(12).fill(70),...Array(11).fill(90),95]},focusUiLoadContendedTimes:{...batch,p50InputToDecodedFrameReadyMs:90,maxInputToDecodedFrameReadyMs:90,pendingGridAtStart:1,actualGridResponseAndDecodeOverlap:true,intervals:rows},browser:'synthetic unit fixture',errors:[]};
 }
 
 test('default mode stays inactive; focus-only rejects private, alternate suites and unbound artifacts',t=>{
@@ -25,6 +25,7 @@ test('default mode stays inactive; focus-only rejects private, alternate suites 
 });
 test('latency failure preserves actual measurements with passed=false before rejecting',t=>{
  const f=fixture(t);f.focusUiTimes.p95InputToDecodedFrameReadyMs=137.9;f.focusUiTimes.maxInputToDecodedFrameReadyMs=150;
+ f.focusUiTimes.inputToDecodedFrameReadySamplesMs.splice(22,2,137.9,150);
  assert.throws(()=>save(f),/unchanged 100ms/);
  const report=JSON.parse(fs.readFileSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT));assert.equal(report.passed,false);assert.equal(report.focusUiTimes.p95InputToDecodedFrameReadyMs,137.9);assert.equal(report.thresholdMs,100);
  assert.match(report.programs.nativeSha256,/^[0-9a-f]{64}$/);assert.match(report.harness.driverSha256,/^[0-9a-f]{64}$/);
@@ -37,4 +38,7 @@ test('passing benchmark is explicitly scoped; incomplete overlap and NaN cannot 
  const f=fixture(t);const report=save(f);assert.equal(report.passed,true);assert.match(report.scope,/full browser suite not run/);
  fs.unlinkSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT);f.focusUiLoadContendedTimes.intervals[0].bodyBytes=0;assert.throws(()=>save(f));assert(!fs.existsSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT));
  f.focusUiLoadContendedTimes.intervals[0].bodyBytes=1000;f.focusUiTimes.p95InputToDecodedFrameReadyMs=NaN;assert.throws(()=>save(f),/finite/);
+});
+test('summary labels cannot hide a slower raw sample distribution',t=>{
+ const f=fixture(t);f.focusUiTimes.inputToDecodedFrameReadySamplesMs.fill(150);assert.throws(()=>save(f),/summaries must match/);assert(!fs.existsSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT));
 });
