@@ -10,14 +10,15 @@ The acceptance worktree started at application revision
 Acceptance merge `440b9b5117b6772f7fec1619be31cfef669c3a05` incorporated that
 baseline cleanly while preserving the three acceptance commits. Differences
 from that baseline were the encoder comment, geometry regression, acceptance
-report and release-grid assertion. The merged acceptance source has not passed
-the canonical check or runtime acceptance yet; neither has `main` delivery.
+report and release-grid assertion. That historical merge had not passed the
+canonical check or runtime acceptance. The resumed source-bound checks below
+supersede that status for `c1b480f`; release acceptance remains open.
 
 ## Gate disposition
 
 | Gate | Evidence and remaining work |
 | --- | --- |
-| Apple Photos recognition | Preserve the owner's reported pass using rebuilt pair `9fw-gate5-fbe615a`; never substitute the deleted, stale `35c7770` pair |
+| Apple Photos recognition | Historical owner pass for `9fw-gate5-fbe615a`; new SPS bytes still require isolated GUI import. Current resource-loader recognition passes separately; never use the stale `35c7770` pair |
 | VoiceOver | Not verified; owner signed off as out of scope for this version. Automated AXTree checks do not replace VoiceOver |
 | Counted 64/32 MiB memory | Partial evidence, accepted limitation; unmeasured owners remain unproven |
 | GPU submit-to-present ≤16.7 ms | Not verified, accepted limitation; animation-frame callbacks do not establish presentation |
@@ -98,9 +99,10 @@ picture-size claim only. Annex A.3.1(c,d,i,j) still need an applicable HRD
 schedule. Absent timing infers fixed-rate zero and low-delay one, so assuming
 actual removal always equals nominal removal would also be unjustified.
 
-Decoder/resource-loader compatibility and isolated Photos recognition need
-revalidation of the new output. The owner's earlier Photos result remains
-historical evidence for the rebuilt `fbe615a` pair. No current-byte Photos pass,
+Decoder/resource-loader compatibility passed for regenerated output at
+`c1b480f`, as recorded below. Isolated Photos recognition still needs new
+observation. The owner's earlier Photos result remains
+historical evidence for the rebuilt `fbe615a` pair. No current-byte Photos GUI pass,
 full Level 5 conformance, quiet-host latency or canonical validation is claimed.
 The format source has now changed relative to the private-run baseline, so
 that run does not attest these newly emitted SPS bytes.
@@ -166,8 +168,9 @@ private source identifiers, paths, hashes, pixels or calibration into this repo.
 
 The earlier investigation stopped with insufficient free disk and excessive
 load for reliable latency acceptance. Disk cleanup has since completed; that
-historical resource condition is not a current blocker. No local browser, private-corpus,
-PostgreSQL or performance rerun has been performed for this bead. The existing
+historical resource condition is not a current blocker. At that checkpoint no
+local browser, private-corpus, PostgreSQL or performance rerun had been performed
+for this bead; the later public checks below supersede only their stated scope. The existing
 remote PostgreSQL result above is retained instead. The bounded AVC probe above
 and focused Cargo regression above are the executable correctness experiments.
 Do not reinterpret the later
@@ -250,3 +253,55 @@ Only the isolated Photos GUI import requires new owner observation after the
 SPS change. Do not open the System/iCloud library to attempt it. Existing written
 VoiceOver/iOS exclusions and partial memory/GPU limitations retain exactly their
 recorded scope; no CPU latency or new-byte Photos exception has been granted.
+
+### Executed public checks at `c1b480f`
+
+The source was clean commit `c1b480f192f136235dd87bf8ff33b30da0418e25`,
+tree `f9c73276dcf0b74c802adcbf75282ab52e3231e7`. Only this revision is attested
+by these runs. A sole local build lease enforced one Cargo job, no incremental
+compilation, no dev/test debug information, one native test thread, task-owned
+temporary storage and a 2 GiB free-space watchdog. Cached `xtask` artifacts were
+cleaned once before canonical validation to remove stale manifest paths.
+
+| Check | Result |
+| --- | --- |
+| Canonical `bh work check lytronaut-re8.3` / mise-pinned `just check` | **Pass**, 516.0 seconds; 246 Rust tests passed, 48 opt-in tests ignored, 21 Node guards passed; lint, native/WASM builds, boundaries and 339 package licenses passed |
+| Actual padded PCM RBSP parser | **Pass** in canonical tests: all 8,352 I_PCM macroblocks parsed, actual syntax bits within declared 3,200-bit ceiling; not an HRD schedule proof |
+| `just live-photo-apple` with regenerated public pair | **Pass**, 16.4 seconds; three decoded frames, correct selected still/key time, no audio, resource-loader recognition and mismatched-pair rejection; `photosLibraryOpened=false` |
+| Public `scripts/live-photo-test.cjs` | **Pass**, 6.1 seconds, Chrome 155.0.8059.82; actual Rust/WASM small, 2048×1024 and padded 1138×1842 complete pairs, software retry, cancellation and decoder cleanup |
+
+The public browser test observed all 13 created decoders closed, maximum decode
+queue two, and maximum platform pixel copy 131,072 bytes. These observations
+do not upgrade the accepted partial memory budget. New SPS output now has
+current-source Apple resource-loader and Chrome decoding evidence, while GUI
+Photos import and full Level 5 conformance remain separate open gates.
+
+Programs, resources, logs, source metadata, `manifest.json` and `SHA256SUMS`
+are retained outside the repository under
+`delivery-evidence/re8-3-c1b480f` in the managed worktree root. All 23 listed
+public evidence/program files were rehashed successfully. The new owner-import
+candidate is its `apple-public/focus.JPG` plus `apple-public/focus.MOV`; never
+substitute the historical pair for this new-byte observation.
+
+### Opt-in focus-only benchmark evidence
+
+`LYTRONAUT_FOCUS_BENCHMARK_ONLY=1` stops the public browser driver after native
+focus decoding, the actual grid-overlap batch and the separate warm batch.
+It skips unrelated sidebar/lifetime/fault suites; its report explicitly says
+that the full browser suite did not run. Ordinary invocations keep their full
+behavior and thresholds. This mode requires release and grid-load flags,
+explicit native/client/report paths, exact application revision and matching
+`<native-binary>.source-revision` / `<client-directory>/source-revision` sidecars.
+The client directory must also preserve raw `application.wasm`. Private, GPU,
+owner, coverage, external-server and sidebar-repetition modes are rejected.
+
+Set `LYTRONAUT_ARTIFACT_PROFILES='native release; wasm release'` only after
+recording the actual release build commands and source provenance. This label
+and the sidecars do not independently establish compiler profile. The report
+hashes the actual native binary, raw/generated WASM, glue and all three benchmark
+harness modules. It writes measured native/grid/warm values and `passed=false`
+before failing unchanged 100 ms thresholds, and refuses to overwrite an earlier
+experiment. Unit guards cover failed-value retention, source mismatches,
+incompatible modes, missing overlap and nonfinite measurements. No browser run
+of this new focus-only mode or release A/B measurement has occurred yet; the
+final changed source still requires canonical validation before submission.

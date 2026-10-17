@@ -11,6 +11,7 @@ const gpuMode=process.env.LYTRONAUT_GPU_TEST==='1';
 const privateMode=process.env.LYTRONAUT_PRIVATE_TEST==='1';
 const gpuLifetimeMode=process.env.LYTRONAUT_GPU_LIFETIME_TEST==='1';
 const gridLoadMode=process.env.LYTRONAUT_GRID_LOAD_TEST==='1';
+const focusBenchmarkOnly=require('./focus-benchmark.cjs').requireMode(process.env);
 if(gridLoadMode)assert(!privateMode&&!gpuMode&&!gpuLifetimeMode&&process.env.LYTRONAUT_OWNER_TEST!=='1'&&process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'&&!process.env.LYTRONAUT_VIDEO_PRIVATE_ROOT&&!process.env.LYTRONAUT_PRIVATE_SEALED_ROOT,'grid-load acceptance experiment requires public synthetic CPU release mode');
 if(gpuLifetimeMode)assert(gpuMode&&!privateMode&&process.env.LYTRONAUT_OWNER_TEST!=='1'&&!process.env.LYTRONAUT_VIDEO_PRIVATE_ROOT&&!process.env.LYTRONAUT_PRIVATE_SEALED_ROOT,'reference GPU lifetime fixture rejects incompatible/private flags');
 const binary=process.env.LYTRONAUT_BINARY;
@@ -113,11 +114,11 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
    return;
   }
   let importLifetimeProof=null;
-  if(!privateMode&&!gpuMode){checkpoint='import-lifetime';importLifetimeProof=await require('./import-lifetime-test.cjs')({browser,origin});}
+  if(!privateMode&&!gpuMode&&!focusBenchmarkOnly){checkpoint='import-lifetime';importLifetimeProof=await require('./import-lifetime-test.cjs')({browser,origin});}
   let sidebarProof=null;
-  if(!privateMode&&!gpuMode){checkpoint='bounded-sidebars';sidebarProof=await require('./sidebar-test.cjs')({browser,origin});}
+  if(!privateMode&&!gpuMode&&!focusBenchmarkOnly){checkpoint='bounded-sidebars';sidebarProof=await require('./sidebar-test.cjs')({browser,origin});}
   // Separate public fault-injection flows (scripts/flows), each on its own page.
-  const flowProofs={};if(!privateMode&&!gpuMode)for(const flow of (process.env.LYTRONAUT_FLOWS??'fault-injection,focus-video-faults,browse-admission,video-container-faults,cancellation-races,browser-api-faults,render-faults').split(',').filter(Boolean)){checkpoint='flow-'+flow;flowProofs[flow]=await require('./flows/'+flow+'.cjs')({browser,origin});}
+  const flowProofs={};if(!privateMode&&!gpuMode&&!focusBenchmarkOnly)for(const flow of (process.env.LYTRONAUT_FLOWS??'fault-injection,focus-video-faults,browse-admission,video-container-faults,cancellation-races,browser-api-faults,render-faults').split(',').filter(Boolean)){checkpoint='flow-'+flow;flowProofs[flow]=await require('./flows/'+flow+'.cjs')({browser,origin});}
   checkpoint='keyboard-navigation';const firstCapture=await page.$eval('.viewer-strip span',e=>e.textContent);
   await page.focus('.stage');await page.keyboard.press('ArrowRight');
   await page.waitForFunction(first=>document.querySelector('.viewer-strip span').textContent!==first,{},firstCapture);
@@ -147,7 +148,7 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
    times.sort((a,b)=>a-b);return {stacks,planes,maxSourceBytes,p95NativeHttpDecodeMs:times[Math.ceil(times.length*.95)-1]};
   });
   assert.equal(focusProof.stacks,privateMode?58:1);assert.equal(focusProof.planes,privateMode?420:3);assert(focusProof.maxSourceBytes<=8*1024*1024);
-  if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusProof.p95NativeHttpDecodeMs<=100);
+  if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1'&&!focusBenchmarkOnly)assert(focusProof.p95NativeHttpDecodeMs<=100);
   checkpoint='focus-ui-benchmark';
   await click('All captures');
   const focusCaptureIndex=await page.evaluate(async()=>{const l=(await (await fetch('/libraries')).json()).items.find(l=>l.state==='ready');let offset=0;for(;;){const page=await (await fetch(`/libraries/${l.id}/captures?limit=24&offset=${offset}`)).json();for(let i=0;i<page.items.length;i++){const d=await (await fetch(`/captures/${page.items[i].id}`)).json();if(d.capabilities.discrete_focus.state==='available')return offset+i;}if(page.next_offset==null)return -1;offset=page.next_offset;}});
@@ -164,6 +165,10 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
   if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusUiLoadContendedTimes.pendingGridAtStart>0,'release grid-load gate requires pending grid images; a warm first batch is not load-contended evidence');
   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&[...document.querySelectorAll('.capture img')].every(i=>i.complete&&i.naturalWidth>0),{timeout:120000});
   const focusUiTimes=await measureFocusUi();
+  if(focusBenchmarkOnly){
+   const report=require('./focus-benchmark.cjs').save({env:process.env,focusProof,focusUiLoadContendedTimes,focusUiTimes,browser:await browser.version(),errors});
+   console.log(JSON.stringify(report));return;
+  }
   if(privateMode)console.log(JSON.stringify({focusProof,focusUiLoadContendedTimes,focusUiTimes}));
   if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusUiTimes.p95InputToDecodedFrameReadyMs<=100&&focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs<=100,JSON.stringify({focusProof,focusUiLoadContendedTimes,focusUiTimes}));
   let gpuProof=null;if(gpuMode){checkpoint='GPU';
