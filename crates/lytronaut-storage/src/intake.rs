@@ -188,6 +188,8 @@ struct Inner {
     verify: Arc<Semaphore>,
     uploads: Mutex<HashSet<String>>,
     activity: Mutex<HashMap<String, Activity>>,
+    catalog_workers: Mutex<CatalogWorkers>,
+    catalog_drained: tokio::sync::Notify,
     #[cfg(test)]
     reaper_enabled: AtomicBool,
     #[cfg(test)]
@@ -197,6 +199,25 @@ struct Inner {
     fault: Mutex<Option<FaultPoint>>,
     _lock: File,
     _stage_lock: File,
+    _stage_directory: File,
+    stage_identity: (u64, u64),
+}
+#[derive(Default)]
+struct CatalogWorkers {
+    closed: bool,
+    flags: HashMap<String, Arc<AtomicBool>>,
+}
+pub(crate) struct CatalogWorker {
+    owner: Store,
+    id: String,
+}
+impl Drop for CatalogWorker {
+    fn drop(&mut self) {
+        if let Ok(mut workers) = self.owner.0.catalog_workers.lock() {
+            workers.flags.remove(&self.id);
+        }
+        self.owner.0.catalog_drained.notify_waiters();
+    }
 }
 struct Activity {
     last: tokio::time::Instant,
@@ -317,6 +338,33 @@ fn archive_magic(prefix: &[u8]) -> bool {
 impl Store {
     /// Stop active intake after the listener stops accepting work; no original is deleted.
     pub async fn shutdown(&self) -> Result<(), StorageError> {
+        {
+            let mut workers = self
+                .0
+                .catalog_workers
+                .lock()
+                .map_err(|_| StorageError::Unavailable)?;
+            workers.closed = true;
+            for cancel in workers.flags.values() {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        loop {
+            let drained = self.0.catalog_drained.notified();
+            tokio::pin!(drained);
+            drained.as_mut().enable();
+            if self
+                .0
+                .catalog_workers
+                .lock()
+                .map_err(|_| StorageError::Unavailable)?
+                .flags
+                .is_empty()
+            {
+                break;
+            }
+            drained.await;
+        }
         let jobs: Vec<String> =
             sqlx::query_scalar("SELECT id FROM intake_jobs WHERE state='running'")
                 .fetch_all(self.0.catalog.pool())
@@ -355,8 +403,16 @@ impl Store {
             f.try_lock_exclusive().map_err(|_| StorageError::Busy)?;
             Ok(f)
         }
+        use std::os::unix::fs::MetadataExt;
+        let stage_directory = File::open(staging)?;
+        let metadata = stage_directory.metadata()?;
+        let stage_identity = (metadata.dev(), metadata.ino());
         let lock = root_lock(originals)?;
         let stage_lock = root_lock(staging)?;
+        let current = fs::metadata(staging)?;
+        if (current.dev(), current.ino()) != stage_identity {
+            return Err(StorageError::Conflict);
+        }
         let mut migration = catalog.begin_write().await?;
         for &sql in catalog.schema_statements(crate::SchemaComponent::Intake) {
             sqlx::query(sql).execute(&mut *migration).await?;
@@ -376,6 +432,8 @@ impl Store {
             cancel: Mutex::new(HashMap::new()),
             uploads: Mutex::new(HashSet::new()),
             activity: Mutex::new(HashMap::new()),
+            catalog_workers: Mutex::new(CatalogWorkers::default()),
+            catalog_drained: Default::default(),
             #[cfg(test)]
             reaper_enabled: AtomicBool::new(true),
             #[cfg(test)]
@@ -385,6 +443,8 @@ impl Store {
             fault: Mutex::new(None),
             _lock: lock,
             _stage_lock: stage_lock,
+            _stage_directory: stage_directory,
+            stage_identity,
         }));
         s.recover().await?;
         // The worker cannot retain the store or its exclusive filesystem locks
@@ -479,6 +539,116 @@ impl Store {
     pub fn limits(&self) -> &Limits {
         &self.0.limits
     }
+    pub(crate) fn catalog_worker(
+        &self,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<CatalogWorker, StorageError> {
+        let mut workers = self
+            .0
+            .catalog_workers
+            .lock()
+            .map_err(|_| StorageError::Unavailable)?;
+        if workers.closed {
+            return Err(StorageError::Cancelled);
+        }
+        let id = unique()?;
+        workers.flags.insert(id.clone(), cancel);
+        Ok(CatalogWorker {
+            owner: self.clone(),
+            id,
+        })
+    }
+    // The locked directory inode identifies ownership across renames and aliases.
+    // Unlike a pathname hash, another root cannot accidentally recover this root's
+    // reservations. A replaced/missing root fails conservatively by retaining them.
+    fn scratch_root_identity(&self) -> Result<String, StorageError> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(&self.0.staging)?;
+        if (metadata.dev(), metadata.ino()) != self.0.stage_identity {
+            return Err(StorageError::Conflict);
+        }
+        Ok(format!(
+            "{:x}:{:x}",
+            self.0.stage_identity.0, self.0.stage_identity.1
+        ))
+    }
+    pub(crate) async fn reserve_catalog_scratch(
+        &self,
+        job: &str,
+        bytes: u64,
+    ) -> Result<String, StorageError> {
+        if bytes == 0 || bytes > self.0.limits.reserved_bytes || bytes > i64::MAX as u64 {
+            return Err(StorageError::Quota);
+        }
+        let root = self.scratch_root_identity()?;
+        let owner = unique()?;
+        let mut tx = self.0.catalog.begin_write().await?;
+        let state: String = sqlx::query_scalar("SELECT state FROM intake_jobs WHERE id=$1")
+            .bind(job)
+            .fetch_one(&mut *tx)
+            .await?;
+        if state != "succeeded" {
+            return Err(StorageError::Conflict);
+        }
+        let imports: i64 = sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM intake_jobs WHERE state='running'")
+            .fetch_one(&mut *tx).await?;
+        let scratch: i64 =
+            sqlx::query_scalar("SELECT CAST(COALESCE(sum(bytes),0) AS BIGINT) FROM intake_scratch")
+                .fetch_one(&mut *tx)
+                .await?;
+        if (imports as u64)
+            .saturating_add(scratch as u64)
+            .saturating_add(bytes)
+            > self.0.limits.reserved_bytes
+        {
+            return Err(StorageError::Busy);
+        }
+        let exports_present: i64 = sqlx::query_scalar(self.0.catalog.dialect(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='export_jobs'",
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relkind='r' AND c.relname='export_jobs'",
+        )).fetch_one(&mut *tx).await?;
+        let exports: i64 = if exports_present == 1 {
+            sqlx::query_scalar("SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM export_jobs")
+                .fetch_one(&mut *tx)
+                .await?
+        } else {
+            0
+        };
+        // Copy and scratch are both in staging. The scratch cap is reserved in
+        // full until cleanup, conservatively including bytes already materialized.
+        let required = bytes
+            .saturating_add(imports as u64)
+            .saturating_add(scratch as u64)
+            .saturating_add(exports as u64)
+            .saturating_add(self.0.limits.free_floor);
+        let available = self.available_staging_bytes()?;
+        if available < required {
+            return Err(StorageError::Space {
+                required_bytes: required,
+                available_bytes: available,
+            });
+        }
+        sqlx::query("INSERT INTO intake_scratch(owner,root,job,bytes) VALUES($1,$2,$3,$4)")
+            .bind(&owner)
+            .bind(root)
+            .bind(job)
+            .bind(bytes as i64)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(owner)
+    }
+    pub(crate) async fn release_catalog_scratch(&self, owner: &str) -> Result<(), StorageError> {
+        let root = self.scratch_root_identity()?;
+        let mut tx = self.0.catalog.begin_write().await?;
+        sqlx::query("DELETE FROM intake_scratch WHERE owner=$1 AND root=$2")
+            .bind(owner)
+            .bind(root)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
     /// Test/operator fault injection: one interruption at the selected durable boundary.
     pub fn interrupt_once(&self, point: FaultPoint) {
         *self.0.fault.lock().unwrap() = Some(point);
@@ -519,6 +689,11 @@ impl Store {
         let row=sqlx::query("SELECT COUNT(*) n, CAST(COALESCE(SUM(reserved),0) AS BIGINT) bytes FROM intake_jobs WHERE state='running'").fetch_one(&mut *tx).await?;
         let n: i64 = row.get("n");
         let bytes: i64 = row.get("bytes");
+        let scratch: i64 =
+            sqlx::query_scalar("SELECT CAST(COALESCE(sum(bytes),0) AS BIGINT) FROM intake_scratch")
+                .fetch_one(&mut *tx)
+                .await?;
+        let bytes = bytes.checked_add(scratch).ok_or(StorageError::Quota)?;
         if n >= l.active_jobs as i64
             || (bytes as u64)
                 .checked_add(reserve)
@@ -913,6 +1088,20 @@ impl Store {
     }
     /// Local/catalog API only; logical source paths must not be included in routine HTTP reports.
     pub async fn manifest(&self, id: &str) -> Result<Vec<SourceEntry>, StorageError> {
+        self.manifest_checked(id, None).await
+    }
+    pub(crate) async fn catalog_manifest(
+        &self,
+        id: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Vec<SourceEntry>, StorageError> {
+        self.manifest_checked(id, Some(cancel)).await
+    }
+    async fn manifest_checked(
+        &self,
+        id: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<Vec<SourceEntry>, StorageError> {
         if self.job(id).await?.state != JobState::Succeeded {
             return Err(StorageError::Conflict);
         }
@@ -927,7 +1116,7 @@ impl Store {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
             for e in &entries {
-                s.open_blob(e)?;
+                s.verified_blob(e, cancel.as_deref())?;
             }
             Ok(entries)
         })
@@ -1065,6 +1254,7 @@ impl Store {
         sync_dir(&self.0.staging)
     }
     async fn recover(&self) -> Result<(), StorageError> {
+        self.scratch_root_identity()?;
         // No worker survives the exclusive-root reopen. Interrupted jobs are retryable, never ready.
         sqlx::query("UPDATE intake_jobs SET state='failed',reserved=0,error='interrupted' WHERE state='running'").execute(self.0.catalog.pool()).await?;
         for root in [&self.0.originals, &self.0.staging] {
@@ -1085,6 +1275,14 @@ impl Store {
             }
             sync_dir(root)?;
         }
+        // Only this exclusively locked root has been drained. Other roots may
+        // still have live adapters using the same application database.
+        let mut tx = self.0.catalog.begin_write().await?;
+        sqlx::query("DELETE FROM intake_scratch WHERE root=$1")
+            .bind(self.scratch_root_identity()?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         let mut last = String::new();
         while let Some(id) = sqlx::query_scalar::<_, String>(
             "SELECT id FROM intake_jobs WHERE state='succeeded' AND id>$1 ORDER BY id LIMIT 1",
@@ -1571,3 +1769,7 @@ mod publication_tests {
 #[cfg(test)]
 #[path = "intake_idle_tests.rs"]
 mod idle_tests;
+
+#[cfg(test)]
+#[path = "intake_scratch_tests.rs"]
+mod scratch_tests;

@@ -21,6 +21,12 @@ impl Fixture {
         Self::with_database(None).await
     }
     async fn with_database(config: Option<DatabaseConfig>) -> Self {
+        Self::with_database_and_limits(config, None).await
+    }
+    async fn with_database_and_limits(
+        config: Option<DatabaseConfig>,
+        limits: Option<Limits>,
+    ) -> Self {
         let mut b = [0; 16];
         getrandom::fill(&mut b).unwrap();
         let root = std::env::temp_dir().join(format!(
@@ -38,14 +44,14 @@ impl Fixture {
             catalog.clone(),
             &root.join("originals"),
             &root.join("staging"),
-            Limits {
+            limits.unwrap_or(Limits {
                 upload_bytes: 4 * 1024 * 1024,
                 file_bytes: 2 * 1024 * 1024,
                 files: 32,
                 free_floor: 0,
-                reserved_bytes: 16 * 1024 * 1024,
+                reserved_bytes: 64 * 1024 * 1024,
                 ..Limits::default()
-            },
+            }),
         )
         .await
         .unwrap();
@@ -95,7 +101,7 @@ CREATE TABLE future_table(secret BLOB);INSERT INTO future_table VALUES(X'ffff');
             .begin(&ImportRequest {
                 version: WireVersion::V1,
                 kind: ImportKind::Directory,
-                declared_bytes: 4 * 1024 * 1024,
+                declared_bytes: self.store.limits().upload_bytes,
                 declared_files: 32,
             })
             .await
@@ -154,6 +160,172 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+// A lawful independently authored wide schema. Its 2,048 pictures alone
+// exceed the old 100,000-cell ceiling; companion files are intentionally absent
+// except p1/p2 so no personal captures or format samples are needed.
+async fn wide_source(f: &Fixture, suffix: &str) -> Vec<u8> {
+    let mut sql = String::from(
+        "DELETE FROM picture; DELETE FROM picture_metadata; DELETE FROM album_to_picture;
+         UPDATE event SET library_uuid='wide-library';
+         WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<2048)
+         INSERT INTO picture(id,uuid,hash,imagebin_uuid,event_uuid,name,caption,rating,flag_status,unknown_blob,unknown_int,unknown_null,unknown_real,\"quote\"\"field\")
+         SELECT i,'p'||i,'','bin','ev','Picture '||i,'Caption '||i,4,2,X'00ff01',9223372036854775807,NULL,0.125,'quoted' FROM n;
+         INSERT INTO picture_metadata(id,uuid,lfe_major,lfe_minor,orientation) SELECT id,uuid,10,0,8 FROM picture;
+         INSERT INTO album_to_picture(id,album_uuid,picture_uuid,picture_index) SELECT id,'a',uuid,2048-id FROM picture;",
+    );
+    for i in 0..48 {
+        sql.push_str(&format!(
+            "ALTER TABLE picture ADD COLUMN wide_{i} BLOB DEFAULT X'00ff';"
+        ));
+    }
+    sql.push_str(suffix);
+    f.source(&sql).await
+}
+
+async fn assert_wide_catalog(f: &Fixture) {
+    let source = wide_source(f, "").await;
+    let original = source.clone();
+    let job = f.intake(source, false, false).await;
+    let summary = desktop::import_desktop(&f.catalog, &f.store, &job)
+        .await
+        .unwrap();
+    assert_eq!(summary.state, CatalogState::Ready);
+    assert_eq!(
+        (summary.pictures, summary.metadata, summary.memberships),
+        (2048, 2048, 2048)
+    );
+    assert_eq!(summary.item_errors, (2048 - 2) * 6);
+    let last: Vec<u8> = sqlx::query_scalar(
+        "SELECT original FROM catalog_records WHERE version=$1 AND kind='picture' AND ordinal=2047",
+    )
+    .bind(summary.version_id)
+    .fetch_one(f.catalog.pool())
+    .await
+    .unwrap();
+    let last: OriginalRecord = serde_json::from_slice(&last).unwrap();
+    assert_eq!(last.fields.len(), 64);
+    assert_eq!(last.fields["uuid"], TypedValue::Text(b"p2048".to_vec()));
+    assert_eq!(last.fields["wide_47"], TypedValue::Blob(vec![0, 255]));
+    assert_eq!(
+        last.fields["unknown_int"],
+        TypedValue::Integer(i64::MAX.to_string())
+    );
+    assert_eq!(
+        last.fields["unknown_real"],
+        TypedValue::Real(format!("{:016x}", 0.125f64.to_bits()))
+    );
+    let first: String = sqlx::query_scalar("SELECT picture_uuid FROM catalog_memberships WHERE version=$1 AND album_uuid=$2 ORDER BY picture_index LIMIT 1")
+        .bind(summary.version_id).bind(f.catalog.encode_source_key("a")).fetch_one(f.catalog.pool()).await.unwrap();
+    assert_eq!(f.catalog.decode_source_key(first).unwrap(), "p2048");
+    let entry = f
+        .store
+        .manifest(&job)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.logical_path == "lytrolibrary.db")
+        .unwrap();
+    let mut preserved = Vec::new();
+    std::io::Read::read_to_end(&mut f.store.open_blob(&entry).unwrap(), &mut preserved).unwrap();
+    assert_eq!(preserved, original);
+    assert_eq!(
+        desktop::import_desktop(&f.catalog, &f.store, &job)
+            .await
+            .unwrap()
+            .version_id,
+        summary.version_id
+    );
+}
+
+#[tokio::test]
+async fn wide_catalog_above_old_capture_and_cell_limit() {
+    assert_wide_catalog(&Fixture::new().await).await;
+}
+
+#[tokio::test]
+async fn aggregate_values_above_old_eight_mib_limit_are_streamed() {
+    let f = Fixture::with_database_and_limits(
+        None,
+        Some(Limits {
+            upload_bytes: 32 * 1024 * 1024,
+            file_bytes: 32 * 1024 * 1024,
+            files: 32,
+            free_floor: 0,
+            reserved_bytes: 1024 * 1024 * 1024,
+            ..Limits::default()
+        }),
+    )
+    .await;
+    let source = wide_source(
+        &f,
+        "UPDATE picture SET caption=CAST(zeroblob(4096) AS TEXT)",
+    )
+    .await;
+    assert!(source.len() > 8 * 1024 * 1024);
+    assert!(source.len() < 32 * 1024 * 1024);
+    let job = f.intake(source, false, false).await;
+    let summary = desktop::import_desktop(&f.catalog, &f.store, &job)
+        .await
+        .unwrap();
+    assert_eq!(summary.state, CatalogState::Ready);
+    assert_eq!(summary.pictures, 2048);
+    let caption: Vec<u8> = sqlx::query_scalar(
+        "SELECT CAST(caption AS BLOB) FROM catalog_pictures WHERE version=$1 AND uuid=$2",
+    )
+    .bind(summary.version_id)
+    .bind(f.catalog.encode_source_key("p2048"))
+    .fetch_one(f.catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(caption, vec![0; 4096]);
+    let scratch: i64 = sqlx::query_scalar("SELECT count(*) FROM intake_scratch")
+        .fetch_one(f.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(scratch, 0);
+}
+
+#[tokio::test]
+async fn late_wide_catalog_errors_preserve_originals_without_partial_semantics() {
+    for change in [
+        "UPDATE picture SET id=1 WHERE uuid='p2048'",
+        "UPDATE picture SET imagebin_uuid='missing-bin' WHERE uuid='p2048'",
+        "UPDATE album_to_picture SET picture_index=0 WHERE id=1",
+        "UPDATE picture SET caption=zeroblob(1048577) WHERE uuid='p2048'",
+    ] {
+        let f = Fixture::new().await;
+        let source = wide_source(&f, change).await;
+        let job = f.intake(source.clone(), false, false).await;
+        let summary = desktop::import_desktop(&f.catalog, &f.store, &job)
+            .await
+            .unwrap();
+        assert_eq!(summary.state, CatalogState::PreservedOnly, "{change}");
+        assert_eq!(
+            (summary.pictures, summary.metadata, summary.memberships),
+            (0, 0, 0)
+        );
+        let records: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM catalog_records WHERE version=$1")
+                .bind(summary.version_id)
+                .fetch_one(f.catalog.pool())
+                .await
+                .unwrap();
+        assert_eq!(records, 0);
+        let entry = f
+            .store
+            .manifest(&job)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|e| e.logical_path == "lytrolibrary.db")
+            .unwrap();
+        let mut preserved = Vec::new();
+        std::io::Read::read_to_end(&mut f.store.open_blob(&entry).unwrap(), &mut preserved)
+            .unwrap();
+        assert_eq!(preserved, source);
+    }
+}
+
 #[tokio::test]
 async fn lossless_types_order_cross_album_versioning_reimport_and_restart() {
     let f = Fixture::new().await;
@@ -452,15 +624,15 @@ async fn schema_admission_and_check_expressions_are_bounded() {
         CatalogState::Ready
     );
     let f = Fixture::new().await;
+    // This formerly exceeded100,000cells. Count alone is no longer a reason
+    // for preservation-only; all schema/parser/value limits above remain tested.
     let db=f.source("WITH RECURSIVE n(x) AS (VALUES(2) UNION ALL SELECT x+1 FROM n WHERE x<30000) INSERT INTO picture_list SELECT x,'list-'||x,0,1 FROM n").await;
     let id = f.intake(db, false, false).await;
-    assert_eq!(
-        desktop::import_desktop(&f.catalog, &f.store, &id)
-            .await
-            .unwrap()
-            .state,
-        CatalogState::PreservedOnly
-    );
+    let summary = desktop::import_desktop(&f.catalog, &f.store, &id)
+        .await
+        .unwrap();
+    assert_eq!(summary.state, CatalogState::Ready);
+    assert_eq!(summary.picture_lists, 30000);
 }
 
 #[tokio::test]
@@ -607,6 +779,7 @@ async fn postgres_real_intake_adaptation_originals_conflicts_concurrent_reimport
             .await
             .unwrap();
     assert_eq!(orders, 3);
+    assert_wide_catalog(&f).await;
     reopened.pool().close().await;
     f.catalog.pool().close().await;
     drop(f);

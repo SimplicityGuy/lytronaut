@@ -191,7 +191,7 @@ async fn readmit_restore(
     .fetch_one(&mut *tx)
     .await?;
     let imports: i64 = sqlx::query_scalar(
-        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM intake_jobs WHERE state='running'",
+        "SELECT CAST(COALESCE((SELECT sum(reserved) FROM intake_jobs WHERE state='running'),0)+COALESCE((SELECT sum(bytes) FROM intake_scratch),0) AS BIGINT)",
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -290,7 +290,7 @@ async fn admit(a: &Api, kind: &str, need: u64) -> std::result::Result<String, Re
     // shared writer admission closes the check-then-reserve race between an
     // import and an export (import admission counts export reservations).
     let intake_reserved: i64 = sqlx::query_scalar(
-        "SELECT CAST(COALESCE(sum(reserved),0) AS BIGINT) FROM intake_jobs WHERE state='running'",
+        "SELECT CAST(COALESCE((SELECT sum(reserved) FROM intake_jobs WHERE state='running'),0)+COALESCE((SELECT sum(bytes) FROM intake_scratch),0) AS BIGINT)",
     )
     .fetch_one(&mut *tx)
     .await?;
