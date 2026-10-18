@@ -1,5 +1,7 @@
 # Candidate external HRD conformance experiment
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Status: **not accepted as a completed release gate**. Fresh independent review
 of `4e93d9b` found no remaining blocker within the narrow model/source-review
 scope. Largest padded final-source execution subsequently passed in both

@@ -1,5 +1,7 @@
 # SQLite and PostgreSQL catalog backends
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 ## Decision
 
 The operator requested SQLite and PostgreSQL support, explicitly confirmed that

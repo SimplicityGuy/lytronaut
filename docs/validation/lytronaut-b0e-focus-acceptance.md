@@ -1,5 +1,7 @@
 # CPU focus and grid-overlap acceptance — lytronaut-b0e
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 ## Current state
 
 This follow-up starts from main `17524c31b45252385082e33501f789fc0997c394`.

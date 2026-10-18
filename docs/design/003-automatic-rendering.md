@@ -1,5 +1,7 @@
 # Automatic rendering selection
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Status: accepted by operator, 2026-10-12 (UTC).
 
 The operator requested: “the CPU/GPU selection should be automatic. exposing a button for it makes it overly complicated.”

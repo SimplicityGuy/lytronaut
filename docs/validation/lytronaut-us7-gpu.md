@@ -1,5 +1,7 @@
 # Rust/wgpu uploaded derivative validation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Bead **lytronaut-us7 — Integrate optional Rust wgpu derivative presentation with safe fallback**.
 Public fixtures are independently Rust-encoded abstract colored scenes; no private
 capture, source identifier, calibration or original library was used.

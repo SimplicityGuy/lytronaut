@@ -1,5 +1,7 @@
 # Portable backup and isolated restore
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Status: implemented; engine-verified on SQLite and PostgreSQL 18 (see Verification).
 
 The archive carries logical application rows and immutable original blobs, never

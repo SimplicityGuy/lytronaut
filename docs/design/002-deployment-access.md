@@ -1,5 +1,7 @@
 # ADR 002: Access control belongs to deployment
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Status: accepted by the operator on 2026-10-12 UTC.
 
 The original implementation plan inferred a required single-administrator login

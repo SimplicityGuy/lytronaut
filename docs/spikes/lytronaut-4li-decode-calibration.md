@@ -1,5 +1,7 @@
 # Native decoding and calibration feasibility
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Bead: **lytronaut-4li — Spike: validate native format decoding and camera calibration feasibility**. Observed 2026-10-11. Research only; no application decoder has been implemented.
 
 ## Question

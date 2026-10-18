@@ -1,5 +1,7 @@
 # Export and lossless restore validation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Implementation commit: `67545924a8e42477e2eb02d628d53fbe5ea4362e`, tree
 `4274b3cb993baca8091402c3dc8477c2d44895d2`. The first evidence and test-report
 commit leaves all application source objects unchanged. The [aggregate evidence](assets/lytronaut-u8i-export.json)

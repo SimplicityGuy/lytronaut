@@ -1,5 +1,7 @@
 # Live Photo acceptance reconciliation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Release acceptance: **open**; staged main landing requested (2026-10-18).
 The owner reports successful verification of the updated pair in Photos.
 Current-byte public decoding, largest padded writer execution and the

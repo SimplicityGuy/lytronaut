@@ -1,5 +1,7 @@
 # Archived browser AVC validation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Historical implementation proof: `29edb81dae0a598b9ab4d97046994c209a6756ca`, tree
 `3ab7de5b41f63690bb2e0cbbb2053294a055a8fa`.
 [Aggregate evidence](assets/lytronaut-hyy-video.json) contains only counts,

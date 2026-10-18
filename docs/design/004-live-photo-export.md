@@ -1,5 +1,7 @@
 # Portable Live Photo export
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 The acceptance branch corrects an inferred per-picture VUI byte limit in the
 generated SPS. New-byte public decoding and Apple resource recognition pass;
 the reviewed narrow external HRD model also passes actual largest padded

@@ -2,10 +2,10 @@
 
 `lytronaut_storage::desktop::import_desktop(&catalog, &store, job)` adapts a
 completed intake. `migrate` installs additive `catalog_` tables transactionally;
-authentication and intake tables are untouched. `summary` reads bounded aggregate
+deployment and intake tables are untouched. `summary` reads bounded aggregate
 counts without opening or hashing any source blob. These native functions do not
-install HTTP routes or grant access. API consumers must apply authentication and
-select `catalog_versions.state='ready'` explicitly.
+install HTTP routes or grant access. HTTP consumers remain inside the configured
+Host/Origin deployment boundary and select `catalog_versions.state='ready'` explicitly.
 
 An intake success is not a semantic import success. Every version retains a
 logical `catalog_sources` reference to every completed intake entry, including
@@ -30,7 +30,7 @@ reason for unsupported/malformed databases, conflicting primary identities,
 orphans, hostile schema forms or journal snapshots. `quarantined` versions have
 valid semantic records but conflicting library identity. None implies image
 renderability. Album `public` remains original historical metadata and never
-changes authentication.
+changes deployment access.
 
 Known table rows retain every physical column in `catalog_records.original` as
 an explicitly tagged `OriginalRecord`: null; decimal-string signed 64-bit integer;

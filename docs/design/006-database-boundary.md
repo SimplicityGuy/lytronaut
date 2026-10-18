@@ -1,5 +1,7 @@
 # Application database boundary
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Bead: `lytronaut-e7y`, within the approved `lytronaut-p9o` molecule.
 
 ## Baseline and validation

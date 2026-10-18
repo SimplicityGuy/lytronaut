@@ -1,5 +1,7 @@
 # PostgreSQL operations follow-up: lytronaut-1yn
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 ## Change and scope
 
 Based on the implementation container at

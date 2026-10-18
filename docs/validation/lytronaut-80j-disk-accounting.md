@@ -1,5 +1,7 @@
 # Backup/restore disk accounting — lytronaut-80j
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Evidence snapshot authored before canonical submission: implementation and
 focused SQLite results are recorded below. Later canonical, exact-source CI,
 coverage/container and PostgreSQL results belong to Beadhive and the preserved

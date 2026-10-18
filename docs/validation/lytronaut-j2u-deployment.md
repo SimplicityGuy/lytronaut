@@ -1,5 +1,7 @@
 # Login-free Linux deployment validation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Checkpoint status: **native amd64 and arm64 runtime and release-client browser
 checks complete; updated CI and pristine submission pending**. The first amd64
 emulated build was cancelled when measured host free space

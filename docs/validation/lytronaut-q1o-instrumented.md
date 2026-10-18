@@ -1,5 +1,7 @@
 # Instrumented sidebar request witness — lytronaut-q1o
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 This receipt records the follow-up to the actual-main coverage failure. It does
 not replace the original `7fde864` evidence of 20 uninstrumented sidebar passes.
 All data is public synthetic fixture data, and application logic is unchanged.

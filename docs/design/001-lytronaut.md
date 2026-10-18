@@ -1,5 +1,7 @@
 # Lytronaut: evidence-led scope and implementation roadmap
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Status: **Approved implementation epic lytronaut-re8; kickoff approved; delivery active**.
 Decision bead: **lytronaut-zxk — Scope verdict and next implementation plan**.
 Evidence date: 2026-10-11. Research epic: **lytronaut-ck2 — Lytronaut: prove

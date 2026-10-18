@@ -12,8 +12,11 @@ No routine intake logging or telemetry is emitted.
 
 Build `uploads::routes(store)` as product routes before `router_with_routes`
 (or `router_with_client_assets`). The final authentication guard applies to
-all routes, including raw streaming requests. Every mutation requires the
-session cookie, exact configured Origin and `X-Lytronaut-Csrf`.
+all routes, including raw streaming requests. Every mutation requires a
+matching `Host` and `Origin` plus `X-Lytronaut-Intent: mutation`. The service
+has no application session cookie or CSRF-token endpoint; deployment-level
+access control belongs at the TLS reverse proxy. See
+[authentication](authentication.md).
 
 `POST /imports` accepts the version-1 `ImportRequest` JSON, capped at 4096 bytes.
 `declared_bytes` and `declared_files` are positive admission **upper bounds**;

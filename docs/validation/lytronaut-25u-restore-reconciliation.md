@@ -1,5 +1,7 @@
 # Restore reconciliation validation — lytronaut-25u
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 This follow-up extends the delivered main baseline, not the closed implementation
 epic. All fixtures are independent synthetic data; no source library is changed.
 

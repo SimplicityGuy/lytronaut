@@ -56,7 +56,7 @@ canvas. It reserves at most 64 MiB working space and leaves 32 MiB for persisten
 DOM imagery. Stage preview admission is at most 28 MiB by that conservative
 formula. Grid images are decoded and downsized under Rust control to 128² JPEGs,
 with data URLs capped at 128 KiB each. Original image URLs are revoked immediately
-after downsizing; stage URLs are revoked on replacement/logout/unmount. Old
+after downsizing; stage URLs are revoked on replacement or unmount. Old
 requests are aborted and generation/selection checks discard late results.
 This is conservative application allocation accounting, not a measured bound on
 browser/driver process RSS or browser decoder internal allocations.
@@ -78,7 +78,7 @@ job runs this same synthetic suite without service secrets or private data.
 
 The suite includes classic ZIP and small forced-ZIP64 uploads, cancelled
 XHR/durable recovery, unknown-schema originals,
-delayed album responses across logout, corrupted preview transfer, canvas failure
+delayed album responses across library changes, corrupted preview transfer, canvas failure
 and URL cleanup/revisit. It compares the downloaded preserved thumbnail bytes
 after corrupted preview transfer and drains all created Blob URLs before the
 first browser restart, as well as after the zoom/accessibility session. GPU and VideoDecoder absence are injected before app
@@ -102,10 +102,11 @@ Private validation reuses the owner-authorized sealed scratch catalog and prints
 only aggregate counts. Private captures, source names/IDs/hashes, credentials and
 screenshots are never test artifacts or Git inputs. The final browser run covers
 109 thumbnails and three ordered albums with 12, 39 and 58 memberships.
-Final debug-build service readiness took 115.54 seconds for the retained
+One historical debug-build service readiness measurement took 115.54 seconds for the then-retained
 approximately 2 GiB / 728-file scratch corpus, including integrity recovery; the
-harness requires `/healthz` readiness within 300 seconds. Release-build startup
-latency is unmeasured.
+harness requires `/healthz` readiness within 300 seconds. A later release run
+measured 7.4 seconds while rehashing every sealed original; it remains a
+source-bound observation, not a universal startup target.
 Native tests reproduce SQLite read-to-write upgrade failure under another writer:
 API mapping and schema migrations reserve their writer with SQLx-managed
 `BEGIN IMMEDIATE`. Concurrent HTTP progress polling during publication remains
@@ -113,36 +114,12 @@ successful without product polling sleeps or hidden retries.
 
 ## Application coverage gate
 
-Normal product builds remain stable Rust 1.99.0. This bead does not claim 95%
-application line coverage. Native tests exercise model policy but do not compile
-`cfg(wasm32)` browser.rs; JavaScript coverage of generated glue also does not
-measure Rust application lines. Final acceptance bead lytronaut-cjq owns the
-source-inventory-audited native + WASM report and enforcing GitHub threshold.
-
-The official [wasm-bindgen coverage guide](https://wasm-bindgen.github.io/wasm-bindgen/wasm-bindgen-test/coverage.html)
-requires experimental nightly instrumentation, `cfg(wasm_bindgen_unstable_test_coverage)`,
-`-Cinstrument-coverage -Zno-profiler-runtime` and matching LLVM/Clang. LLVM IR
-provides symbols because llvm-cov cannot extract them from the resulting WASM.
-[cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) supports this target and
-native external-test profiles. A candidate **coverage-only** pinned toolchain is
-`nightly-2026-10-10`; it has not been installed or verified here. Final acceptance
-must select and record a working pin with its matching LLVM tools, separately
-from stable product tools, then instrument actual browser Rust execution:
-
-```sh
-CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 \
-CARGO_TARGET_DIR=/private/tmp/lytronaut-wasm-coverage/target \
-CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='-Cinstrument-coverage -Zno-profiler-runtime -Clink-args=--no-gc-sections --cfg=wasm_bindgen_unstable_test_coverage --cfg=web_sys_unstable_apis' \
-cargo +nightly-2026-10-10 llvm-cov test --target wasm32-unknown-unknown -p lytronaut-client
-```
-
-This is a research candidate, not a passed coverage command. It requires actual
-wasm-bindgen Rust test instrumentation and browser profiles; the existing CDP
-behavior suite does not emit profraw on its stable build. The final denominator
-must include browser.rs and all first-party application source, audit test/helper
-lines separately and fail when application files lack instrumented evidence.
-No coverage-driven application exclusions or unsupported 95% claim are acceptable.
+Production builds remain on stable Rust 1.99.0. The coverage recipe uses its
+pinned matching nightly only for actual instrumented Rust/WASM execution in
+Chrome. Exact-main coverage passed at native 96.14%, client 96.00%, and union
+96.19%, with the unchanged itemized GPU exception. See
+[coverage operation](../operations/coverage.md) and
+[final-main status](../validation/final-main-status.md).
 
 ### Discrete JPEG focus and explicit orientation
 
@@ -166,7 +143,7 @@ operation reserves 20 MiB within the 64 MiB transient viewer allowance, leaving
 32 MiB for persistent stage/grid within the common 96 MiB CPU/WASM budget.
 Changing focus, capture or library aborts obsolete requests; generation
 checks discard late results. Temporary decode objects are released, superseded
-Blob URLs are revoked, and logout clears the displayed derivative. There is no
+Blob URLs are revoked, and changing library clears the displayed derivative. There is no
 unbounded plane cache. Failed derivatives retain the previous verified frame and
 preserved downloads; the output label describes the frame actually displayed.
 
@@ -186,10 +163,14 @@ stage image decode and the next animation-frame callback: **decoded frame ready*
 not a claim that physical display presentation has completed. The release CPU
 100 ms p95 gate uses 24 repeated interactions on declared hardware after grid
 images finish loading. Aggregate-only corpus checks decode every stored plane.
-Debug build timing does not establish this performance target. Final first-party
-native plus WASM Rust line coverage instrumentation and its failing 95% floor
-remain the acceptance bead's experimental tooling gate; these tests do not claim
-95% measured application coverage.
+Debug build timing does not establish this performance target. The final
+source-bound A/B/B/A run passed the CPU and genuine grid-overlap gates; both
+baseline grid windows were unavailable and no quiet-host comparison is claimed.
+
+The production FIFO admission queue allows two active operations under the
+unchanged 64 MiB transient ceiling and at most ten pending tickets. Releases and
+cancellations synchronously wake waiters; RAII removes cancelled tickets without
+letting newer thumbnail work starve an older selected-view request.
 
 The development `just serve` and canonical `wasm-build` use debug profiles. A
 public synthetic diagnostic run measured 111 ms p95 HTTP/decode and 153.6 ms p95
@@ -234,6 +215,12 @@ an originals/catalog bundle; restore uploads it into a separate isolated store.
 Current libraries are unchanged. Job status can be recovered after refresh, and
 uploads/pending jobs can be cancelled. These flows do not buffer archives in WASM.
 
+Apple Live Photo export runs in the Rust/WASM client from verified archived video
+and selected-key still data. The final private run verified 320/320 pairs across
+109 streams, including pre-abort, active cancellation, and recovery; see the
+[source-bound report](../validation/lytronaut-f5a-private.md). Its pixel comparator
+scope and platform/browser limits remain explicit there.
+
 ### Optional archived browser H.264 focus
 
 The viewer keeps the JPEG/static baseline and offers **Try browser H.264
@@ -250,7 +237,7 @@ software retry. WebCodecs configuration omits AVCC `description`. A support
 query is followed by actual decode, complete frame-count/geometry verification,
 flush and a selected-frame JPEG encode plus independent image decode. Failure
 retries once with software preference; cancellation does not retry. No failed
-attempt replaces the previously verified frame. Frame/capture/library/session
+attempt replaces the previously verified frame. Frame/capture/library
 generation guards discard stale completions. Every VideoFrame is closed and
 every temporary canvas is reset on success or error, with no decoded plane cache.
 

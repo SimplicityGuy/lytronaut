@@ -1,5 +1,7 @@
 # Decision: Apple Live Photo export in the initial release
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 The operator explicitly requested dispatch of `lytronaut-9fw` for the initial
 release. This supersedes its previous separate-follow-up disposition. The release
 molecule `lytronaut-re8` now contains fourteen implementation tasks; final

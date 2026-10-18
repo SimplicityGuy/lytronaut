@@ -1,5 +1,7 @@
 # Rust WebUI and accelerated viewer feasibility
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Bead: **lytronaut-0mz — Spike: measure Rust WebUI and GPU rendering with accessible fallback**. Evidence collected 2026-10-11. Only synthetic data was used; no personal library files were opened by this spike.
 
 ## Question

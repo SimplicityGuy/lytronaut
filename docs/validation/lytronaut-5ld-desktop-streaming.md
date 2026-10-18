@@ -1,5 +1,7 @@
 # Desktop catalog streaming (lytronaut-5ld)
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Status: implementation and independent source review complete. Focused SQLite
 contracts and actual PostgreSQL parity passed; canonical submission and final
 remote checks remain pending. One Linux-only fault-fixture defect was corrected

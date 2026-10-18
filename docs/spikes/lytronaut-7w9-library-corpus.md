@@ -1,5 +1,7 @@
 # Desktop library fidelity and authorized corpus
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Bead: **lytronaut-7w9**. Observed: 2026-10-11. This is a research result;
 there is no importer implementation yet.
 

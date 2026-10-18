@@ -1,5 +1,7 @@
 # Discrete JPEG focus validation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Implementation revision: `cef102f4198c96b36f6507e8a24ca8db8e15467d`.
 The later evidence-only commit changes documentation, with identical application
 source objects listed in the [aggregate report](assets/lytronaut-m5h-focus.json).

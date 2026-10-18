@@ -1,5 +1,7 @@
 # Final MVP validation (lytronaut-cjq)
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 This report collects the acceptance evidence for the initial release candidate.
 Public results come from GitHub Actions on synthetic fixtures only. Private
 library results are local, aggregate and non-identifying, and are reported

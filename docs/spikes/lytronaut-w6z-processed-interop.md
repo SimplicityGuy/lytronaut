@@ -1,5 +1,7 @@
 # Processed stacks, depth and legacy edits
 
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
 Bead: **lytronaut-w6z**. Observed: 2026-10-11. Research only; no product
 implementation or private capture assets are committed.
 

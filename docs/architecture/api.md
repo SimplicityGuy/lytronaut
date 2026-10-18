@@ -3,8 +3,8 @@
 Compose `uploads::routes(store).merge(api.routes())` before the final
 `router_with_routes` / `router_with_client_assets` Host/Origin boundary.
 `Api::open(catalog, store)` runs additive API/catalog migrations and recovers
-completed intakes. The browser application is a later bead; these routes expose
-Rust DTOs in `lytronaut-contracts` for its WASM client.
+completed intakes. The delivered Rust/WASM browser uses the versioned DTOs in
+`lytronaut-contracts` across these routes.
 
 All product requests require the configured Host. Mutations also require the exact
 configured Origin and `X-Lytronaut-Intent: mutation`. There are no session cookies
@@ -185,8 +185,8 @@ pixel cache. Original descriptors retain the existing 128-record bounded cache.
 Focus admission reserves at most 8 MiB source bytes, 64 MiB conservative codec/
 transform/encoding working memory, 8 MiB metadata/slack, and 16 MiB transfer
 reserve within the common 96 MiB CPU limit. The encoding writer caps allocation
-and writes before crossing its output limit. GPU work remains a separate future
-64 MiB cap. No generated derivative is written into original storage.
+and writes before crossing its output limit. Implemented GPU presentation uses
+its separate 64 MiB transient cap. No generated derivative is written into original storage.
 
 ## Verified export and lossless bundles
 
@@ -243,9 +243,9 @@ Application catalogs and current bundles contain no authentication state.
 
 `POST /restores` streams a private bundle of any declared Content-Length into an
 owned upload file, then validates/restores it as a durable cancellable job.
-Checks include V1 magic, sizes/counts, duplicate blobs, exact SHA256s, no trailing
-bytes, exact trusted current application schema (no views/triggers/virtual or
-unexpected/generated tables), read-only/query-only/trusted_schema=OFF SQLite,
+Checks include supported V1/V2 framing, sizes/counts, duplicate blobs, exact
+SHA256s, no trailing bytes, the bounded logical catalog schema,
+read-only/query-only/trusted_schema=OFF SQLite,
 2 MiB cache, 20-million-VM-instruction/10-second deadline, integrity and foreign
 keys, empty transient jobs and exact source/blob inventories. Legacy backups must
 match the exact known schema before obsolete authentication tables are removed
