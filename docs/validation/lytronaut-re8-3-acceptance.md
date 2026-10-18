@@ -1,10 +1,15 @@
 # Live Photo acceptance reconciliation
 
-Status: **open** (2026-10-18). Current-byte public decoding, largest padded
-writer execution and the independently reviewed narrow external HRD model pass.
-Integrated application PostgreSQL CI passes. New-byte isolated Photos import,
-final-source private exports, quiet-host CPU acceptance and actual grid overlap
-remain open. Historical owner limitations retain their exact scope.
+Release acceptance: **open**; staged main landing requested (2026-10-18).
+The owner reports successful verification of the updated pair in Photos.
+Current-byte public decoding, largest padded writer execution and the
+independently reviewed narrow external HRD model pass. Integrated application
+PostgreSQL CI passes. Final-source private exports, quiet-host CPU acceptance
+and actual grid overlap remain open in the
+[deferred release acceptance follow-ups](#deferred-release-acceptance).
+Historical owner limitations retain their exact scope. The owner report and
+staged landing below supersede earlier checkpoint statements that Photos
+verification was pending; those historical observations remain recorded.
 
 The acceptance worktree started at application revision
 `5a9ece369185c8e81908db2421d2a6d2e5223373`. Approved validation bead
@@ -22,16 +27,16 @@ supersede that status for `c1b480f`; release acceptance remains open.
 
 | Gate | Evidence and remaining work |
 | --- | --- |
-| Apple Photos recognition | Historical owner pass for `9fw-gate5-fbe615a`; new SPS bytes still require isolated GUI import. Current resource-loader recognition passes separately; never use the stale `35c7770` pair |
+| Apple Photos recognition | **Owner-reported pass for the updated pair**, 2026-10-18; exact report and current-pair byte binding below. Automated resource recognition remains separate evidence. Historical `fbe615a` and stale `35c7770` do not substitute for this report |
 | VoiceOver | Not verified; owner signed off as out of scope for this version. Automated AXTree checks do not replace VoiceOver |
 | Counted 64/32 MiB memory | Partial evidence, accepted limitation; unmeasured owners remain unproven |
 | GPU submit-to-present ≤16.7 ms | Not verified, accepted limitation; animation-frame callbacks do not establish presentation |
-| Performance under grid load | Open: retain actual pending grid requests during measured focus interactions, with a separate warm batch |
-| Private-corpus export rerun | Pending reconciliation with the final integrated application source; see below |
+| Performance under grid load | Open in [lytronaut-b0e](#deferred-release-acceptance): retain actual pending grid requests during measured focus interactions, with a separate warm batch |
+| Private-corpus export rerun | Open in [lytronaut-f5a](#deferred-release-acceptance): final-source verification on the authorized sealed corpus |
 | iOS | Owner signed off as out of scope; not verified or supported |
 | H.264 Level 5 first-frame check | Actual largest padded NAL/RBSP and reviewed external Type I/II HRD model pass at `b3f0850`; this narrow result does not claim general conformance or Apple consumption of that schedule |
 | Live Photo on PostgreSQL | **Pass for integrated application `877116c`**: five native HTTP Live Photo cases; full PostgreSQL parity 64 passed, zero failed/ignored. Final changed branch remote checks remain required |
-| CPU focus p95 ≤100 ms | Historical full-suite merged-tree runs missed the target. Current warm-only diagnostic p95 is 79.4–87.1 ms; no quiet-host or grid-load acceptance is established |
+| CPU focus p95 ≤100 ms | Open in [lytronaut-b0e](#deferred-release-acceptance). Historical full-suite runs missed the target; warm-only diagnostic p95 is 79.4–87.1 ms. No quiet-host or grid-load acceptance is established |
 
 The release benchmark now rejects a first batch with zero pending grid images
 instead of accepting it as load-contended evidence. This prevents a false pass;
@@ -429,7 +434,8 @@ experiment was repeated on this setup. New workloads must establish their own
 selection/order and real overlap without modifying product admission merely to
 make the test pass. No product lease or scheduling behavior changed here.
 
-The remaining release gates are isolated Photos import for the current bytes,
+At this pre-owner-report checkpoint, the remaining release gates were isolated
+Photos import for the current bytes,
 private exports from an authorized sealed catalog at final application source,
 and quiet-host CPU/grid-load acceptance. Earlier owner memory/GPU limitations
 and VoiceOver/iOS exclusions are unchanged. Human CI-conditional integration
@@ -463,3 +469,49 @@ natural post-readiness grid traffic is unavailable. These diagnostics do not
 establish responsiveness while actual grid bodies/decode overlap a focus input,
 quiet-host latency, or a cause of the older full-suite CPU miss. No production
 admission or scheduling behavior was changed to enable the experiment.
+
+
+### Owner-reported Photos verification and staged landing (2026-10-18)
+
+The owner reported: “I already verified the updated pair in Photos. Looked
+great.” This is recorded as an **owner-reported pass for the current pair**.
+No additional itemized observations were recorded. The automated decoder and
+resource-loader results above remain separately scoped evidence.
+
+The supplied current-pair candidate was frozen at `c1b480f` in external
+`re8-3-c1b480f/apple-public`. Regeneration from integrated application `877116c`
+produced byte-identical resources, recorded in external
+`re8-3-release-current-877116c/public-320/source-equivalence.json`:
+
+| Resource | SHA-256 at both revisions |
+| --- | --- |
+| `focus.JPG` | `9d8f443b2cd5bd8d7a3dff98cb0b6954a8b09f86be606cfe0f4e710991f65e32` |
+| `focus.MOV` | `bcf9d9bd0a3f9184c2441cafb198d684f12e04e34b1cf5a3cc2491b9c5f85155` |
+
+The owner then requested: “please wrap up the work and land it on main”. Bead
+`lytronaut-re8.3`, now **Land validated Live Photo fixes and acceptance
+evidence**, covers that staged source landing with canonical validation,
+exact-source CI/coverage/container checks and a reviewed preserved merge.
+Application source is unchanged from `877116c` and validated `7724aea`; the
+frozen application artifacts retain their existing provenance. This landing
+does not declare release acceptance or change the historical owner limitations.
+
+### Deferred release acceptance
+
+Open epic **lytronaut-m7v — Complete deferred Live Photo release acceptance**
+preserves the unresolved release requirements in these open children:
+
+- **lytronaut-f5a — Verify final-source Live Photo exports on the sealed private
+  corpus.** Obtain an authorized usable sealed catalog, verify exports at final
+  application source, and retain aggregate integrity and program/source binding
+  evidence. The earlier private run does not attest the changed SPS bytes.
+- **lytronaut-b0e — Complete quiet-host CPU and actual grid-overlap focus
+  acceptance.** Establish reference-host conditions and actual grid response-body
+  plus same-image decode overlap during measured focus interactions. Preserve
+  the unchanged 100 ms p95 target, warm comparison, failed attempts and raw
+  measurements. Existing warm-only diagnostics do not complete this criterion.
+
+Their human kickoff gates remain pending; this landing does not dispatch them.
+These criteria remain required and are neither waived nor marked passed. The
+written memory/GPU limitations and VoiceOver/iOS exclusions keep exactly their
+original scope.

@@ -3,17 +3,25 @@
 The acceptance branch corrects an inferred per-picture VUI byte limit in the
 generated SPS. New-byte public decoding and Apple resource recognition pass;
 the reviewed narrow external HRD model also passes actual largest padded
-movies. These do not establish isolated Photos GUI import or Apple consumption
-of the external schedule. The prior owner Photos pass remains tied to the
+movies. The owner subsequently reported verification of the updated pair in
+Photos (2026-10-18); this is an owner-reported pass, separately scoped from the
+automated checks. Apple consumption of the external HRD schedule is not
+established. The prior owner Photos report remains tied to the historical
 `fbe615a` pair. Current source-bound evidence and remaining gates are maintained
 in [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md).
 
-Status (2026-10-18): implementation exists; release acceptance remains open.
+Status (2026-10-18): the owner requested staged landing of the validated source
+and evidence on main; release acceptance remains open.
 Historical merged-tree CPU p95 was 137.9–150.4 ms against ≤100 ms. New warm-only
 diagnostics are below 100 ms, but quiet-host and real grid-overlap acceptance
-remain unproven. Current-byte Photos import and final-source private exports
-also remain open. VoiceOver and iOS retain their written exclusions. The partial
-memory budget and unverified GPU submit-to-present latency retain exactly their
+remain unproven. Final-source private exports also remain open. Those remaining
+criteria are preserved in open epic **lytronaut-m7v — Complete deferred Live
+Photo release acceptance**, with private-export child **lytronaut-f5a** and
+quiet-host/grid child **lytronaut-b0e**; see the
+[open follow-ups and exact owner report](../validation/lytronaut-re8-3-acceptance.md#deferred-release-acceptance).
+Their kickoff gates remain pending. VoiceOver and iOS retain their written
+exclusions. The partial memory budget and unverified GPU submit-to-present
+latency retain exactly their
 written accepted-limitation scope; neither is proven (see
 [Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13)).
 
@@ -838,8 +846,15 @@ reference-host runs. Optional software-adapter runs stay distinct from those.
 Neither limitation is upgraded to passed. Later source-bound work is tracked
 in [current acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md).
 The private rerun recorded on 2026-10-14 remains valid only for its historical
-source. New SPS bytes require a final-source private rerun and isolated Photos
-observation. Largest padded NAL/HRD and integrated PostgreSQL checks have since
+source. The owner now reports updated-pair verification in Photos: “I already
+verified the updated pair in Photos. Looked great.” The supplied `c1b480f` pair
+is byte-identical to regenerated `877116c`, as recorded in
+[acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md#owner-reported-photos-verification-and-staged-landing-2026-10-18).
+This records the owner report without adding itemized observations. A final-source
+private rerun remains open under **lytronaut-f5a**. Largest padded NAL/HRD and
+integrated PostgreSQL checks have since
 passed within their documented scope. Warm CPU diagnostics do not establish
-quiet-host or actual grid-load acceptance. Final changed-source canonical and
+quiet-host or actual grid-load acceptance; those criteria remain open under
+**lytronaut-b0e** in **lytronaut-m7v**. The owner-requested staged source landing
+is not a release declaration or a waiver. Final changed-source canonical and
 remote checks remain required before integration.
