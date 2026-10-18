@@ -20,9 +20,12 @@ test('selected preview identity alias cannot be counted as nonselected grid work
 test('duplicate grid identity or label cannot establish same-image attribution',()=>{
  for(const field of ['id','name']){const rows=previews();rows[2][field]=rows[1][field];assert.throws(()=>gridPreviewIdentities(rows));}
 });
-const valid={start:10,end:80,pendingGridAtStart:2,bodyBytes:4000,bodyFinished:30,gridDecoded:50};
+const valid={start:10,end:80,pendingGridAtStart:2,bodyBytes:4000,bodyFinished:30,gridDecoded:50,requestedFrameVerified:true,requestedPlane:3,requestedLambda:1};
 test('completed response and decoded grid pixels overlap the exact focus interval',()=>assert.equal(requireOverlap(valid),70));
 for(const [name,change]of [
+ ['wrong frame',{requestedFrameVerified:false}],
+ ['wrong plane',{requestedPlane:1}],
+ ['nonfinite endpoint',{requestedLambda:NaN}],
  ['warm page',{pendingGridAtStart:0}],
  ['held request without bytes',{bodyBytes:0}],
  ['body completed before focus',{bodyFinished:9}],

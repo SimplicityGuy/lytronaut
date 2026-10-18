@@ -30,7 +30,7 @@ function cpuMeasurements({env,focusProof,focusUiTimes,browser,errors}){
  assert.deepEqual([focusUiTimes.p50InputToDecodedFrameReadyMs,focusUiTimes.p95InputToDecodedFrameReadyMs,focusUiTimes.maxInputToDecodedFrameReadyMs],[sorted[11],sorted[22],sorted[23]],'warm summaries must match actual raw samples');
  assert.deepEqual(errors,[],'benchmark page must not have application errors');
  const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
- return {revision:env.LYTRONAUT_TEST_REVISION,artifactProfiles:env.LYTRONAUT_ARTIFACT_PROFILES,browser,thresholdMs:100,focusProof,focusUiTimes,programs:{nativeSha256:hash(env.LYTRONAUT_BINARY),rawWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'application.wasm')),generatedWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client_bg.wasm')),glueSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client.js'))},harness:{driverSha256:hash(path.join(__dirname,'browser-test.cjs')),gridSha256:hash(path.join(__dirname,'focus-grid-load.cjs')),evidenceSha256:hash(__filename)}};
+ return {revision:env.LYTRONAUT_TEST_REVISION,artifactProfiles:env.LYTRONAUT_ARTIFACT_PROFILES,browser,thresholdMs:100,focusProof,focusUiTimes,programs:{nativeSha256:hash(env.LYTRONAUT_BINARY),rawWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'application.wasm')),generatedWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client_bg.wasm')),glueSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client.js'))},harness:{driverSha256:hash(path.join(__dirname,'browser-test.cjs')),gridSha256:hash(path.join(__dirname,'focus-grid-load.cjs')),readinessSha256:hash(path.join(__dirname,'focus-readiness.cjs')),evidenceSha256:hash(__filename)}};
 }
 
 function savePartialCpu(input){

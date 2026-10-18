@@ -1,4 +1,6 @@
 //! Rust browser application. Domain policies are shared with native tests.
+#[cfg(any(target_arch = "wasm32", test))]
+mod admission;
 #[cfg(target_arch = "wasm32")]
 mod browser;
 pub mod gpu;

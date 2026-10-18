@@ -223,7 +223,7 @@ fn browse_submit(ui: &Ui, lane: BrowseLane, intent: BrowseIntent) {
 
 #[derive(Clone, Default)]
 struct Net {
-    admission: Rc<RefCell<Admission>>,
+    admission: crate::admission::AdmissionQueue,
 }
 /// Import ownership outlives mounted signals. Detach and every unsuccessful
 /// upload continuation release it; the server idle timer backs up page closure.
@@ -278,13 +278,25 @@ impl Drop for BusyGuard {
         let _ = self.0.try_set(false);
     }
 }
-struct Lease {
-    net: Net,
-    bytes: u64,
+struct AdmissionAbort {
+    signal: web_sys::AbortSignal,
+    listener: Closure<dyn FnMut()>,
 }
-impl Drop for Lease {
+impl AdmissionAbort {
+    fn new(abort: &AbortController, wake: crate::admission::AdmissionWake) -> Result<Self> {
+        let signal = abort.signal();
+        let listener = Closure::new(move || wake.wake());
+        signal
+            .add_event_listener_with_callback("abort", listener.as_ref().unchecked_ref())
+            .map_err(|_| "Browser cancellation unavailable")?;
+        Ok(Self { signal, listener })
+    }
+}
+impl Drop for AdmissionAbort {
     fn drop(&mut self) {
-        self.net.admission.borrow_mut().release(self.bytes);
+        let _ = self
+            .signal
+            .remove_event_listener_with_callback("abort", self.listener.as_ref().unchecked_ref());
     }
 }
 async fn pause(ms: i32) {
@@ -337,19 +349,20 @@ fn cancelled(abort: &AbortController) -> bool {
     signal_cancelled(&abort.signal())
 }
 impl Net {
-    async fn lease(&self, bytes: u64, abort: &AbortController) -> Result<Lease> {
-        loop {
-            if cancelled(abort) {
-                return Err("Cancelled".into());
-            }
-            if self.admission.borrow_mut().acquire(bytes) {
-                return Ok(Lease {
-                    net: self.clone(),
-                    bytes,
-                });
-            }
-            pause(30).await;
-        }
+    async fn lease(
+        &self,
+        bytes: u64,
+        abort: &AbortController,
+    ) -> Result<crate::admission::AdmissionLease> {
+        let waiter = self
+            .admission
+            .wait(bytes, || cancelled(abort))
+            .map_err(str::to_owned)?;
+        // Register before polling and recheck both native and deferred Rust
+        // cancellation on every poll. Supersede's native microtask wakes a
+        // sleeping waiter; listener/ticket ownership ends on every return/drop.
+        let _listener = AdmissionAbort::new(abort, waiter.wake_handle())?;
+        waiter.await.map_err(str::to_owned)
     }
     async fn fetch(
         &self,
@@ -539,6 +552,54 @@ impl Net {
             Ok(url)
         }
     }
+}
+
+/// Synthetic-only adapter regression: actual AbortSignal listeners and the
+/// deferred native cancellation drain, without network or application state.
+#[cfg(feature = "test-harness")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn harness_admission_contract() -> std::result::Result<String, JsValue> {
+    let result: Result<String> = async {
+        let net = Net::default();
+        let controller = || AbortController::new().map_err(|_| "Cancellation unavailable".to_owned());
+        let held_abort = controller()?;
+        let held = net.lease(VIEWER_BUDGET, &held_abort).await?;
+        let before = controller()?;
+        before.abort();
+        if net.lease(1, &before).await.is_ok() { return Err("Already aborted request acquired".into()); }
+
+        for deferred in [false, true] {
+            let abort = controller()?;
+            let mut waiting = Box::pin(net.lease(1, &abort));
+            if !futures::poll!(waiting.as_mut()).is_pending() { return Err("Active drain lost capacity".into()); }
+            // The join polls the waiting future before scheduling cancellation.
+            // Completion therefore requires the real listener's wake, not a
+            // test loop polling the cancellation flag on a timer.
+            let (cancelled, ()) = futures::join!(waiting, async {
+                if deferred { supersede(abort.clone()); } else { abort.abort(); }
+            });
+            if cancelled.is_ok() { return Err("Cancelled request acquired".into()); }
+        }
+
+        // Abort after the listener is installed but before its future first
+        // polls. A missed event must not strand this head or admit it.
+        let abort = controller()?;
+        let waiter = net.admission.wait(1, || cancelled(&abort)).map_err(str::to_owned)?;
+        let listener = AdmissionAbort::new(&abort, waiter.wake_handle())?;
+        abort.abort();
+        if waiter.await.is_ok() { return Err("Registration-race request acquired".into()); }
+        drop(listener);
+
+        let next_abort = controller()?;
+        let mut next = Box::pin(net.lease(VIEWER_BUDGET, &next_abort));
+        if !futures::poll!(next.as_mut()).is_pending() { return Err("Cancellation released active drain".into()); }
+        drop(held);
+        drop(next.await?);
+        // After all grant/cancel paths, the entire budget remains reusable.
+        drop(net.lease(VIEWER_BUDGET, &held_abort).await?);
+        Ok("{\"alreadyAborted\":true,\"nativeAbortWake\":true,\"deferredAbortWake\":true,\"registrationRace\":true,\"activeDrainRetained\":true,\"capacityReusable\":true}".into())
+    }.await;
+    result.map_err(|error| JsValue::from_str(&error))
 }
 /// Display-only ownership: exported/public Decoded dataURLs remain unchanged.
 struct JpegUrl(String);

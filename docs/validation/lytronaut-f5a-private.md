@@ -19,6 +19,16 @@ opening the corpus. The raw WASM and bindgen receipts bind the generated pair to
 that source. This new client includes the production FIFO admission change;
 the older `877116c` client does not substitute for this rerun.
 
+The approved implementation was subsequently integrated into the molecule at
+`196e811b556b3acad0579a46afcc8cfb3bd23fc4`, preserving submitted
+`0e00d51cfa1f42c57195dd09820a5aef9b1daa78`. Its only change under
+crates/assets/Cargo inputs relative to `aa0073f` is the admission test-module
+placement and a test-only drop-probe correction. Removing that test module
+leaves exactly the same production items and order. Independent review also
+confirmed unchanged production semantics. Source line locations and newly
+rebuilt artifact bytes are not asserted identical. The private evidence remains
+bound to the exact frozen `aa0073f` client rather than relabeling its provenance.
+
 | Production browser resource | SHA-256 |
 | --- | --- |
 | Rust/WASM | `e2d345735b5088a6adbf65774730a3d2b8c13bfe0632f850f56fa9a39f600f68` |
