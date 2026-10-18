@@ -6,6 +6,10 @@ test('held grid identities exclude the selected preview',()=>{
  const grid=gridPreviewIdentities(previews());
  assert.equal(grid.size,23);assert(!grid.has('asset-0'));assert.equal(grid.get('asset-1').name,'Synthetic 001');
 });
+test('experiment requires the focus capture to be the natural default selection',()=>{
+ const rows=previews();[rows[0],rows[1]]=[rows[1],rows[0]];
+ assert.throws(()=>gridPreviewIdentities(rows),/default-selected focus capture/);
+});
 test('selected preview identity alias cannot be counted as nonselected grid work',()=>{
  const rows=previews();rows[1].id=rows[0].id;assert.throws(()=>gridPreviewIdentities(rows),/identities must be distinct/);
 });

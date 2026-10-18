@@ -13,6 +13,7 @@ function requireOverlap(row){
 function gridPreviewIdentities(previews){
  const selected=previews.find(p=>p.name==='Synthetic 000');
  assert(selected&&previews.length===24,'unchanged 24-capture public synthetic page required');
+ assert.equal(previews[0],selected,'public first capture must be the default-selected focus capture');
  assert(previews.every(p=>typeof p.id==='string'&&p.id.length>0),'actual preview asset identities required');
  assert.equal(new Set(previews.map(p=>p.id)).size,24,'selected and nonselected preview identities must be distinct');
  assert.equal(new Set(previews.map(p=>p.name)).size,24,'unique capture labels required for same-image attribution');
@@ -60,12 +61,8 @@ async function run({browser,page,origin,instrument}){
    });
    await probe.goto(origin,{waitUntil:'domcontentloaded'});
    await probe.waitForFunction(()=>document.querySelectorAll('.capture').length===24);
-   await probe.evaluate(()=>{
-    // A pending thumbnail contributes its placeholder icon to button text.
-    // Match the capture label, as discovery does, rather than that aggregate.
-    const target=[...document.querySelectorAll('.capture')].find(e=>e.querySelector('span')?.textContent==='Synthetic 000');
-    if(!target)throw Error('synthetic focus capture absent');target.click();
-   });
+   // Rust page() already selects the first capture. Clicking it again here
+   // cancels and requeues initial metadata while thumbnail lanes are active.
    await probe.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 000'&&!document.querySelector('#focus')?.disabled&&document.querySelector('.status')?.textContent.includes('Discrete focus:')&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
    // Initial metadata requires the entire shared 64 MiB lease. Do not hold a
    // positive-byte thumbnail lease until the selected focus is fully ready.
