@@ -2,8 +2,9 @@
 
 Status: **not accepted as a completed release gate**. Fresh independent review
 of `4e93d9b` found no remaining blocker within the narrow model/source-review
-scope. Largest padded final-source execution and the other acceptance work
-remain required. No production timing syntax is changed to suit this experiment,
+scope. Largest padded final-source execution subsequently passed in both
+orientations at `b3f0850`, as recorded below. Other release acceptance work
+remains open. No production timing syntax is changed to suit this experiment,
 and no overall Level 5 conformance pass is claimed.
 
 Independent review rejected two parts of checkpoint `f55300a`: the single

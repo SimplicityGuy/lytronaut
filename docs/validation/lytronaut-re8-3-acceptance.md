@@ -1,6 +1,10 @@
 # Live Photo acceptance reconciliation
 
-Status: **open**. This source review does not clear the release gates.
+Status: **open** (2026-10-18). Current-byte public decoding, largest padded
+writer execution and the independently reviewed narrow external HRD model pass.
+Integrated application PostgreSQL CI passes. New-byte isolated Photos import,
+final-source private exports, quiet-host CPU acceptance and actual grid overlap
+remain open. Historical owner limitations retain their exact scope.
 
 The acceptance worktree started at application revision
 `5a9ece369185c8e81908db2421d2a6d2e5223373`. Approved validation bead
@@ -25,9 +29,9 @@ supersede that status for `c1b480f`; release acceptance remains open.
 | Performance under grid load | Open: retain actual pending grid requests during measured focus interactions, with a separate warm batch |
 | Private-corpus export rerun | Pending reconciliation with the final integrated application source; see below |
 | iOS | Owner signed off as out of scope; not verified or supported |
-| H.264 Level 5 first-frame check | Geometry bounds reviewed; encoded first-access-unit bound remains open, as detailed below |
-| Live Photo on PostgreSQL | **Pass for validation `469aa4f`, native HTTP flow**: five Live Photo cases passed on a byte-identical tested tree; final integrated-revision verification remains pending |
-| CPU focus p95 ≤100 ms | Not met in historical merged-tree runs; quiet-host A/B and final-source measurement or explicit owner acceptance remain required |
+| H.264 Level 5 first-frame check | Actual largest padded NAL/RBSP and reviewed external Type I/II HRD model pass at `b3f0850`; this narrow result does not claim general conformance or Apple consumption of that schedule |
+| Live Photo on PostgreSQL | **Pass for integrated application `877116c`**: five native HTTP Live Photo cases; full PostgreSQL parity 64 passed, zero failed/ignored. Final changed branch remote checks remain required |
+| CPU focus p95 ≤100 ms | Historical full-suite merged-tree runs missed the target. Current warm-only diagnostic p95 is 79.4–86.9 ms; no quiet-host or grid-load acceptance is established |
 
 The release benchmark now rejects a first batch with zero pending grid images
 instead of accepting it as load-contended evidence. This prevents a false pass;
@@ -62,7 +66,8 @@ first-access-unit byte constraint. Annex A.3.1(c) additionally bounds that unit
 by `384 * (max(PicSizeInMbs, MaxMBPS/172) + MaxMBPS * removal_delay_excess) / MinCR`;
 Level 5 uses `MinCR=2`. The I_PCM payload alone is 3,207,168 bytes. The
 zero-additional-delay bound is only 1,603,584 bytes. An applicable HRD timing
-derivation and the actual encoded byte count are required before claiming pass.
+derivation and the actual encoded byte count were required before claiming pass;
+the later reviewed model and actual movie runs below supply that narrow proof.
 The movie byte cap and average bitrate cannot substitute for that proof.
 
 A bounded standalone probe included the actual `avc.rs` with only crate-level
@@ -71,8 +76,10 @@ It produced a 3,223,876-byte first IDR NAL (3,223,897 bytes including SPS/PPS).
 An independent SPS reader confirmed coded 1152×1856, displayed 1138×1842,
 Baseline profile 66, level 50, no reference frames and progressive coding.
 The formula above therefore needs at least 14.308 ms excess actual-over-nominal
-CPB removal delay; its applicable timing derivation
-remains unresolved. Evidence, exact
+CPB removal delay. Timing was unresolved at this historical standalone probe;
+the later [reviewed external HRD model](lytronaut-re8-3-hrd.md) supplies an
+applicable schedule and exact actual movie checks, without claiming Apple
+consumes that schedule. Evidence, exact
 commands and synthetic source/program hashes are outside this worktree at
 `/private/tmp/lytronaut-re8-3-evidence`. This does not run the Plan regression,
 MOV assembly, a decoder or the canonical check.
@@ -95,24 +102,26 @@ Two independent-parser regressions pass using pinned standalone rustc against
 the actual writer, including the padded encode. Both fail under a deliberately
 wrong denominator-two mutation. The new SPS is 18 bytes rather than 17; VCL
 bytes remain 3,223,876 and SPS/PPS plus VCL totals 3,223,898. This fixes the VUI
-picture-size claim only. Annex A.3.1(c,d,i,j) still need an applicable HRD
-schedule. Absent timing infers fixed-rate zero and low-delay one, so assuming
+picture-size claim only. At that checkpoint Annex A.3.1(c,d,i,j) still needed
+an applicable HRD schedule; the later reviewed external model supplies it. Absent timing infers fixed-rate zero and low-delay one, so assuming
 actual removal always equals nominal removal would also be unjustified.
 
 Decoder/resource-loader compatibility passed for regenerated output at
 `c1b480f`, as recorded below. Isolated Photos recognition still needs new
 observation. The owner's earlier Photos result remains
 historical evidence for the rebuilt `fbe615a` pair. No current-byte Photos GUI pass,
-full Level 5 conformance, quiet-host latency or canonical validation is claimed.
+full Level 5 conformance or quiet-host latency is claimed. Canonical validation
+subsequently passed at `c1b480f` and `85397a2`, within their stated source scope.
 The format source has now changed relative to the private-run baseline, so
 that run does not attest these newly emitted SPS bytes.
 
 The [candidate external HRD experiment](lytronaut-re8-3-hrd.md) now records an
 independent actual-NAL parser and rational schedule model, its normative
-coverage, a small public fixture trial and remaining obligations. Fresh review
-of `4e93d9b` found no remaining blocker within that narrow scope; largest padded
-final-source execution is pending. This candidate does not yet
-close the gate or claim that Apple consumes the externally supplied parameters.
+coverage and actual public fixture results. Fresh review of `4e93d9b` found no
+remaining blocker within that narrow scope. Both largest padded orientations
+were then generated and passed every Type I/II initialization at `b3f0850`.
+This narrow proof does not close overall release acceptance or establish that
+Apple consumes the externally supplied parameters.
 
 ## Existing private and PostgreSQL evidence
 
@@ -133,7 +142,10 @@ succeeded with 53 passed, zero failed and zero ignored. Its exact-count
 `live-photo-api` group passed all five cases at 12:27:48 UTC, including
 `live_photo_create_download_complete_private_metadata_free_pair`, missing
 stored-plane failure, invalid-plane/restart, ready-pair deletion/restart and
-in-flight cancellation. The runner explicitly selects PostgreSQL and refuses
+immediate DELETE with completion races. The latter permits an already-finished
+worker; it proves lifecycle cleanup and no half-pair publication, not
+deterministically active cancellation. Browser active-cancellation evidence is
+reported separately. The runner explicitly selects PostgreSQL and refuses
 missing test configuration; it cannot silently fall back to SQLite.
 
 The create/download case imports public synthetic input through HTTP, creates
@@ -311,9 +323,9 @@ percentile summaries against those samples and the 24 grid intervals, and
 writes measured native/grid/warm values and `passed=false`
 before failing unchanged 100 ms thresholds, and refuses to overwrite an earlier
 experiment. Unit guards cover failed-value retention, source mismatches,
-incompatible modes, missing overlap and nonfinite measurements. No browser run
-of this new focus-only mode or release A/B measurement has occurred yet; the
-final changed source still requires canonical validation before submission.
+incompatible modes, missing overlap and nonfinite measurements. The bounded
+setup attempts and subsequent warm-only release A/B/B/A diagnostic are recorded
+below. They do not establish real grid overlap or quiet-host acceptance.
 
 
 ### Release artifacts and largest public writer checks
@@ -345,3 +357,80 @@ Evidence remains outside the repository in
 resources only. Final canonical validation, final exact-source remote checks,
 private export verification, CPU latency and owner Photos observation remain
 open at this checkpoint.
+
+
+### Integrated validation and bounded diagnostic checkpoint (2026-10-18)
+
+Canonical validation at clean `85397a210b0ff50420d25dc2ddfbbd16ec5fe163`
+passed in 847.0 seconds: 255 Rust tests, zero failed, 50 opt-in ignored;
+35 Node guards and seven Python HRD tests passed, along with lint, host/WASM
+builds, boundaries and 339 package licenses. Host and explicit WASM first-party
+debug outputs, including manifest-bound `xtask`, were cleaned first. The outer
+and nested owned process groups were supervised at a 2 GiB disk floor; the
+run ended with 16.39 GiB free. This verdict does not attest later tool/doc edits.
+
+All three exact-`877116c` remote workflows passed:
+[CI](https://github.com/SimplicityGuy/lytronaut/actions/runs/39018363264),
+[coverage](https://github.com/SimplicityGuy/lytronaut/actions/runs/39018365953)
+and [Linux containers](https://github.com/SimplicityGuy/lytronaut/actions/runs/39018368658).
+The CI [PostgreSQL job](https://github.com/SimplicityGuy/lytronaut/actions/runs/39018363264/job/117355013470)
+passed all five Live Photo API tests and all 64 parity tests, zero failed or
+ignored. This is integrated application evidence; subsequent changes are
+example/test/tool/docs only, with application-source equality recorded outside
+the repo. Final exact-tip canonical and remote checks still apply.
+
+Frozen production `877116c` WASM also passed public pair/ICC, large/padded,
+software retry, cancellation and cleanup checks in 8.97 seconds: all 13 created
+decoders closed, queue at most two, pixel copies at most 131072 bytes and seven
+ICC rejection cases. Its regenerated 320×240 JPG/MOV are byte-identical to the
+frozen `c1b480f` owner-import candidate. Neither observation is a Photos GUI pass.
+
+The early grid setup attempts failed before valid latency evidence: aggregate
+button text included pending-thumbnail icons, and then holding grid chunks
+prevented selected metadata from acquiring its full shared 64 MiB reservation.
+Those attempts remain in external `re8-3-focus-abba-contended`,
+`re8-3-focus-abba-selector-fixed-d375d43` and
+`re8-3-focus-abba-one-held-48f408c`. No failed attempt was relabeled as passing.
+
+The independently reviewed `e0ee642` harness saves native plus 24 warm samples
+**before** attempting grid traffic, in a distinct immutable `.cpu.json` receipt.
+Every partial receipt has `complete=false`, `passed=false` and
+`gridAcceptanceVerified=false`, with raw samples and exact program/harness
+hashes. A separate unavailable-grid receipt binds its CPU receipt hash. The
+complete report still requires 24 actual response-body and same-image decode
+overlaps, and all unchanged 100 ms targets. No warm sample substitutes for grid
+work. Default full-suite behavior remains unchanged.
+
+A single serial A/B/B/A diagnostic used the same 74-file immutable public
+fixture and reviewed harness for baseline `623f2b9` (A) and frozen current
+application `877116c` (B):
+
+| Run | Native HTTP/decode p95 (ms) | Warm focus p95 (ms) | Warm maximum (ms) |
+| --- | ---: | ---: | ---: |
+| A1 | 3.3 | 86.4 | 86.9 |
+| B1 | 3.3 | 86.9 | 87.5 |
+| B2 | 2.9 | 79.4 | 81.1 |
+| A2 | 2.9 | 84.6 | 92.5 |
+
+All four CPU-only target checks passed. CPU idle samples ranged from 54.9% to
+80.68%; no quiet-host condition or cause of the historical miss is established.
+A1/B1/B2 had no naturally pending grid images after selected focus readiness.
+A2 failed the strict 24-preview discovery before the grid loop. These are
+CPU-only diagnostics, not a complete acceptance pass or a grid latency result.
+Evidence and all raw samples are in `re8-3-focus-abba-warm-first-e0ee642`.
+
+One separately reviewed current-only probe at `2da8e64` removed the additional
+selection click, relying on the application's natural first-capture selection.
+It retained native/warm p95 4.5/82.8 ms (warm maximum 85.2 ms), but rejected the
+fixture's actual first capture, Synthetic 016, rather than assuming the focus
+capture Synthetic 000 was the default. No grid loop ran. Its failure and partial
+CPU receipt remain in `re8-3-focus-current-natural-2da8e64`; no further grid
+experiment was repeated on this setup. New workloads must establish their own
+selection/order and real overlap without modifying product admission merely to
+make the test pass. No product lease or scheduling behavior changed here.
+
+The remaining release gates are isolated Photos import for the current bytes,
+private exports from an authorized sealed catalog at final application source,
+and quiet-host CPU/grid-load acceptance. Earlier owner memory/GPU limitations
+and VoiceOver/iOS exclusions are unchanged. Human CI-conditional integration
+approval is not a waiver of these acceptance requirements.

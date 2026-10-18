@@ -1,18 +1,20 @@
 # Portable Live Photo export
 
 The acceptance branch corrects an inferred per-picture VUI byte limit in the
-generated SPS. Encoded picture pixels are unchanged, but stream headers change;
-decoder/resource-loader and Photos compatibility for the new bytes require
-revalidation. The prior owner Photos pass remains tied to the `fbe615a` pair.
-See [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md)
-for the bounded regression evidence and remaining Annex A timing uncertainty.
+generated SPS. New-byte public decoding and Apple resource recognition pass;
+the reviewed narrow external HRD model also passes actual largest padded
+movies. These do not establish isolated Photos GUI import or Apple consumption
+of the external schedule. The prior owner Photos pass remains tied to the
+`fbe615a` pair. Current source-bound evidence and remaining gates are maintained
+in [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md).
 
-Status: implementation in progress. Release CPU-mode focus interaction is **not met**
-on the merged tree at `b81e689` (p95 137.9–150.4 ms against ≤100 ms). Apple Photos recognition is an
-owner-reported pass. VoiceOver is **not verified**; the owner signed it off as out of
-scope for the initial version. iOS is out of scope for this release. The counted
-memory budget (partial) and GPU submit-to-present latency (unverified) are accepted
-by the owner as known limitations; neither is proven (see
+Status (2026-10-18): implementation exists; release acceptance remains open.
+Historical merged-tree CPU p95 was 137.9–150.4 ms against ≤100 ms. New warm-only
+diagnostics are below 100 ms, but quiet-host and real grid-overlap acceptance
+remain unproven. Current-byte Photos import and final-source private exports
+also remain open. VoiceOver and iOS retain their written exclusions. The partial
+memory budget and unverified GPU submit-to-present latency retain exactly their
+written accepted-limitation scope; neither is proven (see
 [Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13)).
 
 A Live Photo is a still image plus a paired movie. Neither an ordinary JPEG nor
@@ -658,8 +660,10 @@ evidence directory, not in the repository or CI.
 | Apple Photos recognition | **Owner-reported pass** | Rebuilt pair `9fw-gate5-fbe615a`; see below |
 | VoiceOver | **Not verified** | Owner signed off as out of scope for the initial version (2026-10-13). The only accessibility evidence is the automated accessibility-tree (AXTree) inspection |
 
-Bead `lytronaut-re8.3` tracks these gates; their final state is in
-[Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13).
+Bead `lytronaut-re8.3` tracks these gates. The table above is a historical
+measurement snapshot; [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md)
+is the current source-bound status. The dated owner dispositions below remain
+unchanged within their original scope.
 
 **Counted budget.** Owners recorded in the mounted-UI trace were summed per
 phase only when live at the same time. The three owner shapes had zero dropped
@@ -795,11 +799,15 @@ A/B run of `623f2b9` and the merged code on a quiet host is required
 when it was attempted. At the time of this run, Apple Photos, VoiceOver, the full
 counted budget and GPU submit-to-present were unverified; see
 [Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13)
-for their final state.
+for those dated owner dispositions; see [current acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md)
+for later source-bound results.
 
 ## Owner results and accepted limitations (2026-10-13)
 
-Final state of the `lytronaut-re8.3` gates:
+Historical owner dispositions for `lytronaut-re8.3` on 2026-10-13. These apply
+to the identified historical resource pair and accepted limitations; current
+new-byte acceptance is tracked separately in
+[acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md):
 
 | Gate | State |
 | --- | --- |
@@ -827,13 +835,11 @@ GPU rendering code is also an owner-approved exception to the 95% line-coverage
 gate (see `docs/operations/coverage.md`). It is verified by the physical-GPU
 reference-host runs. Optional software-adapter runs stay distinct from those.
 
-Neither limitation is upgraded to passed. Still **open**:
-
-- Focus latency under grid-image load.
-- A private-corpus export rerun at the current source. Done 2026-10-14 (aggregate results in [the final validation report](../validation/lytronaut-cjq-final.md#private-library)).
-- Checking the 1138×1842 first frame against the H.264 Level 5 per-frame limits.
-- Live Photo export on PostgreSQL end to end.
-- Required-check enforcement on `main`: not yet applied through homelab
-  ([adoption procedure](../operations/required-checks.md)).
-- Exact delivery-revision CI, coverage and container results after final changes.
-- Release CPU-mode focus interaction p95: **not met** (target ≤100 ms).
+Neither limitation is upgraded to passed. Later source-bound work is tracked
+in [current acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md).
+The private rerun recorded on 2026-10-14 remains valid only for its historical
+source. New SPS bytes require a final-source private rerun and isolated Photos
+observation. Largest padded NAL/HRD and integrated PostgreSQL checks have since
+passed within their documented scope. Warm CPU diagnostics do not establish
+quiet-host or actual grid-load acceptance. Final changed-source canonical and
+remote checks remain required before integration.
