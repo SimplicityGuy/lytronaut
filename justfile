@@ -20,7 +20,7 @@ lint:
 test:
     cargo test --locked --workspace --all-targets --all-features
     cargo test --locked --workspace --doc
-    node --test scripts/coverage.test.cjs scripts/sidebar-request.test.cjs scripts/sidebar-fetch.test.cjs scripts/focus-grid-load.test.cjs scripts/focus-benchmark.test.cjs
+    node --test scripts/coverage.test.cjs scripts/sidebar-request.test.cjs scripts/sidebar-fetch.test.cjs scripts/focus-grid-load.test.cjs scripts/focus-benchmark.test.cjs scripts/focus-readiness.test.cjs
     python3 scripts/live-photo-hrd-test.py
 
 # Explicit disposable PostgreSQL only; the default SQLite test recipe stays independent.
