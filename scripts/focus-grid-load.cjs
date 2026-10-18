@@ -10,6 +10,15 @@ function requireOverlap(row){
  return row.end-row.start;
 }
 
+function gridPreviewIdentities(previews){
+ const selected=previews.find(p=>p.name==='Synthetic 000');
+ assert(selected&&previews.length===24,'unchanged 24-capture public synthetic page required');
+ assert(previews.every(p=>typeof p.id==='string'&&p.id.length>0),'actual preview asset identities required');
+ assert.equal(new Set(previews.map(p=>p.id)).size,24,'selected and nonselected preview identities must be distinct');
+ assert.equal(new Set(previews.map(p=>p.name)).size,24,'unique capture labels required for same-image attribution');
+ return new Map(previews.filter(p=>p!==selected).map(p=>[p.id,p]));
+}
+
 async function run({browser,page,origin,instrument}){
  // Discover only the existing public synthetic grid. The caller refuses private
  // mode before opening this helper. No source names/IDs are emitted in results.
@@ -29,9 +38,7 @@ async function run({browser,page,origin,instrument}){
   }
   return found;
  });
- const selected=previews.find(p=>p.name==='Synthetic 000');
- assert(selected&&previews.length===24,'unchanged 24-capture public synthetic page required');
- const byId=new Map(previews.filter(p=>p!==selected).map(p=>[p.id,p]));
+ const byId=gridPreviewIdentities(previews);
  const rows=[];
  for(let sample=0;sample<24;sample++){
   const probe=await browser.newPage(),held=[],errors=[];
@@ -45,7 +52,9 @@ async function run({browser,page,origin,instrument}){
    probe.on('request',request=>{
     const match=new URL(request.url()).pathname.match(/^\/assets\/([^/]+)\/chunks\/0$/);
     const preview=match&&byId.get(match[1]);
-    if(preview&&!released)held.push({request,preview});
+    // Hold one real nonselected response; holding the entire grid can exhaust
+    // admission before the selected stage is ready, preventing measurement.
+    if(preview&&!released&&held.length===0)held.push({request,preview});
     else request.continue().catch(()=>{});
    });
    await probe.goto(origin,{waitUntil:'domcontentloaded'});
@@ -104,6 +113,10 @@ async function run({browser,page,origin,instrument}){
    released=true;
    await candidate.request.continue();
    const row=await measuring;requireOverlap(row);assert.deepEqual(errors,[],'contention page must not have application errors');rows.push(row);
+  }catch(error){
+   const state=await probe.evaluate(()=>({captures:document.querySelectorAll('.capture').length,gridImages:document.querySelectorAll('.capture img').length,focusDisabled:document.querySelector('#focus')?.disabled??null,stageReady:!!document.querySelector('.stage img')?.naturalWidth})).catch(()=>null);
+   error.message+=`; public grid state ${JSON.stringify({heldRequests:held.length,released,state})}`;
+   throw error;
   }finally{
    // Aborting other held requests is cleanup outside the measured interval.
    for(const {request}of held)if(!request.isInterceptResolutionHandled())await request.abort().catch(()=>{});
@@ -113,4 +126,4 @@ async function run({browser,page,origin,instrument}){
  const times=rows.map(requireOverlap).sort((a,b)=>a-b);
  return {samples:rows.length,pendingGridAtStart:Math.min(...rows.map(r=>r.pendingGridAtStart)),p50InputToDecodedFrameReadyMs:times[11],p95InputToDecodedFrameReadyMs:times[22],maxInputToDecodedFrameReadyMs:times[23],actualGridResponseAndDecodeOverlap:true,experiment:'fresh public synthetic page per interaction; one real pending grid chunk released during focus',intervals:rows};
 }
-module.exports={run,requireOverlap};
+module.exports={run,requireOverlap,gridPreviewIdentities};
