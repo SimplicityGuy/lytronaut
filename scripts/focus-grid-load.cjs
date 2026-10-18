@@ -51,7 +51,9 @@ async function run({browser,page,origin,instrument}){
    await probe.goto(origin,{waitUntil:'domcontentloaded'});
    await probe.waitForFunction(()=>document.querySelectorAll('.capture').length===24);
    await probe.evaluate(()=>{
-    const target=[...document.querySelectorAll('.capture')].find(e=>e.textContent==='Synthetic 000');
+    // A pending thumbnail contributes its placeholder icon to button text.
+    // Match the capture label, as discovery does, rather than that aggregate.
+    const target=[...document.querySelectorAll('.capture')].find(e=>e.querySelector('span')?.textContent==='Synthetic 000');
     if(!target)throw Error('synthetic focus capture absent');target.click();
    });
    await probe.waitForFunction(()=>!document.querySelector('#focus')?.disabled&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
@@ -64,7 +66,7 @@ async function run({browser,page,origin,instrument}){
    assert.equal(manifest.chunks.length,1,'single-chunk public grid preview required');
    const measuring=probe.evaluate(async({name,url,sample})=>{
     const range=document.querySelector('#focus'),image=document.querySelector('.stage img');
-    const grid=[...document.querySelectorAll('.capture')].find(e=>e.textContent===name);
+    const grid=[...document.querySelectorAll('.capture')].find(e=>e.querySelector('span')?.textContent===name);
     if(!range||range.disabled||!grid||grid.querySelector('img'))throw Error('fresh pending grid and ready focus required');
     let gridDecoded=null;
     const gridObserver=new MutationObserver(()=>{
