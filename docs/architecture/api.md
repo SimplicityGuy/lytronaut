@@ -1,4 +1,4 @@
-# Authenticated catalog and asset API
+# Catalog and asset API
 
 Compose `uploads::routes(store).merge(api.routes())` before the final
 `router_with_routes` / `router_with_client_assets` Host/Origin boundary.
@@ -82,9 +82,10 @@ most 256 associated files; larger details fail with resource_limit and still
 permit paginated library file downloads. `PreservedFile` carries only application
 ID, size and typed role (raw/depth/refocus_stack/jpeg_focus_stack/view_stack/
 thumbnail/legacy_edits/catalog/other), never source filename/path. Missing item
-errors include that role and a normalized error. Optional focus/codec/rendering
-capabilities remain disabled/unverified until their own beads satisfy gates;
-this API claims only validated static JPEG previews and original preservation.
+errors include that role and a normalized error. Focus, codec, and rendering
+capability states reflect the current catalog and runtime probes. Validated
+static/JPEG focus and original preservation are available from the native API;
+browser H.264 and GPU presentation remain conditional and retain static/CPU fallbacks.
 
 ## Immutable assets and transfers
 
@@ -185,8 +186,10 @@ pixel cache. Original descriptors retain the existing 128-record bounded cache.
 Focus admission reserves at most 8 MiB source bytes, 64 MiB conservative codec/
 transform/encoding working memory, 8 MiB metadata/slack, and 16 MiB transfer
 reserve within the common 96 MiB CPU limit. The encoding writer caps allocation
-and writes before crossing its output limit. Implemented GPU presentation uses
-its separate 64 MiB transient cap. No generated derivative is written into original storage.
+and writes before crossing its output limit. Browser GPU operations reserve 24
+MiB inside the shared 64 MiB client transient admission, while GPU allocation
+also has its own explicit 64 MiB cap; see [GPU presentation](gpu.md). No
+generated derivative is written into original storage.
 
 ## Verified export and lossless bundles
 
@@ -200,8 +203,16 @@ and lambda. PNG directly encodes decoded/oriented stored pixels without an
 intervening JPEG encode. JPEG uses explicit quality 90. Generated pixels have
 unknown color, no color conversion and no copied ICC/EXIF metadata.
 
-`GET /exports/{id}` returns typed `ExportProgress` (flatten/archive/restore plus
-durable JobReport). `DELETE /exports/{id}` cancels pending work or removes a
+`kind=live_photo` selects a `JpegFocusStack` original, a stored `plane_index`,
+and explicit EXIF 1–8. The native HTTP path decodes the selected JPEG plane in
+independent Rust and returns a ZIP containing the paired JPEG, MOV, and
+provenance. The browser path instead handles archived AVC through WebCodecs;
+its comparator scope is documented in the
+[final private report](../validation/lytronaut-f5a-private.md).
+
+`GET /exports/{id}` returns typed `ExportProgress`
+(flatten/archive/restore/live-photo plus durable JobReport).
+`DELETE /exports/{id}` cancels pending work or removes a
 completed artifact. `GET /exports/{id}/download` streams a completed artifact
 with an opaque filename; `/recipe` separately returns the V1 Lytronaut record
 for flattened pixels: source variant, plane/lambda, source/output dimensions,
@@ -235,8 +246,10 @@ first when another job is admitted. Remove completed exports to make room.
 application catalog snapshot plus each unique immutable original blob. Logical
 paths, source SQLite databases, unknown backup databases/files, legacy sidecars,
 H.264, exact typed native records, stable application IDs, albums, order, events
-and metadata survive. Original databases are opaque blobs and remain byte-exact;
-the generated application snapshot uses SQLite VACUUM and retains semantic values.
+and metadata survive. Original databases are opaque blobs and remain byte-exact.
+Current V2 archives stream fixed logical application tables in a
+backend-neutral form. Legacy V1 archives contain a validated physical SQLite
+snapshot produced with `VACUUM`; both retain the represented semantic values.
 A consistent snapshot is taken before selecting its blob inventory, so concurrent
 new intake cannot create a catalog/blob mismatch. Export jobs and unfinished intake jobs are deleted from the generated snapshot.
 Application catalogs and current bundles contain no authentication state.
@@ -244,13 +257,13 @@ Application catalogs and current bundles contain no authentication state.
 `POST /restores` streams a private bundle of any declared Content-Length into an
 owned upload file, then validates/restores it as a durable cancellable job.
 Checks include supported V1/V2 framing, sizes/counts, duplicate blobs, exact
-SHA256s, no trailing bytes, the bounded logical catalog schema,
-read-only/query-only/trusted_schema=OFF SQLite,
-2 MiB cache, 20-million-VM-instruction/10-second deadline, integrity and foreign
-keys, empty transient jobs and exact source/blob inventories. Legacy backups must
-match the exact known schema before obsolete authentication tables are removed
-from the isolated restore copy.
-Recomputed checksums do not bypass schema and association checks.
+SHA256s, no trailing bytes, empty transient jobs, and exact source/blob
+inventories. V2 decodes only the fixed bounded logical tables and row/value
+types; it never executes bundled DDL. Legacy V1 validates its known SQLite schema
+with read-only/query-only/trusted_schema=OFF, a 2 MiB cache, the
+20-million-VM-instruction/10-second deadline, integrity and foreign keys before
+obsolete credential tables are removed from the isolated copy. Recomputed
+checksums never bypass either version's schema and association checks.
 
 Restore exclusively creates `staging.exports/{job-id}.restored/store` beside the
 application staging root. It never opens source libraries or the running catalog

@@ -339,11 +339,14 @@ To adopt a verified result, stop the service and first copy it into
 administrator-owned locations outside `staging.exports`. For SQLite, copy the
 restored catalog, originals, and work layout into new private locations, fsync
 them, then point the normal deployment configuration at those copies. For
-PostgreSQL, dump the restored schema and restore it under a new
-administrator-selected schema, copy the restored originals into a new private
-originals location, and point `LYTRONAUT_DATABASE_SCHEMA` and storage settings at
-those copies. Start and verify the adopted configuration; only then delete the
-restore job. A bundle from either backend restores into either backend.
+PostgreSQL, provision a separate operator-owned database, dump the restored
+schema and restore it into that database under the same schema name, and copy
+the restored originals into a new private originals location. Use fresh
+operator-owned data and staging roots; do not copy `staging.exports`, restore
+journals, or other job ownership markers. Point `LYTRONAUT_DATABASE_URL`,
+`LYTRONAUT_DATABASE_SCHEMA`, and storage settings at the independent copies.
+Start and verify the adopted configuration; only then delete the restore job. A
+bundle from either backend restores into either backend.
 
 ### PostgreSQL backup, recovery and upgrades
 

@@ -69,7 +69,7 @@ appears on 429 free-space admission responses of `POST /imports`,
 Lytronaut browser clients never decode a 429 body. Services map internal
 errors to codes and keep filesystem paths, credentials and serials out of the
 wire and routine logs. Public `GET /healthz` performs an actual catalog query and returns 503 on
-catalog failure, with no source metadata. The service authentication boundary
+catalog failure, with no source metadata. The Host/Origin request boundary
 protects every application route and fallback; see
 [authentication and extension contracts](authentication.md).
 
@@ -86,10 +86,12 @@ command-local validation; `wasm-build` resolves its wasm-bindgen input through
 that directory, falling back to `target` when unset. Source checkouts remain
 pristine and all locked native/WASM, boundary and license checks still run.
 Keep `CARGO_BUILD_JOBS=2` on constrained shared hosts.
-SQLx uses bundled SQLite (a public-domain database engine); no native image
-or video codec is included. The service binds loopback and uses only its own application database.
-The authentication contract defines private local bootstrap state and the
-exact-origin/TLS reverse-proxy deployment policy.
+SQLx uses bundled SQLite (a public-domain database engine). JPEG decoding and
+Live Photo encoding are independent Rust implementations; Lytronaut includes no
+FFmpeg/C++ codec runtime or native AVC decoder. The service binds loopback and
+uses only its own application database.
+The deployment-access contract defines the exact-origin/TLS reverse-proxy policy;
+the application has no account, login, cookie, or credential bootstrap state.
 
 API sources checked against upstream crate code/docs:
 [Axum Router/serve](https://docs.rs/axum/0.8.9/axum/),

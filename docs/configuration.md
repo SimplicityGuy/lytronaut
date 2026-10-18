@@ -1,8 +1,8 @@
-# Configuration map
+# Selected configuration map
 
-The complete operational configuration, defaults, Compose overlays, secrets,
-and backup procedures live in [Linux operation](operations/linux.md). This page
-maps the settings readers most often need without duplicating that reference.
+Operational configuration, Compose overlays, secrets, and backup procedures live
+in [Linux operation](operations/linux.md). This page is a navigation map for the
+settings readers most often need; the source and Compose files remain the exact reference.
 
 | Concern | Settings | Rule |
 | --- | --- | --- |
