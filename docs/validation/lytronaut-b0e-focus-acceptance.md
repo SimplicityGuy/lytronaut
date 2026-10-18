@@ -4,7 +4,8 @@
 
 This follow-up starts from main `17524c31b45252385082e33501f789fc0997c394`.
 The warm CPU and actual grid-overlap runtime gates now pass within the scope
-below; canonical validation and integration remain pending. Earlier release
+below. The validated branch is integrated into the molecule at `196e811`;
+final combined validation and main integration remain required. Earlier release
 warm A/B/B/A results met 100 ms but did not establish a quiet host. Every earlier
 grid setup produced zero valid overlap intervals. Neither those unavailable
 setups nor successful CI constitute a pass for this bead.
@@ -311,7 +312,8 @@ relabeling the old program sidecars. The separately owned private rerun against
 the exact frozen `aa0073f` production client has also passed; its corpus and
 integrity evidence remain with the private acceptance bead.
 
-Final pristine Beadhive submission will run the canonical pinned check once;
-it has not yet passed at this documentation checkpoint. Human review and remote
-CI remain required before integration. No acceptance gate has been approved by
-the developer, and no merge is performed here.
+At the original documentation checkpoint, pristine submission, human review and
+remote CI were still required. The validated branch was subsequently merged into
+the molecule at `196e811b556b3acad0579a46afcc8cfb3bd23fc4`, preserving submitted
+`0e00d51cfa1f42c57195dd09820a5aef9b1daa78`. Final combined validation and main
+integration remain required. No acceptance gate was approved by the developer.

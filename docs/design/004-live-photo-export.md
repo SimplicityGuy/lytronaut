@@ -15,13 +15,18 @@ and evidence on main; release acceptance remains open.
 Historical merged-tree CPU p95 was 137.9–150.4 ms against ≤100 ms. The later
 `aa0073f` loaded-host A/B/B/A meets the unchanged CPU and actual grid-overlap
 targets; the owner chose current host load, so no quiet-host claim is made.
-Canonical validation/integration and final-source private exports remain open. Those remaining
+Final-source private exports also pass at `aa0073f` with its freshly built
+release client: 109 streams, 320 verified exports, zero failures, and unchanged
+originals; see [private-corpus evidence](../validation/lytronaut-f5a-private.md).
+Final combined canonical validation, remote checks and main integration remain
+required. These
 criteria are preserved in open epic **lytronaut-m7v — Complete deferred Live
 Photo release acceptance**, with private-export child **lytronaut-f5a** and
 current-host/grid child **lytronaut-b0e**; see the
 [open follow-ups and exact owner report](../validation/lytronaut-re8-3-acceptance.md#deferred-release-acceptance).
-The staged landing did not dispatch these children. The later b0e kickoff and
-current-load experiment were explicitly approved. VoiceOver and iOS retain their written
+The staged landing did not dispatch these children. The owner subsequently
+approved the follow-up kickoff for both children and explicitly chose the
+current-load experiment. VoiceOver and iOS retain their written
 exclusions. The partial memory budget and unverified GPU submit-to-present
 latency retain exactly their
 written accepted-limitation scope; neither is proven (see
@@ -852,8 +857,12 @@ source. The owner now reports updated-pair verification in Photos: “I already
 verified the updated pair in Photos. Looked great.” The supplied `c1b480f` pair
 is byte-identical to regenerated `877116c`, as recorded in
 [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md#owner-reported-photos-verification-and-staged-landing-2026-10-18).
-This records the owner report without adding itemized observations. A final-source
-private rerun remains open under **lytronaut-f5a**. Largest padded NAL/HRD and
+This records the owner report without adding itemized observations. The
+[final-source private rerun](../validation/lytronaut-f5a-private.md) under
+**lytronaut-f5a** now passes: all 109 streams and 320 exports, zero failures,
+with all 728 originals and 638 sealed blobs unchanged. This uses final
+production candidate `aa0073f` and its freshly built release client.
+Largest padded NAL/HRD and
 integrated PostgreSQL checks have since
 passed within their documented scope. Warm-only diagnostics did not establish
 grid-load acceptance. Later **lytronaut-b0e** production `aa0073f` passed actual
