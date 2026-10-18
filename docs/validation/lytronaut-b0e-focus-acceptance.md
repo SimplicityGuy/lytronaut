@@ -3,7 +3,8 @@
 ## Current state
 
 This follow-up starts from main `17524c31b45252385082e33501f789fc0997c394`.
-The warm CPU and actual grid-overlap release gates remain open. Earlier release
+The warm CPU and actual grid-overlap runtime gates now pass within the scope
+below; canonical validation and integration remain pending. Earlier release
 warm A/B/B/A results met 100 ms but did not establish a quiet host. Every earlier
 grid setup produced zero valid overlap intervals. Neither those unavailable
 setups nor successful CI constitute a pass for this bead.
@@ -11,10 +12,13 @@ setups nor successful CI constitute a pass for this bead.
 The reviewed protocol's one authorized frozen current-release diagnostic stopped at its first
 unavailable grid window: zero valid overlap intervals. Native and warm CPU
 measurements met 100 ms under the operator's chosen current load, but the grid
-gate remains open. No retry or A/B/B/A comparison was run. A subsequent bounded
-FIFO product repair is now authored and has passed focused policy tests and
-WASM linting; its real browser cancellation and release performance checks
-remain pending. The diagnostic below predates this repair.
+gate remained open at that checkpoint. The subsequent bounded FIFO repair
+passed a reviewed 24-interval production diagnostic, a separate actual browser
+cancellation/lifetime regression, and one fixed A/B/B/A comparison. Both final B
+runs met 100 ms with 24 genuine grid-overlap intervals. The owner chose current
+Mac load; no quiet-host claim is made. Final canonical validation and the
+source-bound private rerun remain separate. The initial diagnostic below
+predates this repair.
 
 ## Source causality
 
@@ -218,7 +222,96 @@ continuous-new-arrival FIFO progress, full-budget head blocking, unchanged
 bytes/two slots, oversize/ten-ticket refusal, cancellation/drop before grant,
 active drain retention, reentrant cancellation during grant, and cancellation
 from a replaced waker's destructor. WASM clippy with `test-harness` and denied
-warnings also passed. A test-harness-only regression now exercises the actual
-AbortSignal adapter and deferred cancellation drain from the existing browser
-lifetime suite; it compiles but has not run yet. No performance, production
-browser or canonical validation pass is claimed for this new application source.
+warnings also passed. The actual browser and performance results below supersede
+the authored-only status; canonical validation remains pending.
+
+## Repaired production release and actual browser validation
+
+The independently reviewed product implementation is `cecbe65`; the additional
+closed owner-receipt assertion gives measured source
+`aa0073f9c539438262626dcafe875d7f8ad70a69`, tree
+`b466ce7b811aafb5865a40d198ab39af81ab93fc`. Its production application sources
+are identical to the reviewed implementation. First-party native and WASM release
+package caches were cleared before fresh optimized compilation. Dependencies
+and previous frozen programs were preserved. Exact commands, profile,
+source/tree, unchanged source-file hashes, Cargo.lock, raw WASM, bindgen command,
+generated pair and eight program hashes are frozen in external
+`delivery-evidence/b0e-release-aa0073f/`. Production uses default features,
+without `test-harness` or coverage. Its evidence manifest SHA-256 is
+`28c25cc27c4caf93a08184c6842ecd83857886734b590957fe937b14fa2569e7`.
+
+The unchanged reviewed protocol completed 24 actual intervals: native p95
+2.6 ms, warm p95 80.6 ms, grid p95 84.1 ms and grid maximum 89.6 ms. Every interval
+had at least 19 pending thumbnails, a requested plane-3/lambda-1 published frame,
+and the same real thumbnail body plus that image's decode inside the unextended
+focus clock. Passive readiness arrived at 139.1–196.5 ms with `static-or-initial`
+stage classification. This is an initial enabled-focus interaction that may
+supersede the initial default derivative, separate from the warm batch; it does
+not measure every browsing mode. Actual load was 7.15 / 5.50 / 4.99 before and
+6.56 / 5.46 / 4.98 afterward. `b0e-fifo-current-aa0073f` preserves all raw results.
+Independent review rehashed the programs, fixture and all four unchanged harness
+modules and recomputed every accepted interval and percentile.
+
+Separately compiled feature-only WASM in `b0e-harness-aa0073f` passed the actual
+browser regression in `b0e-fifo-adapter-aa0073f`. It verifies native abort wake,
+deferred abort wake, already-aborted requests, cancellation after listener
+installation before first poll, active drain retention and reusable capacity.
+Existing stalled-read/cancel, remount, reentrant capture/main/library, unpolled
+action, accepted mutation recovery, import-lane remount and URL cleanup checks
+also passed; all 577 created URLs were revoked. This six-file feature client and
+its browser report are explicitly **not production performance artifacts**.
+The production client does not export the synthetic regression hook. Independent
+review rehashed the feature programs and evidence and verified the actual facts.
+
+## One fixed loaded-host A/B/B/A comparison
+
+The owner-authorized fixed order ran once: baseline `623f2b9`, final `aa0073f`,
+final `aa0073f`, baseline `623f2b9`. The same four harness modules, unchanged
+74-file fixture, direct Node driver, frozen production programs and threshold
+were used throughout. No failing attempt was retried or discarded.
+
+| Run | Native p95 (ms) | Warm p95 (ms), 24 raw samples | Grid p95 / maximum (ms) | Actual grid scope |
+| --- | --- | --- | --- | --- |
+| A1 baseline | 2.7 | 83.5 | Unavailable | 0 intervals; thumbnails already drained |
+| B1 final | 2.8 | 54.2 | 62.0 / 65.6 | 24 verified overlap intervals |
+| B2 final | 2.9 | 80.9 | 76.8 / 85.7 | 24 verified overlap intervals |
+| A2 baseline | 3.1 | 79.8 | Unavailable | 0 intervals; thumbnails already drained |
+
+Both B runs retained at least 19 pending thumbnails at input and met all
+unchanged 100 ms p95 targets. Every interval's body/decode/selected-frame fences
+and raw warm/grid percentile calculations were revalidated independently.
+Baseline unavailable receipts remain `complete=false` and `passed=false`; their
+full raw warm batches support comparison but are not grid-acceptance passes.
+This comparison does not explain the older full-suite 137.9–150.4 ms miss or
+establish that host load caused it.
+
+The one-minute host load was approximately 10–14 during this sequence. Before
+A1 it was 13.82 / 7.82 / 5.94; after A2 it was 13.44 / 8.36 / 6.22. Per-run
+before/after CPU, memory and process snapshots are preserved. These results
+satisfy the operator-chosen current-host experiment, **not a quiet-host claim**.
+External `b0e-fixed-abba-aa0073f/` retains 52 verified evidence files, with
+`SHA256SUMS.json` SHA-256
+`d30cdde08fcafb2879e40784e6b97eb3517b242f3206d2eb9a32a35e27b1e31d`.
+All owned process groups were verified empty before the exclusive heavy lease
+was released for the separately source-bound private rerun. No concurrent local
+builder or private benchmark ran during these performance measurements.
+
+## Final source and validation handoff
+
+The first remote native-test lint run rejected test-module placement and the
+drop-probe's no-op `Wake` method. Its failure is retained; it is not a passed
+check. The correction moves the `cfg(test)` module to the end and makes the
+destructor probe panic if a wake unexpectedly occurs, preserving its meaningful
+reentrant-drop test. Targeted native client clippy, all targets/features with
+warnings denied, then passed. Production item order and tokens are unchanged
+from measured `aa0073f`; source line locations and rebuilt artifact bytes are
+not asserted identical. The new tip's independent source-equivalence review
+binds the retained measurements to unchanged production semantics, rather than
+relabeling the old program sidecars. The separately owned private rerun against
+the exact frozen `aa0073f` production client has also passed; its corpus and
+integrity evidence remain with the private acceptance bead.
+
+Final pristine Beadhive submission will run the canonical pinned check once;
+it has not yet passed at this documentation checkpoint. Human review and remote
+CI remain required before integration. No acceptance gate has been approved by
+the developer, and no merge is performed here.
