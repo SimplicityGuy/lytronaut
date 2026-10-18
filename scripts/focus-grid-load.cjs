@@ -17,29 +17,44 @@ function gridPreviewIdentities(previews){
  assert(previews.every(p=>typeof p.id==='string'&&p.id.length>0),'actual preview asset identities required');
  assert.equal(new Set(previews.map(p=>p.id)).size,24,'selected and nonselected preview identities must be distinct');
  assert.equal(new Set(previews.map(p=>p.name)).size,24,'unique capture labels required for same-image attribution');
+ assert.deepEqual(previews.map(p=>p.name),previews.map(p=>p.name).sort(),'complete preview page must follow name order');
  return new Map(previews.filter(p=>p!==selected).map(p=>[p.id,p]));
+}
+
+async function selectNamePage(page,libraryPath,names){
+ const response=page.waitForResponse(response=>{
+  const url=new URL(response.url());
+  return response.ok()&&url.pathname===libraryPath&&url.searchParams.get('sort')==='name'&&url.searchParams.get('offset')==='0'&&url.searchParams.get('limit')==='24';
+ });
+ response.catch(()=>{});
+ // Use the existing product control: change resets page/selection naturally.
+ await page.select('#sort','name');
+ await (await response).content();
+ await page.waitForFunction(expected=>{
+  const actual=[...document.querySelectorAll('.capture span')].map(e=>e.textContent);
+  return actual.length===expected.length&&actual.every((name,i)=>name===expected[i]);
+ },{},names);
 }
 
 async function run({browser,page,origin,instrument}){
  // Discover only the existing public synthetic grid. The caller refuses private
  // mode before opening this helper. No source names/IDs are emitted in results.
- const previews=await page.evaluate(async()=>{
-  const names=[...document.querySelectorAll('.capture span')].map(e=>e.textContent);
+ const {previews,libraryPath}=await page.evaluate(async()=>{
   const library=(await(await fetch('/libraries')).json()).items.find(l=>l.state==='ready');
   if(!library)throw Error('ready synthetic library required');
   const found=[];
-  for(let offset=0;;){
-   const batch=await(await fetch(`/libraries/${library.id}/captures?limit=24&offset=${offset}`)).json();
-   for(const capture of batch.items){
-    if(!names.includes(capture.name))continue;
-    const detail=await(await fetch(`/captures/${capture.id}`)).json();
-    if(detail.preview)found.push({name:capture.name,id:detail.preview});
-   }
-   if(batch.next_offset==null)break;offset=batch.next_offset;
+  const libraryPath=`/libraries/${library.id}/captures`;
+  const batch=await(await fetch(`${libraryPath}?limit=24&offset=0&sort=name`)).json();
+  for(const capture of batch.items){
+   const detail=await(await fetch(`/captures/${capture.id}`)).json();
+   if(detail.preview)found.push({name:capture.name,id:detail.preview});
   }
-  return found;
+  return {previews:found,libraryPath};
  });
  const byId=gridPreviewIdentities(previews);
+ const names=previews.map(p=>p.name);
+ const workload='name-sorted public 24-capture page; real product sort control; natural initial selection';
+ await selectNamePage(page,libraryPath,names);
  const rows=[];
  for(let sample=0;sample<24;sample++){
   const probe=await browser.newPage(),held=[],errors=[];
@@ -61,6 +76,7 @@ async function run({browser,page,origin,instrument}){
    });
    await probe.goto(origin,{waitUntil:'domcontentloaded'});
    await probe.waitForFunction(()=>document.querySelectorAll('.capture').length===24);
+   await selectNamePage(probe,libraryPath,names);
    // Rust page() already selects the first capture. Clicking it again here
    // cancels and requeues initial metadata while thumbnail lanes are active.
    await probe.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 000'&&!document.querySelector('#focus')?.disabled&&document.querySelector('.status')?.textContent.includes('Discrete focus:')&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
@@ -68,12 +84,12 @@ async function run({browser,page,origin,instrument}){
    // positive-byte thumbnail lease until the selected focus is fully ready.
    // Only naturally issued later grid traffic is eligible; no image reloads.
    const pendingAtArming=await probe.evaluate(()=>document.querySelectorAll('.capture').length-[...document.querySelectorAll('.capture img')].filter(i=>i.complete&&i.naturalWidth>0).length);
-   if(pendingAtArming===0)return {available:false,reason:'selected focus readiness drained all grid images',samples:rows.length,intervals:rows};
+   if(pendingAtArming===0)return {available:false,workload,reason:'selected focus readiness drained all grid images',samples:rows.length,intervals:rows};
    armed=true;
    let candidateTimer;
    await Promise.race([pendingCandidate,new Promise(resolve=>{candidateTimer=setTimeout(resolve,5000);})]);
    clearTimeout(candidateTimer);
-   if(held.length===0)return {available:false,reason:'no naturally issued post-readiness grid chunk',pendingAtArming,samples:rows.length,intervals:rows};
+   if(held.length===0)return {available:false,workload,reason:'no naturally issued post-readiness grid chunk',pendingAtArming,samples:rows.length,intervals:rows};
    const candidate=held[0];
    const url=candidate.request.url();
    // One chunk is deliberate: the same response must account for the decoded
@@ -122,7 +138,7 @@ async function run({browser,page,origin,instrument}){
    const row=await measuring;lastInterval=row;requireOverlap(row);assert.deepEqual(errors,[],'contention page must not have application errors');rows.push(row);
   }catch(error){
    const state=await probe.evaluate(()=>({captures:document.querySelectorAll('.capture').length,gridImages:document.querySelectorAll('.capture img').length,focusDisabled:document.querySelector('#focus')?.disabled??null,stageReady:!!document.querySelector('.stage img')?.naturalWidth})).catch(()=>null);
-   error.publicGridEvidence={available:false,reason:'grid setup or interval failed',samples:rows.length,intervals:rows,lastInterval,heldRequests:held.length,armed,released,state};
+   error.publicGridEvidence={available:false,workload,reason:'grid setup or interval failed',samples:rows.length,intervals:rows,lastInterval,heldRequests:held.length,armed,released,state};
    error.message+=`; public grid state ${JSON.stringify(error.publicGridEvidence)}`;
    throw error;
   }finally{
@@ -132,6 +148,6 @@ async function run({browser,page,origin,instrument}){
   }
  }
  const times=rows.map(requireOverlap).sort((a,b)=>a-b);
- return {samples:rows.length,pendingGridAtStart:Math.min(...rows.map(r=>r.pendingGridAtStart)),p50InputToDecodedFrameReadyMs:times[11],p95InputToDecodedFrameReadyMs:times[22],maxInputToDecodedFrameReadyMs:times[23],actualGridResponseAndDecodeOverlap:true,experiment:'fresh public synthetic page per interaction; one real pending grid chunk released during focus',intervals:rows};
+ return {samples:rows.length,pendingGridAtStart:Math.min(...rows.map(r=>r.pendingGridAtStart)),p50InputToDecodedFrameReadyMs:times[11],p95InputToDecodedFrameReadyMs:times[22],maxInputToDecodedFrameReadyMs:times[23],actualGridResponseAndDecodeOverlap:true,experiment:workload+'; fresh page per interaction; one real pending grid chunk released during focus',intervals:rows};
 }
 module.exports={run,requireOverlap,gridPreviewIdentities};

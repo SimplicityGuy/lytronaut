@@ -10,6 +10,10 @@ test('experiment requires the focus capture to be the natural default selection'
  const rows=previews();[rows[0],rows[1]]=[rows[1],rows[0]];
  assert.throws(()=>gridPreviewIdentities(rows),/default-selected focus capture/);
 });
+test('all capture labels must match the explicit name-ordered page',()=>{
+ const rows=previews();[rows[1],rows[2]]=[rows[2],rows[1]];
+ assert.throws(()=>gridPreviewIdentities(rows),/follow name order/);
+});
 test('selected preview identity alias cannot be counted as nonselected grid work',()=>{
  const rows=previews();rows[1].id=rows[0].id;assert.throws(()=>gridPreviewIdentities(rows),/identities must be distinct/);
 });
