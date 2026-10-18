@@ -4,7 +4,8 @@ Release acceptance: **open**; staged main landing requested (2026-10-18).
 The owner reports successful verification of the updated pair in Photos.
 Current-byte public decoding, largest padded writer execution and the
 independently reviewed narrow external HRD model pass. Integrated application
-PostgreSQL CI passes. Final-source private exports, quiet-host CPU acceptance
+PostgreSQL CI passes. [Final-source private exports pass](lytronaut-f5a-private.md)
+for all 109 streams and 320 exports, with unchanged originals. CPU acceptance
 and actual grid overlap remain open in the
 [deferred release acceptance follow-ups](#deferred-release-acceptance).
 Historical owner limitations retain their exact scope. The owner report and
@@ -32,7 +33,7 @@ supersede that status for `c1b480f`; release acceptance remains open.
 | Counted 64/32 MiB memory | Partial evidence, accepted limitation; unmeasured owners remain unproven |
 | GPU submit-to-present ≤16.7 ms | Not verified, accepted limitation; animation-frame callbacks do not establish presentation |
 | Performance under grid load | Open in [lytronaut-b0e](#deferred-release-acceptance): retain actual pending grid requests during measured focus interactions, with a separate warm batch |
-| Private-corpus export rerun | Open in [lytronaut-f5a](#deferred-release-acceptance): final-source verification on the authorized sealed corpus |
+| Private-corpus export rerun | **Pass at final application source `17524c3`**, using production-byte-equivalent frozen `877116c` artifacts: 109 streams, 320 verified exports, zero failures; all 728 originals and 638 sealed blobs unchanged. [Source binding and aggregate evidence](lytronaut-f5a-private.md) |
 | iOS | Owner signed off as out of scope; not verified or supported |
 | H.264 Level 5 first-frame check | Actual largest padded NAL/RBSP and reviewed external Type I/II HRD model pass at `b3f0850`; this narrow result does not claim general conformance or Apple consumption of that schedule |
 | Live Photo on PostgreSQL | **Pass for integrated application `877116c`**: five native HTTP Live Photo cases; full PostgreSQL parity 64 passed, zero failed/ignored. Final changed branch remote checks remain required |
@@ -499,19 +500,22 @@ does not declare release acceptance or change the historical owner limitations.
 ### Deferred release acceptance
 
 Open epic **lytronaut-m7v — Complete deferred Live Photo release acceptance**
-preserves the unresolved release requirements in these open children:
+preserves the release requirements in these children. The owner subsequently
+approved its kickoff and requested completion of both follow-ups:
 
 - **lytronaut-f5a — Verify final-source Live Photo exports on the sealed private
-  corpus.** Obtain an authorized usable sealed catalog, verify exports at final
-  application source, and retain aggregate integrity and program/source binding
-  evidence. The earlier private run does not attest the changed SPS bytes.
+  corpus.** The [actual final-source rerun passed](lytronaut-f5a-private.md):
+  109 streams, 320 independently verified exports, zero failures, with full
+  original and sealed-copy integrity. This supplies current-byte evidence;
+  the earlier private run remains separately scoped to its historical source.
+  Documentation integration still requires canonical validation and remote CI.
 - **lytronaut-b0e — Complete quiet-host CPU and actual grid-overlap focus
   acceptance.** Establish reference-host conditions and actual grid response-body
   plus same-image decode overlap during measured focus interactions. Preserve
   the unchanged 100 ms p95 target, warm comparison, failed attempts and raw
   measurements. Existing warm-only diagnostics do not complete this criterion.
 
-Their human kickoff gates remain pending; this landing does not dispatch them.
-These criteria remain required and are neither waived nor marked passed. The
+The remaining CPU/grid criterion is required and has not been waived or marked
+passed by the private-corpus result. The
 written memory/GPU limitations and VoiceOver/iOS exclusions keep exactly their
 original scope.
