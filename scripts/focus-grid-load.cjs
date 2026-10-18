@@ -42,7 +42,8 @@ async function run({browser,page,origin,instrument}){
  const rows=[];
  for(let sample=0;sample<24;sample++){
   const probe=await browser.newPage(),held=[],errors=[];
-  let released=false;
+  let released=false,armed=false,lastInterval=null,heldReady;
+  const pendingCandidate=new Promise(resolve=>{heldReady=resolve;});
   try{
    await probe.setViewport({width:1440,height:1000});
    probe.on('pageerror',error=>errors.push(error.message));
@@ -54,7 +55,7 @@ async function run({browser,page,origin,instrument}){
     const preview=match&&byId.get(match[1]);
     // Hold one real nonselected response; holding the entire grid can exhaust
     // admission before the selected stage is ready, preventing measurement.
-    if(preview&&!released&&held.length===0)held.push({request,preview});
+    if(preview&&armed&&!released&&held.length===0){held.push({request,preview});heldReady();}
     else request.continue().catch(()=>{});
    });
    await probe.goto(origin,{waitUntil:'domcontentloaded'});
@@ -65,8 +66,17 @@ async function run({browser,page,origin,instrument}){
     const target=[...document.querySelectorAll('.capture')].find(e=>e.querySelector('span')?.textContent==='Synthetic 000');
     if(!target)throw Error('synthetic focus capture absent');target.click();
    });
-   await probe.waitForFunction(()=>!document.querySelector('#focus')?.disabled&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
-   assert(held.length>0,'actual nonselected thumbnail chunk must be pending');
+   await probe.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 000'&&!document.querySelector('#focus')?.disabled&&document.querySelector('.status')?.textContent.includes('Discrete focus:')&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
+   // Initial metadata requires the entire shared 64 MiB lease. Do not hold a
+   // positive-byte thumbnail lease until the selected focus is fully ready.
+   // Only naturally issued later grid traffic is eligible; no image reloads.
+   const pendingAtArming=await probe.evaluate(()=>document.querySelectorAll('.capture').length-[...document.querySelectorAll('.capture img')].filter(i=>i.complete&&i.naturalWidth>0).length);
+   if(pendingAtArming===0)return {available:false,reason:'selected focus readiness drained all grid images',samples:rows.length,intervals:rows};
+   armed=true;
+   let candidateTimer;
+   await Promise.race([pendingCandidate,new Promise(resolve=>{candidateTimer=setTimeout(resolve,5000);})]);
+   clearTimeout(candidateTimer);
+   if(held.length===0)return {available:false,reason:'no naturally issued post-readiness grid chunk',pendingAtArming,samples:rows.length,intervals:rows};
    const candidate=held[0];
    const url=candidate.request.url();
    // One chunk is deliberate: the same response must account for the decoded
@@ -112,10 +122,11 @@ async function run({browser,page,origin,instrument}){
    await probe.waitForFunction(()=>window.__gridFocusIntervalRunning===true,{polling:1,timeout:5000});
    released=true;
    await candidate.request.continue();
-   const row=await measuring;requireOverlap(row);assert.deepEqual(errors,[],'contention page must not have application errors');rows.push(row);
+   const row=await measuring;lastInterval=row;requireOverlap(row);assert.deepEqual(errors,[],'contention page must not have application errors');rows.push(row);
   }catch(error){
    const state=await probe.evaluate(()=>({captures:document.querySelectorAll('.capture').length,gridImages:document.querySelectorAll('.capture img').length,focusDisabled:document.querySelector('#focus')?.disabled??null,stageReady:!!document.querySelector('.stage img')?.naturalWidth})).catch(()=>null);
-   error.message+=`; public grid state ${JSON.stringify({heldRequests:held.length,released,state})}`;
+   error.publicGridEvidence={available:false,reason:'grid setup or interval failed',samples:rows.length,intervals:rows,lastInterval,heldRequests:held.length,armed,released,state};
+   error.message+=`; public grid state ${JSON.stringify(error.publicGridEvidence)}`;
    throw error;
   }finally{
    // Aborting other held requests is cleanup outside the measured interval.

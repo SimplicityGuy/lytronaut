@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
-const {requireMode,save}=require('./focus-benchmark.cjs');
+const {requireMode,save,savePartialCpu,saveUnavailableGrid}=require('./focus-benchmark.cjs');
 
 function fixture(t){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'lytronaut-focus-evidence-'));
@@ -41,4 +41,18 @@ test('passing benchmark is explicitly scoped; incomplete overlap and NaN cannot 
 });
 test('summary labels cannot hide a slower raw sample distribution',t=>{
  const f=fixture(t);f.focusUiTimes.inputToDecodedFrameReadySamplesMs.fill(150);assert.throws(()=>save(f),/summaries must match/);assert(!fs.existsSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT));
+});
+test('partial CPU evidence retains misses and raw samples without a complete or grid pass',t=>{
+ const f=fixture(t);f.focusUiTimes.inputToDecodedFrameReadySamplesMs.splice(22,2,137.9,150);f.focusUiTimes.p95InputToDecodedFrameReadyMs=137.9;f.focusUiTimes.maxInputToDecodedFrameReadyMs=150;
+ const cpu=savePartialCpu(f);assert.equal(cpu.passed,false);assert.equal(cpu.complete,false);assert.equal(cpu.gridAcceptanceVerified,false);assert.equal(cpu.cpuThresholdsMet,false);assert.equal(cpu.focusUiTimes.inputToDecodedFrameReadySamplesMs.length,24);assert.match(cpu.programs.nativeSha256,/^[0-9a-f]{64}$/);assert.match(cpu.harness.gridSha256,/^[0-9a-f]{64}$/);
+ assert(!fs.existsSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT));
+ const unavailable=saveUnavailableGrid({env:f.env,evidence:{available:false,reason:'no naturally pending grid',passed:true,complete:true,gridAcceptanceVerified:true}});
+ assert.equal(unavailable.passed,false);assert.equal(unavailable.complete,false);assert.equal(unavailable.gridAcceptanceVerified,false);assert.match(unavailable.cpuReceiptSha256,/^[0-9a-f]{64}$/);
+ assert(!fs.existsSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT));assert.throws(()=>savePartialCpu(f),/EEXIST/);assert.throws(()=>saveUnavailableGrid({env:f.env,evidence:{available:true}}));
+});
+test('even passing CPU-only values cannot become complete acceptance or substitute for grid intervals',t=>{
+ const f=fixture(t);const cpu=savePartialCpu(f);assert.equal(cpu.cpuThresholdsMet,true);assert.equal(cpu.passed,false);
+ assert.throws(()=>save({...f,focusUiLoadContendedTimes:{available:false,samples:0,intervals:[]}}));
+ assert(!fs.existsSync(f.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT));
+ f.focusUiTimes.inputToDecodedFrameReadySamplesMs.fill(150);assert.throws(()=>savePartialCpu(f),/summaries must match/);
 });

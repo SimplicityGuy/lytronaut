@@ -17,30 +17,53 @@ function requireMode(env){
  return true;
 }
 
-function save({env,focusProof,focusUiLoadContendedTimes,focusUiTimes,browser,errors}){
+function cpuMeasurements({env,focusProof,focusUiTimes,browser,errors}){
  assert.equal(requireMode(env),true,'explicit focus-only mode required');
  const finite=value=>Number.isFinite(value)&&value>=0;
  assert.equal(focusProof.stacks,1);assert.equal(focusProof.planes,3);
  assert(finite(focusProof.p95NativeHttpDecodeMs));
- assert.equal(focusUiLoadContendedTimes.samples,24);
- assert.equal(focusUiLoadContendedTimes.actualGridResponseAndDecodeOverlap,true);
- assert.equal(focusUiLoadContendedTimes.intervals.length,24);
- const grid=focusUiLoadContendedTimes.intervals.map(requireOverlap).sort((a,b)=>a-b);
- assert.deepEqual([focusUiLoadContendedTimes.p50InputToDecodedFrameReadyMs,focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs,focusUiLoadContendedTimes.maxInputToDecodedFrameReadyMs],[grid[11],grid[22],grid[23]],'grid summaries must match actual intervals');
  assert.equal(focusUiTimes.samples,24);assert.equal(focusUiTimes.pendingGridAtStart,0,'warm batch must have no pending grid image');
- for(const batch of [focusUiLoadContendedTimes,focusUiTimes])for(const key of ['p50InputToDecodedFrameReadyMs','p95InputToDecodedFrameReadyMs','maxInputToDecodedFrameReadyMs'])assert(finite(batch[key]),`finite ${key} required`);
+ for(const key of ['p50InputToDecodedFrameReadyMs','p95InputToDecodedFrameReadyMs','maxInputToDecodedFrameReadyMs'])assert(finite(focusUiTimes[key]),`finite ${key} required`);
  const raw=focusUiTimes.inputToDecodedFrameReadySamplesMs;
  assert(Array.isArray(raw)&&raw.length===24&&raw.every(finite),'24 finite raw warm samples required');
  const sorted=[...raw].sort((a,b)=>a-b);
  assert.deepEqual([focusUiTimes.p50InputToDecodedFrameReadyMs,focusUiTimes.p95InputToDecodedFrameReadyMs,focusUiTimes.maxInputToDecodedFrameReadyMs],[sorted[11],sorted[22],sorted[23]],'warm summaries must match actual raw samples');
  assert.deepEqual(errors,[],'benchmark page must not have application errors');
  const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+ return {revision:env.LYTRONAUT_TEST_REVISION,artifactProfiles:env.LYTRONAUT_ARTIFACT_PROFILES,browser,thresholdMs:100,focusProof,focusUiTimes,programs:{nativeSha256:hash(env.LYTRONAUT_BINARY),rawWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'application.wasm')),generatedWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client_bg.wasm')),glueSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client.js'))},harness:{driverSha256:hash(path.join(__dirname,'browser-test.cjs')),gridSha256:hash(path.join(__dirname,'focus-grid-load.cjs')),evidenceSha256:hash(__filename)}};
+}
+
+function savePartialCpu(input){
+ const data=cpuMeasurements(input);
+ const report={...data,scope:'public synthetic native and warm CPU diagnostic only; grid acceptance unproven',complete:false,passed:false,gridAcceptanceVerified:false,cpuThresholdsMet:data.focusProof.p95NativeHttpDecodeMs<=100&&data.focusUiTimes.p95InputToDecodedFrameReadyMs<=100};
+ fs.writeFileSync(input.env.LYTRONAUT_FOCUS_BENCHMARK_REPORT+'.cpu.json',JSON.stringify(report,null,2)+'\n',{mode:0o600,flag:'wx'});
+ return report;
+}
+
+function saveUnavailableGrid({env,evidence}){
+ assert.equal(requireMode(env),true);
+ assert.equal(evidence.available,false,'only an unavailable experiment can use this receipt');
+ const cpuReceipt=fs.readFileSync(env.LYTRONAUT_FOCUS_BENCHMARK_REPORT+'.cpu.json');
+ const report={...evidence,revision:env.LYTRONAUT_TEST_REVISION,cpuReceiptSha256:crypto.createHash('sha256').update(cpuReceipt).digest('hex'),scope:'grid experiment unavailable; no complete acceptance result',complete:false,passed:false,gridAcceptanceVerified:false};
+ fs.writeFileSync(env.LYTRONAUT_FOCUS_BENCHMARK_REPORT+'.grid-unavailable.json',JSON.stringify(report,null,2)+'\n',{mode:0o600,flag:'wx'});
+ return report;
+}
+
+function save(input){
+ const {env,focusProof,focusUiLoadContendedTimes,focusUiTimes}=input;
+ const data=cpuMeasurements(input);
+ assert.notEqual(focusUiLoadContendedTimes.available,false,'unavailable grid cannot become complete acceptance');
+ assert.equal(focusUiLoadContendedTimes.samples,24);
+ assert.equal(focusUiLoadContendedTimes.actualGridResponseAndDecodeOverlap,true);
+ assert.equal(focusUiLoadContendedTimes.intervals.length,24);
+ const grid=focusUiLoadContendedTimes.intervals.map(requireOverlap).sort((a,b)=>a-b);
+ assert.deepEqual([focusUiLoadContendedTimes.p50InputToDecodedFrameReadyMs,focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs,focusUiLoadContendedTimes.maxInputToDecodedFrameReadyMs],[grid[11],grid[22],grid[23]],'grid summaries must match actual intervals');
  const passed=focusProof.p95NativeHttpDecodeMs<=100&&focusUiLoadContendedTimes.p95InputToDecodedFrameReadyMs<=100&&focusUiTimes.p95InputToDecodedFrameReadyMs<=100;
- const report={scope:'public synthetic focus benchmark only; full browser suite not run',revision:env.LYTRONAUT_TEST_REVISION,artifactProfiles:env.LYTRONAUT_ARTIFACT_PROFILES,browser,performanceGateEnabled:true,passed,thresholdMs:100,focusProof,focusUiLoadContendedTimes,focusUiTimes,programs:{nativeSha256:hash(env.LYTRONAUT_BINARY),rawWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'application.wasm')),generatedWasmSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client_bg.wasm')),glueSha256:hash(path.join(env.LYTRONAUT_CLIENT,'lytronaut_client.js'))},harness:{driverSha256:hash(path.join(__dirname,'browser-test.cjs')),gridSha256:hash(path.join(__dirname,'focus-grid-load.cjs')),evidenceSha256:hash(__filename)}};
+ const report={...data,scope:'public synthetic focus benchmark only; full browser suite not run',performanceGateEnabled:true,complete:true,passed,focusUiLoadContendedTimes};
  // Write actual failed latency values before asserting the unchanged targets.
  // Refuse overwriting a previous experiment, including an earlier failure.
  fs.writeFileSync(env.LYTRONAUT_FOCUS_BENCHMARK_REPORT,JSON.stringify(report,null,2)+'\n',{mode:0o600,flag:'wx'});
  assert(passed,'focus benchmark exceeds unchanged 100ms targets; measurements retained in report');
  return report;
 }
-module.exports={requireMode,save};
+module.exports={requireMode,save,savePartialCpu,saveUnavailableGrid};

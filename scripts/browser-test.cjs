@@ -161,10 +161,26 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
    const displayed=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(Error('focus interaction timeout'));},5000);const observer=new MutationObserver(()=>{if(image.src!==old){clearTimeout(timer);observer.disconnect();resolve();}});observer.observe(image,{attributes:true,attributeFilter:['src']});});
    range.dispatchEvent(new Event('input',{bubbles:true}));await displayed;await image.decode();await new Promise(requestAnimationFrame);times.push(performance.now()-start);
   }const samples=times.slice();times.sort((a,b)=>a-b);return {samples:times.length,pendingGridAtStart,p50InputToDecodedFrameReadyMs:times[Math.ceil(times.length*.5)-1],p95InputToDecodedFrameReadyMs:times[Math.ceil(times.length*.95)-1],maxInputToDecodedFrameReadyMs:times[times.length-1],...(captureSamples?{inputToDecodedFrameReadySamplesMs:samples}:{})};},focusBenchmarkOnly);
-  const focusUiLoadContendedTimes=gridLoadMode?await require('./focus-grid-load.cjs').run({browser,page,origin,instrument}):await measureFocusUi();
+  let warmBeforeGrid=null;
+  if(focusBenchmarkOnly){
+   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&[...document.querySelectorAll('.capture img')].every(i=>i.complete&&i.naturalWidth>0),{timeout:120000});
+   warmBeforeGrid=await measureFocusUi();
+   require('./focus-benchmark.cjs').savePartialCpu({env:process.env,focusProof,focusUiTimes:warmBeforeGrid,browser:await browser.version(),errors});
+  }
+  let focusUiLoadContendedTimes;
+  try{
+   focusUiLoadContendedTimes=gridLoadMode?await require('./focus-grid-load.cjs').run({browser,page,origin,instrument}):await measureFocusUi();
+  }catch(error){
+   if(focusBenchmarkOnly)require('./focus-benchmark.cjs').saveUnavailableGrid({env:process.env,evidence:error.publicGridEvidence||{available:false,reason:'grid experiment threw before completing'}});
+   throw error;
+  }
+  if(focusUiLoadContendedTimes.available===false){
+   if(focusBenchmarkOnly)require('./focus-benchmark.cjs').saveUnavailableGrid({env:process.env,evidence:focusUiLoadContendedTimes});
+   throw Error('real grid overlap unavailable: '+focusUiLoadContendedTimes.reason);
+  }
   if(process.env.LYTRONAUT_RELEASE_BENCHMARK==='1')assert(focusUiLoadContendedTimes.pendingGridAtStart>0,'release grid-load gate requires pending grid images; a warm first batch is not load-contended evidence');
   await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===document.querySelectorAll('.capture').length&&[...document.querySelectorAll('.capture img')].every(i=>i.complete&&i.naturalWidth>0),{timeout:120000});
-  const focusUiTimes=await measureFocusUi();
+  const focusUiTimes=warmBeforeGrid||await measureFocusUi();
   if(focusBenchmarkOnly){
    const report=require('./focus-benchmark.cjs').save({env:process.env,focusProof,focusUiLoadContendedTimes,focusUiTimes,browser:await browser.version(),errors});
    console.log(JSON.stringify(report));return;
