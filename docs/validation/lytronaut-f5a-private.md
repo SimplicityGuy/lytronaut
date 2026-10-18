@@ -66,8 +66,8 @@ The sealed test copy is retained pending evidence review.
 | Maximum source / pair ZIP | 2,674,160 / 11,140,255 bytes |
 | Visible source geometry | 109 streams at 1080 × 1080 |
 | Independent output-frame histogram | 2: 14; 3: 27; 4: 30; 5: 93; 6: 156 |
-| Selected-still pixel comparison | Exact: maximum difference 0 over 1,119,744,000 channel samples |
-| Generated-motion pixel comparison | Maximum channel difference 23; absolute sum 1,145,628,587 and squared sum 2,479,908,451 over 1,119,744,000 samples |
+| Exported JPEG vs selected-frame JPEG-reference comparison | Maximum channel difference 0 over 1,119,744,000 samples |
+| Selected-key MOV frame vs JPEG-reference comparison | Maximum channel difference 23; absolute sum 1,145,628,587 and squared sum 2,479,908,451 over 1,119,744,000 samples |
 | Completion / exit status | Complete corpus / 0 |
 
 The verifier selects distinct first, middle and last source planes, yielding
@@ -76,6 +76,13 @@ selections. Every pair passed independent metadata/container, JPEG/MOV decode,
 selected-key geometry, ascending-lambda source order and sweep-endpoint checks.
 Every stream recovered after the real active-decode cancellation. No streams,
 exports or failures were skipped.
+
+The reference is a browser JPEG made from the platform-decoded selected AVC
+frame, then independently decoded for comparison. Zero still difference is
+agreement between those JPEG decodes, not raw source-RGB, archival or color
+parity. Motion pixel comparison covers only the selected-key MOV frame; the
+other MOV frames undergo decode, count, geometry and order checks rather than
+all-frame pixel-parity checks.
 
 The verifier completed in 192.45 seconds; the supervisor including the separate
 original rehash completed in 194.89 seconds. These are corpus execution timings,
