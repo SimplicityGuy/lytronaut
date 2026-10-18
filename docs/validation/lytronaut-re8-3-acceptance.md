@@ -31,7 +31,7 @@ supersede that status for `c1b480f`; release acceptance remains open.
 | iOS | Owner signed off as out of scope; not verified or supported |
 | H.264 Level 5 first-frame check | Actual largest padded NAL/RBSP and reviewed external Type I/II HRD model pass at `b3f0850`; this narrow result does not claim general conformance or Apple consumption of that schedule |
 | Live Photo on PostgreSQL | **Pass for integrated application `877116c`**: five native HTTP Live Photo cases; full PostgreSQL parity 64 passed, zero failed/ignored. Final changed branch remote checks remain required |
-| CPU focus p95 ≤100 ms | Historical full-suite merged-tree runs missed the target. Current warm-only diagnostic p95 is 79.4–86.9 ms; no quiet-host or grid-load acceptance is established |
+| CPU focus p95 ≤100 ms | Historical full-suite merged-tree runs missed the target. Current warm-only diagnostic p95 is 79.4–87.1 ms; no quiet-host or grid-load acceptance is established |
 
 The release benchmark now rejects a first batch with zero pending grid images
 instead of accepting it as load-contended evidence. This prevents a false pass;
@@ -434,3 +434,32 @@ private exports from an authorized sealed catalog at final application source,
 and quiet-host CPU/grid-load acceptance. Earlier owner memory/GPU limitations
 and VoiceOver/iOS exclusions are unchanged. Human CI-conditional integration
 approval is not a waiver of these acceptance requirements.
+
+
+### Terminal supported name-sort probe
+
+The assumption that the earlier Synthetic 000 click was redundant was refuted:
+this fixture's natural library-order first item is Synthetic 016. Removing the
+click did not test an equivalent focus-selection workload. A separate supported
+name-sort workload was therefore reviewed at `4500f23`: actual `#sort` change
+on the original page and every fresh probe, discovery with explicit `sort=name`,
+an exact post-change successful response and all 24 rendered labels matching
+that ordered API page. This establishes Synthetic 000 as the natural first
+selection in this explicitly different workload. No capture was clicked again,
+no image was artificially reloaded, and product admission was unchanged.
+
+Its single current-release probe retained native/warm p95 3.0/87.1 ms (warm
+maximum 89.2 ms). Those 24 warm samples were collected on the prior library-order
+page, before the name-sort grid phase; they are not name-sorted grid timings.
+The real name-sorted grid phase again reported **unavailable**: every grid image
+had finished when the selected discrete focus became ready. There were zero
+valid grid intervals and no complete acceptance report. Partial receipts remain
+`complete=false` / `passed=false` in external
+`re8-3-focus-current-name-4500f23`. All failed and unavailable setups are
+preserved. No further grid experiment or baseline rerun followed this result.
+
+The helper now supports this explicit ordered workload and fails closed when
+natural post-readiness grid traffic is unavailable. These diagnostics do not
+establish responsiveness while actual grid bodies/decode overlap a focus input,
+quiet-host latency, or a cause of the older full-suite CPU miss. No production
+admission or scheduling behavior was changed to enable the experiment.
