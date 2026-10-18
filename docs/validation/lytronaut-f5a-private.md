@@ -1,25 +1,28 @@
 # Final-source private Live Photo verification
 
 Bead **lytronaut-f5a — Verify final-source Live Photo exports on the sealed
-private corpus**: runtime acceptance **passed**, 2026-10-18. This closes the
+private corpus**: runtime acceptance **passed** at final production candidate
+`aa0073f`, 2026-10-18. This closes the
 private-corpus rerun criterion, separately from the CPU/grid criterion in
 **lytronaut-b0e**. It does not declare complete release acceptance.
 
 ## Source and artifact binding
 
-The checked application source is main
-`17524c31b45252385082e33501f789fc0997c394`. The frozen production release programs
-were built at `877116cbba57c0232a622ff59d4bc1ab326f8dbe`. Comparing all crates,
-assets, Cargo manifests and Cargo.lock found only the subsequently added Live
-Photo example and test changes; production application source is byte-identical.
-The existing build receipts and all eight frozen program-file hashes were
-verified before opening the private corpus. These artifacts are not represented
-as newly built at the later revision.
+The checked application and frozen production release programs are source
+`aa0073f9c539438262626dcafe875d7f8ad70a69`, tree
+`b466ce7b811aafb5865a40d198ab39af81ab93fc`. All 276 frozen source-file hashes and
+Cargo.lock match that exact Git revision. Native and explicit WASM-target
+first-party release outputs were cleaned separately; fresh compile paths,
+release/default-production features and successful build/bindgen receipts were
+independently checked. All eight frozen program-file hashes were verified before
+opening the corpus. The raw WASM and bindgen receipts bind the generated pair to
+that source. This new client includes the production FIFO admission change;
+the older `877116c` client does not substitute for this rerun.
 
 | Production browser resource | SHA-256 |
 | --- | --- |
-| Rust/WASM | `3b707f966956cf6495c406a584fa61ff558fb7ee0d7ce4930b12f4a98d10271d` |
-| Generated JavaScript glue | `186bbd058a89521c1fde34e3983abe12b13069a0655aae959d272bace4657afd` |
+| Rust/WASM | `e2d345735b5088a6adbf65774730a3d2b8c13bfe0632f850f56fa9a39f600f68` |
+| Generated JavaScript glue | `e15876206574c7a5753bfc3c4f75a132cc2999aafad73cf72ee9ba1a2b919b15` |
 
 The existing `scripts/live-photo-private-test.cjs` ran unchanged through the
 mise-pinned Node runtime and lockfile-pinned browser dependencies, using the
@@ -84,9 +87,11 @@ parity. Motion pixel comparison covers only the selected-key MOV frame; the
 other MOV frames undergo decode, count, geometry and order checks rather than
 all-frame pixel-parity checks.
 
-The verifier completed in 192.45 seconds; the supervisor including the separate
-original rehash completed in 194.89 seconds. These are corpus execution timings,
-not focus-latency or quiet-host acceptance. Minimum free disk was 9.84 GiB, above
+The verifier completed in 201.49 seconds; the supervisor including the separate
+post-run original rehash completed in 205.67 seconds. A fresh original precheck
+also matched the preserved full inventory and hashes before browser execution.
+These are corpus execution timings, not focus-latency acceptance. Minimum free
+disk was 9.02 GiB, above
 the 2 GiB watchdog floor; the watchdog did not fire. Browser, loopback server and
 task-owned workers drained before releasing the local execution lease.
 
@@ -97,3 +102,19 @@ unchanged. No new Photos observations, memory-budget proof, GPU presentation
 proof or CPU/grid performance pass is inferred from this result. Canonical
 validation and exact-source remote checks still gate integration of this
 documentation checkpoint.
+
+## Earlier source-scoped proof retained
+
+The first run used frozen production
+`877116cbba57c0232a622ff59d4bc1ab326f8dbe`, whose production sources were
+byte-identical to then-current main
+`17524c31b45252385082e33501f789fc0997c394`; only a Live Photo example and test
+differed under crates/assets/Cargo inputs. That run also passed 109 streams,
+320 exports and all integrity/cleanup checks in 192.45 seconds (194.89 seconds
+including the supervisor's post-run original rehash). Its WASM hash was
+`3b707f966956cf6495c406a584fa61ff558fb7ee0d7ce4930b12f4a98d10271d` and glue hash
+`186bbd058a89521c1fde34e3983abe12b13069a0655aae959d272bace4657afd`.
+Its original receipts and sealed copy remain preserved separately. The final
+`aa0073f` rerun reused that same copy without a new import, and again checked all
+728 originals and 638 copied blobs. Neither proof relies on the other run's
+program hashes or integrity result.

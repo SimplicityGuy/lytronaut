@@ -33,7 +33,7 @@ supersede that status for `c1b480f`; release acceptance remains open.
 | Counted 64/32 MiB memory | Partial evidence, accepted limitation; unmeasured owners remain unproven |
 | GPU submit-to-present ≤16.7 ms | Not verified, accepted limitation; animation-frame callbacks do not establish presentation |
 | Performance under grid load | Open in [lytronaut-b0e](#deferred-release-acceptance): retain actual pending grid requests during measured focus interactions, with a separate warm batch |
-| Private-corpus export rerun | **Pass at final application source `17524c3`**, using production-byte-equivalent frozen `877116c` artifacts: 109 streams, 320 verified exports, zero failures; all 728 originals and 638 sealed blobs unchanged. [Source binding and aggregate evidence](lytronaut-f5a-private.md) |
+| Private-corpus export rerun | **Pass at final production candidate `aa0073f`**, using its freshly built release client: 109 streams, 320 verified exports, zero failures; all 728 originals and 638 sealed blobs unchanged. [Source binding and aggregate evidence](lytronaut-f5a-private.md) |
 | iOS | Owner signed off as out of scope; not verified or supported |
 | H.264 Level 5 first-frame check | Actual largest padded NAL/RBSP and reviewed external Type I/II HRD model pass at `b3f0850`; this narrow result does not claim general conformance or Apple consumption of that schedule |
 | Live Photo on PostgreSQL | **Pass for integrated application `877116c`**: five native HTTP Live Photo cases; full PostgreSQL parity 64 passed, zero failed/ignored. Final changed branch remote checks remain required |
@@ -505,7 +505,8 @@ approved its kickoff and requested completion of both follow-ups:
 
 - **lytronaut-f5a — Verify final-source Live Photo exports on the sealed private
   corpus.** The [actual final-source rerun passed](lytronaut-f5a-private.md):
-  109 streams, 320 independently verified exports, zero failures, with full
+  final production candidate `aa0073f`, 109 streams, 320 independently verified
+  exports, zero failures, with full
   original and sealed-copy integrity. This supplies current-byte evidence;
   the earlier private run remains separately scoped to its historical source.
   Documentation integration still requires canonical validation and remote CI.
