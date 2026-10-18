@@ -8,11 +8,13 @@ warm A/B/B/A results met 100 ms but did not establish a quiet host. Every earlie
 grid setup produced zero valid overlap intervals. Neither those unavailable
 setups nor successful CI constitute a pass for this bead.
 
-No application changes or builds were made for this follow-up. The reviewed
-protocol's one authorized current-release diagnostic stopped at its first
+The reviewed protocol's one authorized frozen current-release diagnostic stopped at its first
 unavailable grid window: zero valid overlap intervals. Native and warm CPU
 measurements met 100 ms under the operator's chosen current load, but the grid
-gate remains open. No retry or A/B/B/A comparison was run.
+gate remains open. No retry or A/B/B/A comparison was run. A subsequent bounded
+FIFO product repair is now authored and has passed focused policy tests and
+WASM linting; its real browser cancellation and release performance checks
+remain pending. The diagnostic below predates this repair.
 
 ## Source causality
 
@@ -151,7 +153,7 @@ prelaunch attempt. Host execution then completed the single authorized actual
 invocation. Canonical validation and any further experiment remain pending;
 these diagnostic artifacts do not satisfy the grid acceptance criterion.
 
-## Admission investigation (proposal only)
+## Admission investigation and authorized repair
 
 The relevant scheduler is identical in baseline `623f2b9` and current `877116c`.
 Competitive 30 ms admission polling dates to `249dfde`; full-budget metadata
@@ -184,8 +186,9 @@ until its existing drain finishes. Release/cancel returns pending wakers to be
 invoked after dropping shared-state borrows, preserving reentrant cancellation
 safety. A cancelled head must wake its successor even when no active lease is
 left to trigger another release. Oversized requests fail immediately rather
-than permanently blocking the head. No application implementation has been
-authorized at this checkpoint; this proposal awaits root and independent review.
+than permanently blocking the head. Root authorized this focused repair as
+necessary work on the existing acceptance blocker, following independent
+review of the pre-existing defect premise.
 
 Meaningful validation should model the fast-thumbnail/selected-waiter schedule
 without sleeps, show selection progresses despite continuous newer arrivals,
@@ -196,3 +199,26 @@ wakeup without a held borrow. Existing remount/reentrant-abort and browser
 resource checks must remain intact. Actual release responsiveness and any grid
 overlap still require new reviewed, source-bound runtime evidence after builds;
 unit policy tests alone cannot establish either performance claim.
+
+The authored implementation uses at most ten pending tickets and refuses queue
+exhaustion explicitly. The six page-global browse runners and four action guards
+each await at most one admission future; remounts reuse these owners. Background
+import cleanup calls the unleased mutation path, and the GPU watcher acquires no
+Net lease. Existing preview, restore and upload paths release their prior lease
+before reacquiring. A ticket is granted only when its owner polls, with capacity
+owned by an RAII lease before any successor wake. All arbitrary waker callbacks
+and destructors run outside queue borrows, and cancellation is checked again
+after them. The real AbortSignal listener is removed on grant, error or future
+drop. Deferred Rust supersession still marks cancellation immediately and its
+existing native-abort microtask wakes sleeping waiters.
+
+Ten deterministic native admission tests passed with pinned tools, serial
+debug0 compilation and an owned 2 GiB disk-floor watchdog. These include
+continuous-new-arrival FIFO progress, full-budget head blocking, unchanged
+bytes/two slots, oversize/ten-ticket refusal, cancellation/drop before grant,
+active drain retention, reentrant cancellation during grant, and cancellation
+from a replaced waker's destructor. WASM clippy with `test-harness` and denied
+warnings also passed. A test-harness-only regression now exercises the actual
+AbortSignal adapter and deferred cancellation drain from the existing browser
+lifetime suite; it compiles but has not run yet. No performance, production
+browser or canonical validation pass is claimed for this new application source.

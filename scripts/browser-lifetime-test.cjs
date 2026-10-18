@@ -54,6 +54,9 @@ module.exports=async({browser,origin})=>{
     const ready=()=>page.waitForFunction(()=>document.querySelectorAll('.capture').length===24&&document.querySelectorAll('.capture img').length===24&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
     const settle=()=>page.evaluate(async()=>{await new Promise(resolve=>setTimeout(resolve,0));await new Promise(resolve=>setTimeout(resolve,0));});
     await ready();
+    phase='fifo-admission-abort-adapter';
+    const admission=await page.evaluate(async()=>JSON.parse(await window.__lifetimeModule.harness_admission_contract()));
+    assert.deepEqual(admission,{alreadyAborted:true,nativeAbortWake:true,deferredAbortWake:true,registrationRace:true,activeDrainRetained:true,capacityReusable:true});
     phase='jpeg-byte-identity';
     const jpeg=await page.evaluate(async()=>{
       const m=window.__lifetimeModule,p=window.__lifetime;const canvas=document.createElement('canvas');canvas.width=canvas.height=16;
@@ -153,7 +156,7 @@ module.exports=async({browser,origin})=>{
     phase='url-cleanup';await page.evaluate(()=>window.__lifetimeModule.harness_dispose());
     await page.waitForFunction(()=>window.__lifetime.urls.size===0);const urls=await page.evaluate(()=>({created:window.__lifetime.created,revoked:window.__lifetime.revoked,logicalJpegBytesMax:window.__lifetime.blobMax}));
     assert(urls.created>0);assert.equal(urls.created,urls.revoked);assert(urls.logicalJpegBytesMax>0);assert.deepEqual(errors,[]);
-    return {jpeg,stalledRead:true,stalledCancel:true,remountDrains:true,synchronousCaptureControlBurst:true,reentrantSelected:true,reentrantMain:true,reentrantLibrary:true,actionBeforePollDisposed:true,acceptedMutationRecovery:true,importLaneRemount:true,constructorFailure:true,decodeFailure:true,rendererDestroyReentryCovered:false,rendererDestroyReentryPending:true,urlsReleasedBeforeClose:true,...urls,capacityCollection:false,totalMemoryProof:false};
+    return {admission,jpeg,stalledRead:true,stalledCancel:true,remountDrains:true,synchronousCaptureControlBurst:true,reentrantSelected:true,reentrantMain:true,reentrantLibrary:true,actionBeforePollDisposed:true,acceptedMutationRecovery:true,importLaneRemount:true,constructorFailure:true,decodeFailure:true,rendererDestroyReentryCovered:false,rendererDestroyReentryPending:true,urlsReleasedBeforeClose:true,...urls,capacityCollection:false,totalMemoryProof:false};
   }catch(cause){
     const detail=String(cause?.message??cause).slice(0,480);const pageErrors=errors.length?' pageErrors='+JSON.stringify(errors.slice(0,4)):'';
     throw Error('public browser lifetime regression failed: '+phase+': '+detail+pageErrors,{cause});
