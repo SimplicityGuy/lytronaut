@@ -29,7 +29,10 @@ async function selectNamePage(page,libraryPath,names){
  response.catch(()=>{});
  // Use the existing product control: change resets page/selection naturally.
  await page.select('#sort','name');
- await (await response).content();
+ // The exact response fences the post-change request. The complete label
+ // vector below witnesses Rust's real JSON consumption/render; avoid a CDP
+ // body read after Rust has consumed or cancelled that response stream.
+ await response;
  await page.waitForFunction(expected=>{
   const actual=[...document.querySelectorAll('.capture span')].map(e=>e.textContent);
   return actual.length===expected.length&&actual.every((name,i)=>name===expected[i]);
