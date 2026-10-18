@@ -4,8 +4,9 @@ Release acceptance: **open**; staged main landing requested (2026-10-18).
 The owner reports successful verification of the updated pair in Photos.
 Current-byte public decoding, largest padded writer execution and the
 independently reviewed narrow external HRD model pass. Integrated application
-PostgreSQL CI passes. Final-source private exports, quiet-host CPU acceptance
-and actual grid overlap remain open in the
+PostgreSQL CI passes. Later `aa0073f` passed CPU and actual grid overlap under
+the operator-chosen current host load; no quiet-host claim is made. Canonical
+validation/integration and final-source private exports remain open in the
 [deferred release acceptance follow-ups](#deferred-release-acceptance).
 Historical owner limitations retain their exact scope. The owner report and
 staged landing below supersede earlier checkpoint statements that Photos
@@ -31,17 +32,18 @@ supersede that status for `c1b480f`; release acceptance remains open.
 | VoiceOver | Not verified; owner signed off as out of scope for this version. Automated AXTree checks do not replace VoiceOver |
 | Counted 64/32 MiB memory | Partial evidence, accepted limitation; unmeasured owners remain unproven |
 | GPU submit-to-present ≤16.7 ms | Not verified, accepted limitation; animation-frame callbacks do not establish presentation |
-| Performance under grid load | Open in [lytronaut-b0e](#deferred-release-acceptance): retain actual pending grid requests during measured focus interactions, with a separate warm batch |
+| Performance under grid load | **Runtime pass at `aa0073f`**: fixed A/B/B/A final B runs each have 24 actual same-body/same-image-decode overlap intervals; p95 62.0 / 76.8 ms. Scope: initial enabled-focus interaction on the name-sorted public page, separate warm batch. Canonical/integration pending; [source-bound evidence](lytronaut-b0e-focus-acceptance.md) |
 | Private-corpus export rerun | Open in [lytronaut-f5a](#deferred-release-acceptance): final-source verification on the authorized sealed corpus |
 | iOS | Owner signed off as out of scope; not verified or supported |
 | H.264 Level 5 first-frame check | Actual largest padded NAL/RBSP and reviewed external Type I/II HRD model pass at `b3f0850`; this narrow result does not claim general conformance or Apple consumption of that schedule |
 | Live Photo on PostgreSQL | **Pass for integrated application `877116c`**: five native HTTP Live Photo cases; full PostgreSQL parity 64 passed, zero failed/ignored. Final changed branch remote checks remain required |
-| CPU focus p95 ≤100 ms | Open in [lytronaut-b0e](#deferred-release-acceptance). Historical full-suite runs missed the target; warm-only diagnostic p95 is 79.4–87.1 ms. No quiet-host or grid-load acceptance is established |
+| CPU focus p95 ≤100 ms | **Runtime pass at `aa0073f`**: final B warm p95 54.2 / 80.9 ms; native 2.8 / 2.9 ms. Owner chose actual loaded Mac; no quiet-host claim. Historical misses remain unexplained. Canonical/integration pending |
 
 The release benchmark now rejects a first batch with zero pending grid images
 instead of accepting it as load-contended evidence. This prevents a false pass;
 it does not manufacture concurrent requests or prove load-contended latency.
-The future runtime recipe must establish real grid traffic before measuring.
+The later reviewed b0e protocol established actual grid body/decode overlap;
+the earlier unavailable/failed setups remain preserved below.
 
 The written owner dispositions above are recorded in the integrated
 `docs/design/004-live-photo-export.md`, “Owner results and accepted limitations
@@ -505,13 +507,16 @@ preserves the unresolved release requirements in these open children:
   corpus.** Obtain an authorized usable sealed catalog, verify exports at final
   application source, and retain aggregate integrity and program/source binding
   evidence. The earlier private run does not attest the changed SPS bytes.
-- **lytronaut-b0e — Complete quiet-host CPU and actual grid-overlap focus
-  acceptance.** Establish reference-host conditions and actual grid response-body
-  plus same-image decode overlap during measured focus interactions. Preserve
-  the unchanged 100 ms p95 target, warm comparison, failed attempts and raw
-  measurements. Existing warm-only diagnostics do not complete this criterion.
+- **lytronaut-b0e — Complete current-host CPU and actual grid-overlap focus
+  acceptance.** Runtime pass at production `aa0073f`: one reviewed diagnostic
+  and both final B runs in one fixed A/B/B/A each verified 24 actual overlap
+  intervals with unchanged 100 ms targets. Baseline zero-overlap receipts remain
+  unavailable; full warm batches and all failed attempts are retained. The owner
+  authorized current host load rather than waiting for quiet. Canonical
+  validation and integration remain pending; see the [full report](lytronaut-b0e-focus-acceptance.md).
 
-Their human kickoff gates remain pending; this landing does not dispatch them.
-These criteria remain required and are neither waived nor marked passed. The
+At the staged landing these kickoff gates were pending; that landing did not
+dispatch them. The operator later cleared b0e kickoff and chose current host load.
+Runtime evidence does not waive final validation or approve integration. The
 written memory/GPU limitations and VoiceOver/iOS exclusions keep exactly their
 original scope.

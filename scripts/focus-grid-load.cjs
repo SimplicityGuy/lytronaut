@@ -5,6 +5,7 @@ function requireOverlap(row){
  assert(Number.isFinite(row.start)&&Number.isFinite(row.end)&&row.end>row.start,'finite focus interval required');
  assert(Number.isFinite(row.bodyFinished)&&Number.isFinite(row.gridDecoded),'completed response and decode timestamps required');
  assert(row.pendingGridAtStart>0,'pending grid required');
+ assert(row.requestedFrameVerified===true&&row.requestedPlane===3&&Number.isFinite(row.requestedLambda),'actual requested endpoint frame required');
  assert(row.bodyBytes>0&&row.bodyFinished>=row.start&&row.bodyFinished<=row.end,'a real grid response body must complete during the focus interval');
  assert(row.gridDecoded>=row.bodyFinished&&row.gridDecoded<=row.end,'the same grid image must decode during the focus interval');
  return row.end-row.start;
@@ -56,43 +57,52 @@ async function run({browser,page,origin,instrument}){
  });
  const byId=gridPreviewIdentities(previews);
  const names=previews.map(p=>p.name);
- const workload='name-sorted public 24-capture page; real product sort control; natural initial selection';
+ const workload='name-sorted public 24-capture page; initial focus interaction after metadata becomes usable; may supersede initial default derivative';
  await selectNamePage(page,libraryPath,names);
  const rows=[];
  for(let sample=0;sample<24;sample++){
   const probe=await browser.newPage(),held=[],errors=[];
-  let released=false,armed=false,lastInterval=null,heldReady;
+  let released=false,armed=false,lastInterval=null,heldReady,metadataReady=null,announceReady;
+  const readiness=new Promise(resolve=>{announceReady=resolve;});
+  const timeline=[],releaseBounds={};let events=0;
+  const record=(kind,extra={})=>{events++;if(timeline.length===32)timeline.shift();timeline.push({kind,driverEpochMs:Date.now(),...extra});};
   const pendingCandidate=new Promise(resolve=>{heldReady=resolve;});
   try{
    await probe.setViewport({width:1440,height:1000});
    probe.on('pageerror',error=>errors.push(error.message));
    await probe.setCacheEnabled(false);
    await instrument(probe);
+   await probe.exposeFunction('__reportFocusMetadataReady',state=>{
+    if(metadataReady)return;
+    metadataReady=state;armed=state.pendingGrid>0;
+    record('metadata-ready',{pageReadyMs:state.pageReadyMs,pendingGrid:state.pendingGrid,stageKind:state.stageKind});announceReady(state);
+   });
+   await probe.evaluateOnNewDocument(require('./focus-readiness.cjs'),{names,selectedName:'Synthetic 000',notify:'__reportFocusMetadataReady'});
    await probe.setRequestInterception(true);
    probe.on('request',request=>{
     const match=new URL(request.url()).pathname.match(/^\/assets\/([^/]+)\/chunks\/0$/);
     const preview=match&&byId.get(match[1]);
     // Hold one real nonselected response; holding the entire grid can exhaust
     // admission before the selected stage is ready, preventing measurement.
-    if(preview&&armed&&!released&&held.length===0){held.push({request,preview});heldReady();}
+    if(preview)record('natural-grid-request',{eligible:armed&&!released,held:held.length});
+    if(preview&&armed&&!released&&held.length===0){held.push({request,preview});record('grid-held');heldReady();}
     else request.continue().catch(()=>{});
    });
    await probe.goto(origin,{waitUntil:'domcontentloaded'});
    await probe.waitForFunction(()=>document.querySelectorAll('.capture').length===24);
    await selectNamePage(probe,libraryPath,names);
-   // Rust page() already selects the first capture. Clicking it again here
-   // cancels and requeues initial metadata while thumbnail lanes are active.
-   await probe.waitForFunction(()=>document.querySelector('.viewer-strip span')?.textContent==='Synthetic 000'&&!document.querySelector('#focus')?.disabled&&document.querySelector('.status')?.textContent.includes('Discrete focus:')&&document.querySelector('.stage img')?.complete&&document.querySelector('.stage img')?.naturalWidth>0);
-   // Initial metadata requires the entire shared 64 MiB lease. Do not hold a
-   // positive-byte thumbnail lease until the selected focus is fully ready.
-   // Only naturally issued later grid traffic is eligible; no image reloads.
-   const pendingAtArming=await probe.evaluate(()=>document.querySelectorAll('.capture').length-[...document.querySelectorAll('.capture img')].filter(i=>i.complete&&i.naturalWidth>0).length);
-   if(pendingAtArming===0)return {available:false,workload,reason:'selected focus readiness drained all grid images',samples:rows.length,intervals:rows};
-   armed=true;
+   // The passive in-page observer binds the exact name-sorted page and an
+   // enabled real focus control before initial focus rendering must finish.
+   let readyTimer;
+   const ready=await Promise.race([readiness,new Promise(resolve=>{readyTimer=setTimeout(()=>resolve(null),10000);})]);
+   clearTimeout(readyTimer);
+   if(!ready)return {available:false,workload,reason:'no passive metadata-ready announcement',samples:rows.length,intervals:rows,timeline,events};
+   const pendingAtArming=ready.pendingGrid;
+   if(pendingAtArming===0)return {available:false,workload,reason:'all grid images decoded before focus metadata became usable',samples:rows.length,intervals:rows,metadataReady,timeline,events};
    let candidateTimer;
    await Promise.race([pendingCandidate,new Promise(resolve=>{candidateTimer=setTimeout(resolve,5000);})]);
    clearTimeout(candidateTimer);
-   if(held.length===0)return {available:false,workload,reason:'no naturally issued post-readiness grid chunk',pendingAtArming,samples:rows.length,intervals:rows};
+   if(held.length===0)return {available:false,workload,reason:'no naturally issued metadata-ready grid chunk',pendingAtArming,samples:rows.length,intervals:rows,metadataReady,timeline,events};
    const candidate=held[0];
    const url=candidate.request.url();
    // One chunk is deliberate: the same response must account for the decoded
@@ -109,26 +119,33 @@ async function run({browser,page,origin,instrument}){
      gridObserver.disconnect();img.decode().then(()=>{gridDecoded=performance.now();}).catch(()=>{});
     });
     gridObserver.observe(grid,{childList:true,subtree:true,attributes:true});
+    const minimum=Number(range.min),maximum=Number(range.max);
+    if(!Number.isFinite(minimum)||!Number.isFinite(maximum)||maximum<=minimum||Number(range.value)!==minimum)throw Error('fresh initial focus must start at minimum endpoint');
+    const expected={name:'Synthetic 000',plane:3,lambda:maximum};
     let stageObserver,timer;
     const old=image.src;
+    const frameState=()=>({changed:image.src!==old,selected:document.querySelector('.viewer-strip span')?.textContent,alt:image.alt,output:document.querySelector('output[for="focus"]')?.textContent,status:document.querySelector('.status')?.textContent});
     const displayed=new Promise((resolve,reject)=>{
      timer=setTimeout(()=>reject(Error('focus interval timed out')),5000);
-     stageObserver=new MutationObserver(()=>{if(image.src!==old)resolve();});
-     stageObserver.observe(image,{attributes:true,attributeFilter:['src']});
+     stageObserver=new MutationObserver(()=>{if(window.__focusReadinessObserver.frameMatches(frameState(),expected))resolve();});
+     stageObserver.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});
     });
     const pendingGridAtStart=document.querySelectorAll('.capture').length-document.querySelectorAll('.capture img').length;
     performance.clearResourceTimings();
     const start=performance.now();window.__gridFocusIntervalRunning=true;
+    const interval={sample,start,end:null,pendingGridAtStart,requestedPlane:expected.plane,requestedLambda:expected.lambda,requestedFrameVerified:false};window.__lastFocusInterval=interval;
     try{
      // Each fresh page starts on the selected stored plane; choose the opposite
      // endpoint to require a real stage update rather than an unchanged value.
-     range.value=Number(range.value)===Number(range.min)?range.max:range.min;
+     range.value=range.max;
      range.dispatchEvent(new Event('input',{bubbles:true}));
-     await displayed;await image.decode();await new Promise(requestAnimationFrame);
+     await displayed;const requestedSrc=image.src;await image.decode();await new Promise(requestAnimationFrame);
+     if(image.src!==requestedSrc||!window.__focusReadinessObserver.frameMatches(frameState(),expected))throw Error('requested focus frame changed before measurement completed');
      const end=performance.now();
      const resource=performance.getEntriesByName(url).find(e=>e.entryType==='resource'&&e.responseEnd>=start);
-     return {sample,start,end,pendingGridAtStart,bodyBytes:resource?.decodedBodySize||0,bodyFinished:resource?.responseEnd??null,gridDecoded};
+     Object.assign(interval,{end,bodyBytes:resource?.decodedBodySize||0,bodyFinished:resource?.responseEnd??null,gridDecoded,requestedFrameVerified:true,displayedFrame:frameState()});return interval;
     }finally{
+     if(interval.end===null){interval.failureObservedAtMs=performance.now();interval.displayedFrame=frameState();interval.gridDecoded=gridDecoded;}
      window.__gridFocusIntervalRunning=false;clearTimeout(timer);stageObserver.disconnect();gridObserver.disconnect();
     }
    },{name:candidate.preview.name,url,sample});
@@ -136,17 +153,19 @@ async function run({browser,page,origin,instrument}){
    // starts. Awaiting the measured promise never waits for grid completion.
    measuring.catch(()=>{});
    await probe.waitForFunction(()=>window.__gridFocusIntervalRunning===true,{polling:1,timeout:5000});
-   released=true;
-   await candidate.request.continue();
-   const row=await measuring;lastInterval=row;requireOverlap(row);assert.deepEqual(errors,[],'contention page must not have application errors');rows.push(row);
+   released=true;releaseBounds.commandDriverEpochMs=Date.now();record('grid-release-command');
+   await candidate.request.continue();releaseBounds.ackDriverEpochMs=Date.now();record('grid-release-ack');
+   const row=await measuring;row.metadataReady=metadataReady;row.timeline=timeline;row.timelineEvents=events;row.releaseBounds=releaseBounds;row.clocks={page:'performance.now in this page',driver:'Date.now epoch; not subtracted from page clock'};lastInterval=row;requireOverlap(row);assert.deepEqual(errors,[],'contention page must not have application errors');rows.push(row);
   }catch(error){
    const state=await probe.evaluate(()=>({captures:document.querySelectorAll('.capture').length,gridImages:document.querySelectorAll('.capture img').length,focusDisabled:document.querySelector('#focus')?.disabled??null,stageReady:!!document.querySelector('.stage img')?.naturalWidth})).catch(()=>null);
-   error.publicGridEvidence={available:false,workload,reason:'grid setup or interval failed',samples:rows.length,intervals:rows,lastInterval,heldRequests:held.length,armed,released,state};
+   if(!lastInterval)lastInterval=await probe.evaluate(()=>window.__lastFocusInterval||null).catch(()=>null);
+   error.publicGridEvidence={available:false,workload,reason:'grid setup or interval failed',samples:rows.length,intervals:rows,lastInterval,heldRequests:held.length,armed,released,state,metadataReady,timeline,events,releaseBounds};
    error.message+=`; public grid state ${JSON.stringify(error.publicGridEvidence)}`;
    throw error;
   }finally{
    // Aborting other held requests is cleanup outside the measured interval.
    for(const {request}of held)if(!request.isInterceptResolutionHandled())await request.abort().catch(()=>{});
+   await probe.evaluate(()=>window.__focusReadinessObserver?.dispose()).catch(()=>{});
    await probe.close();
   }
  }

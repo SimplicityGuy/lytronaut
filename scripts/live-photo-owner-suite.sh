@@ -26,8 +26,9 @@ for(const [index,report] of reports.entries()){
   if(index===0){
     assert(lifetime&&typeof lifetime==='object','small canonical owner must execute browser lifetime regressions');
     const facts=['stalledRead','stalledCancel','remountDrains','synchronousCaptureControlBurst','reentrantSelected','reentrantMain','reentrantLibrary','actionBeforePollDisposed','acceptedMutationRecovery','importLaneRemount','constructorFailure','decodeFailure','urlsReleasedBeforeClose'];
-    const keys=['jpeg',...facts,'rendererDestroyReentryCovered','rendererDestroyReentryPending','created','revoked','logicalJpegBytesMax','capacityCollection','totalMemoryProof'];
+    const keys=['admission','jpeg',...facts,'rendererDestroyReentryCovered','rendererDestroyReentryPending','created','revoked','logicalJpegBytesMax','capacityCollection','totalMemoryProof'];
     assert.deepEqual(Object.keys(lifetime).sort(),keys.sort(),'fixed public lifetime schema');
+    assert.deepEqual(lifetime.admission,{alreadyAborted:true,nativeAbortWake:true,deferredAbortWake:true,registrationRace:true,activeDrainRetained:true,capacityReusable:true});
     for(const key of facts)assert.equal(lifetime[key],true,`required actual synthetic lifecycle fact: ${key}`);
     assert.equal(lifetime.rendererDestroyReentryCovered,false);assert.equal(lifetime.rendererDestroyReentryPending,true,'absent-GPU fixture cannot claim device-destroy coverage');
     assert.equal(lifetime.capacityCollection,false);assert.equal(lifetime.totalMemoryProof,false);
