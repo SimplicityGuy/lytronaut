@@ -74,6 +74,13 @@ file entries reproduced the source sizes and both SHA-256 values above.
 Selection therefore changes the transport envelope but not the file bytes or
 hierarchy.
 
+Each local header also carried a ZIP64 extra field containing 16 zero bytes
+inside a 20-byte extra-field record, while each central header had no extra
+field and each ordinary 32-bit size field held the actual size. The current parser
+consumes no ZIP64 values when those ordinary fields are present, then rejects
+the unused placeholder bytes. This explains the runtime `invalid_input`
+response before evaluation reaches the separate compressed-directory limit.
+
 The exact generated ZIP does **not** pass the current Lytronaut intake unchanged.
 Client admission accepts the two declared files and 63 expanded bytes, but the
 native preflight source rejects any directory entry whose compressed size is
@@ -83,10 +90,11 @@ the `failed` phase. That binary had SHA-256
 `57fe18ce3fab197590da00f700a53a7a8ecf8866a09040e62bf77f4324b055c9`
 and was built before this report's commit, so the HTTP response is supporting
 runtime evidence rather than a source-bound diagnosis of the exact rejection
-branch. The source independently proves that Chrome's two-byte compressed
-directory entries violate the current directory-size condition. Other framing
-may also contribute to the runtime rejection and must be covered by the future
-end-to-end regression.
+branch. Source inspection at baseline
+`693241482426220fd993dd9d5d69208db30af842` against the exact local and central
+headers independently identifies the unused zero ZIP64 placeholder rejection
+and proves that Chrome's two-byte compressed directory entries also violate the
+current directory-size condition.
 
 The behavior agrees with current Chromium source. Its macOS bridge creates an
 `NSOpenPanel`; all folder picker variants set `canChooseFiles = NO` and
@@ -125,10 +133,13 @@ package control backed by a normal, single-file input accepting
 name has the package-plus-ZIP form, pass that `File` through the existing ZIP
 admission and upload path after adding narrowly bounded support for Chrome's
 valid empty DEFLATE directory entries. Verify that each accepted directory
-payload inflates to empty and retains valid CRC and framing. Keep all current
-central-directory, expanded-byte, file-count, per-file, path, overlap and server
-preflight limits. Do not enumerate the source package, request write permission
-or retain a local path.
+payload inflates to empty and retains valid CRC and framing. Also accept this
+specific all-zero local ZIP64 placeholder only when the matching ordinary
+32-bit fields carry the authoritative sizes; retain rejection of duplicate,
+conflicting or malformed ZIP64 metadata. Keep all current central-directory,
+expanded-byte, file-count, per-file, path, overlap and server preflight limits.
+Do not enumerate the source package, request write permission or retain a local
+path.
 
 Treat an empty selection as cancellation with no job creation. Preserve the
 existing ordinary-directory and explicit-ZIP controls and their behavior. The
