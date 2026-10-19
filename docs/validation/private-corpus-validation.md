@@ -2,11 +2,11 @@
 
 > Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
 
-Bead **lytronaut-f5a — Verify final-source Live Photo exports on the sealed
+Task **private-corpus validation — Verify final-source Live Photo exports on the sealed
 private corpus**: runtime acceptance **passed** at final production candidate
 `aa0073f`, 2026-10-18. This closes the
 private-corpus rerun criterion, separately from the CPU/grid criterion in
-**lytronaut-b0e**. It does not declare complete release acceptance.
+**focus acceptance**. It does not declare complete release acceptance.
 
 ## Source and artifact binding
 
@@ -21,7 +21,7 @@ opening the corpus. The raw WASM and bindgen receipts bind the generated pair to
 that source. This new client includes the production FIFO admission change;
 the older `877116c` client does not substitute for this rerun.
 
-The approved implementation was subsequently integrated into the molecule at
+The approved implementation was subsequently integrated into the work group at
 `196e811b556b3acad0579a46afcc8cfb3bd23fc4`, preserving submitted
 `0e00d51cfa1f42c57195dd09820a5aef9b1daa78`. Its only change under
 crates/assets/Cargo inputs relative to `aa0073f` is the admission test-module

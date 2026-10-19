@@ -1,4 +1,4 @@
-# Instrumented sidebar request witness — lytronaut-q1o
+# Instrumented sidebar request witness
 
 > Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
 

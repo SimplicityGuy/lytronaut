@@ -584,7 +584,7 @@ First build `lytronaut:smoke-relay` with
 This test-only Rust ingress relay connects the host runner to the service's
 internal network. The application has no external route; the relay forwards only
 to that fixed service and is absent from the application image.
-See the bead's validation record for measured architecture and artifact evidence.
+See the task's validation record for measured architecture and artifact evidence.
 
 The Justfile shares the container build and proof commands with CI. On a native
 Linux host, choose an architecture, local image names, exact source revision and

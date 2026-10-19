@@ -63,8 +63,8 @@ browser/driver process RSS or browser decoder internal allocations.
 
 ## Behavioral and accessibility evidence
 
-[Synthetic screenshot](../validation/assets/lytronaut-95r-browser.png) and
-[measured browser results](../validation/assets/lytronaut-95r-browser.json)
+[Synthetic screenshot](../validation/assets/browser-validation.png) and
+[measured browser results](../validation/assets/browser-validation.json)
 contain independently generated content only.
 
 `mise exec -- just setup wasm-build build browser-test` runs the actual binary,
@@ -218,7 +218,7 @@ uploads/pending jobs can be cancelled. These flows do not buffer archives in WAS
 Apple Live Photo export runs in the Rust/WASM client from verified archived video
 and selected-key still data. The final private run verified 320/320 pairs across
 109 streams, including pre-abort, active cancellation, and recovery; see the
-[source-bound report](../validation/lytronaut-f5a-private.md). Its pixel comparator
+[source-bound report](../validation/private-corpus-validation.md). Its pixel comparator
 scope and platform/browser limits remain explicit there.
 
 ### Optional archived browser H.264 focus
@@ -267,7 +267,7 @@ its renderer/device. Failed video attempts preserve verified GPU imagery and
 rearm its loss watcher; later device loss still restores the verified image.
 Only owned Blob URLs are revoked when replacing or clearing the stage.
 
-The [integrated private proof](../validation/lytronaut-hyy-video.md) passed all
+The [integrated private proof](../validation/video-validation.md) passed all
 109 standard blocks / 654 frames and both five-frame LFE representatives on the
 declared Chrome/macOS/M1 Pro configuration. All blocks required software retry;
 there is no hardware codec claim. The UI still requires a successful actual

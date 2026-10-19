@@ -27,21 +27,21 @@ The application and container configuration were built from
 not change those application sources. The architecture reports bind the image
 revision, actual binary, generated Rust/WASM, glue and Cargo.lock SHA256s.
 All committed fixtures and reports are independently generated synthetic data.
-The [completed arm64 report](assets/lytronaut-j2u-arm64.json) records all 15
+The [completed arm64 report](assets/deployment-arm64.json) records all 15
 passing runtime checks. Native CI at `821727e46fa2ccda5c68618ff99d1551eed01411`
 passed on both architectures in
 [run 38204634077](https://github.com/SimplicityGuy/lytronaut/actions/runs/38204634077):
-[amd64](assets/lytronaut-j2u-native-amd64.json) and
-[arm64](assets/lytronaut-j2u-native-arm64.json), with 15 checks each. Both artifacts
+[amd64](assets/native-amd64.json) and
+[arm64](assets/native-arm64.json), with 15 checks each. Both artifacts
 are retained outside the worktree, with independently verified GitHub ZIP
-digests, 166 source hashes, every program hash, native ELF architecture and saved
+digests, 166 source hashes in the complete historical manifest, every program hash, native ELF architecture and saved
 image identity plus every filesystem layer. The final pristine submission
 receipt and updated harness CI remain pending.
-The [artifact identities](assets/lytronaut-j2u-native-identities.json) retain the
+The [artifact identities](assets/native-identities-summary.json) retain the
 job/artifact IDs, ZIP SHA256s, image hashes, exercised program hashes and exact
 source hashes independently of GitHub's three-day artifact retention.
-The [source manifest](assets/lytronaut-j2u-source.json) binds application and
-container configuration files. The [cancelled-build checkpoint](assets/lytronaut-j2u-cancelled-build.json)
+The [source manifest](assets/deployment-source.json) binds application and
+container configuration files. The [cancelled-build checkpoint](assets/cancelled-build.json)
 records the resource observations separately from successful runtime evidence.
 
 Rust 1.99.0, wasm-bindgen 0.2.129 and locked dependencies build inside each
@@ -101,10 +101,10 @@ automatic GPU/static fallback, video joins, cancellation and owned URL cleanup.
 The final functional browser checks passed CPU and GPU modes for each distinct
 Linux release WASM/glue artifact with a macOS debug service compiled from identical
 application sources. Their reports bind the actual native service, WASM and
-generated glue hashes: arm64-built [CPU](assets/lytronaut-j2u-browser-cpu.json) and
-[GPU](assets/lytronaut-j2u-browser-gpu.json), and amd64-built
-[CPU](assets/lytronaut-j2u-browser-amd64-cpu.json) and
-[GPU](assets/lytronaut-j2u-browser-amd64-gpu.json). All eight GPU orientation comparisons
+generated glue hashes: arm64-built [CPU](assets/browser-arm64-cpu.json) and
+[GPU](assets/browser-arm64-gpu.json), and amd64-built
+[CPU](assets/browser-amd64-cpu.json) and
+[GPU](assets/browser-amd64-gpu.json). All eight GPU orientation comparisons
 have zero pixel difference, injected failures recover, video joins pass and
 owned Blob URLs are released. These mixed-profile checks have the performance
 gate disabled; their focus p95 measurements exceed 100 ms. The fresh native
@@ -136,5 +136,5 @@ reverse-proxy Host/Origin handling, explicit credentialless CLI mutation intent,
 offline image retention and stopped-service backups.
 
 This deployment proof does not establish the final release's 100 ms performance
-or 95% native plus actual WASM coverage gates. The final acceptance bead owns
+or 95% native plus actual WASM coverage gates. The final acceptance task owns
 those source-inclusive checks after the remaining initial-release integrations.

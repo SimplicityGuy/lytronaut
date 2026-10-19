@@ -1,6 +1,6 @@
 # Workspace and version 1 contracts
 
-Implementation epic `lytronaut-re8` completed delivery, review, and landing.
+The initial implementation is complete.
 The contracts below describe the current application; historical foundation
 policy is retained in the dated design records.
 

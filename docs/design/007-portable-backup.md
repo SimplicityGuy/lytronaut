@@ -99,7 +99,7 @@ than releasing quota after a best-effort unlink.
 
 ## Bundle size and admission
 
-Decision (`lytronaut-lbk`, owner, 2026-10-13): a lossless backup and its restore
+Decision (`portable backup decision`, owner, 2026-10-13): a lossless backup and its restore
 work for a library of any size. There is no documented library-size limit; the
 only refusal is that the work volume genuinely lacks the space the job needs.
 The single-upload budgets (`LYTRONAUT_UPLOAD_BYTES`, `LYTRONAUT_ENCODED_BYTES`)
@@ -377,9 +377,9 @@ non-restore integrity-policy disposition below.
 
 ## Verification
 
-The `lytronaut-80j` additions (metadata-inclusive sizing, oversized allocation
+The `disk-accounting validation` additions (metadata-inclusive sizing, oversized allocation
 units, inode serialization and actual HTTP/1.1 upload frames) have separately
-scoped evidence in [disk accounting validation](../validation/lytronaut-80j-disk-accounting.md).
+scoped evidence in [disk accounting validation](../validation/disk-accounting.md).
 That source snapshot distinguishes local results from additional PostgreSQL/CI
 execution required for the lifecycle handoff.
 
@@ -414,7 +414,7 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   that keeps the result, and whole-store failures that still refuse startup.
   Every case checks unrelated SQL/filesystem sentinels and the live library.
 
-The new `lytronaut-25u` cases executed at source `47b4cb0`: SQLite restore-fault
+The new `restore reconciliation` cases executed at source `47b4cb0`: SQLite restore-fault
 matrix **22 passed**, active monitor retry **1 passed**, and strict PostgreSQL
 **62 passed**, each with zero failures or ignored cases. They cover startup
 re-verification after repaired ownership; published/missing-row and published/
@@ -427,12 +427,12 @@ Six subsequent mutation checks caught disabled accounting, retry and cleanup-int
 guards on both engines. The separate deterministic free-space assertion correction
 then passed its affected SQLite and PostgreSQL cases. These are historical source-
 specific results, not a claim that a future final SHA was already tested; see
-[restore reconciliation validation](../validation/lytronaut-25u-restore-reconciliation.md).
+[restore reconciliation validation](../validation/restore-reconciliation.md).
 
 Not covered by an engine test: a database connection lost during cleanup, and
 measured memory under concurrent admission. Coverage is gated separately.
 
-Reconciliation follow-ups (lytronaut-25u):
+Reconciliation follow-ups (restore reconciliation):
 
 - Startup retries retained unverified restores and restores readiness on ownership/
   publication/schema verification. Missing-row recreation and zero-accounting
@@ -450,7 +450,7 @@ Reconciliation follow-ups (lytronaut-25u):
 - A single failed monitor state read is retried; two consecutive failures still
   stop work early. A durable DELETE or shutdown continues to stop work immediately.
 - Finished non-restore archive, Flatten and Live Photo artifacts are deliberately
-  **not re-verified at startup** (won't-fix for this bead). Their `succeeded` status
+  **not re-verified at startup** (won't-fix for this task). Their `succeeded` status
   records the completed job, not ongoing artifact integrity. Download verifies
   transient ownership and opens the artifact; absent/conflicting ownership or a
   missing/unreadable file is refused. Download does not rehash artifact content,

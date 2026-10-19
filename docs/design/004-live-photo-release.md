@@ -2,10 +2,9 @@
 
 > Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
 
-The operator explicitly requested dispatch of `lytronaut-9fw` for the initial
-release. This supersedes its previous separate-follow-up disposition. The release
-molecule `lytronaut-re8` now contains fourteen implementation tasks; final
-acceptance `lytronaut-cjq` depends on Live Photo export as well as the existing
+The operator explicitly requested Live Photo development for the initial
+release, superseding its previous separate-follow-up disposition. Final MVP
+acceptance therefore includes Live Photo export alongside the existing
 implementation prerequisites.
 
 The existing filed export scope remains: a selected still/key frame paired with a

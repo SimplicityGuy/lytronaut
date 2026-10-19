@@ -8,8 +8,8 @@ Illum, promoted one verified file variant at a time.
 
 ## Status
 
-The initial release candidate (`lytronaut-re8`) completed its planned delivery
-and landed on `main` at `a3d0482` on 2026-10-18. It
+The initial release candidate completed its planned delivery and landed on
+`main` at `a3d0482` on 2026-10-18. It
 imports Lytro Desktop schema-23 libraries from the original camera, preserves
 every original byte-exact, browses static JPEG previews and albums, offers
 discrete focus for archived JPEG focus stacks, optional browser H.264 focus and

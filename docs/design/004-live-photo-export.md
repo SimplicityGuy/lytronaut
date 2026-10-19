@@ -10,7 +10,7 @@ Photos (2026-10-18); this is an owner-reported pass, separately scoped from the
 automated checks. Apple consumption of the external HRD schedule is not
 established. The prior owner Photos report remains tied to the historical
 `fbe615a` pair. Current source-bound evidence and remaining gates are maintained
-in [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md).
+in [acceptance reconciliation](../validation/release-acceptance.md).
 
 Status (2026-10-18): the owner requested staged landing of the validated source
 and evidence on main; release acceptance remains open.
@@ -19,13 +19,13 @@ Historical merged-tree CPU p95 was 137.9–150.4 ms against ≤100 ms. The later
 targets; the owner chose current host load, so no quiet-host claim is made.
 Final-source private exports also pass at `aa0073f` with its freshly built
 release client: 109 streams, 320 verified exports, zero failures, and unchanged
-originals; see [private-corpus evidence](../validation/lytronaut-f5a-private.md).
+originals; see [private-corpus evidence](../validation/private-corpus-validation.md).
 Final combined canonical validation, remote checks and main integration remain
 required. These
-criteria are preserved in open epic **lytronaut-m7v — Complete deferred Live
-Photo release acceptance**, with private-export child **lytronaut-f5a** and
-current-host/grid child **lytronaut-b0e**; see the
-[open follow-ups and exact owner report](../validation/lytronaut-re8-3-acceptance.md#deferred-release-acceptance).
+criteria are preserved in open delivery **deferred release acceptance — Complete deferred Live
+Photo release acceptance**, with private-export child **private-corpus validation** and
+current-host/grid child **focus acceptance**; see the
+[open follow-ups and exact owner report](../validation/release-acceptance.md#deferred-release-acceptance).
 The staged landing did not dispatch these children. The owner subsequently
 approved the follow-up kickoff for both children and explicitly chose the
 current-load experiment. VoiceOver and iOS retain their written
@@ -384,7 +384,7 @@ mapping. These reader tests passed in the owner suites locally at `623f2b9` and 
 cleanup behavior and source/metadata admission are unchanged.
 
 Pinned Rust 1.99.0 source audit is recorded in the external receipt
-`lytronaut-9fw-rust199-capacity-source.json` with compiler identity and exact source
+`Live Photo development-rust199-capacity-source.json` with compiler identity and exact source
 digests. This reader's Vec extension reserves, copies and deallocates the chunk;
 it does not steal its buffer. Growth stores `max(2*old_capacity, required, 8)`,
 yielding capacity below twice the admitted limit when the limit is at least eight
@@ -573,7 +573,7 @@ capacity comes from `ui_source_begin`, not the slice length in `metadata_export`
 The layouts come from the existing actual-target `retained_layout_*` rows.
 Snapshot quantities are not additive independent peaks or a whole-memory total.
 
-Source receipt `/private/tmp/lytronaut-9fw-metadata-source-audit-1f8e166.json`
+Source receipt `/private/tmp/Live Photo development-metadata-source-audit-1f8e166.json`
 records pinned Rust 1.99 BTree slots (11 leaf slots, 12 internal edges) and
 serde_json 1.0.150's BTree map implementation. It establishes neither private node
 WASM ABI nor physical allocation sizes. Deserializer scratch is cleared/reused for
@@ -594,7 +594,7 @@ before the existing single feature WASM build. The same three public mounted UI
 cases require the five phase rows, five plane descriptors and source-length
 correspondence. The six native tests passed locally at `35c7770` (and in the CI owner
 job); the observations were collected locally at `623f2b9` and in CI run 38425987841 at `a697acc`. The
-64MiB transient/32MiB retained acceptance is still pending (`lytronaut-re8.3`).
+64MiB transient/32MiB retained acceptance is still pending (`release acceptance`).
 
 ### Display-only Blob ownership regression candidate
 
@@ -674,11 +674,11 @@ evidence directory, not in the repository or CI.
 | Automatic CPU/GPU selection | Pass | No renderer buttons; five injected faults fell back to CPU within 742 ms; device loss recovered in 52 ms; destroy-reentry kept the newer capture |
 | Counted 64 MiB transient / 32 MiB retained | **Partial; accepted as a known limitation, not proven** | See below and [Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13) |
 | Performance (design 001 targets) | **Not met** | Merged-tree `b81e689` release CPU-mode focus interaction p95 is 137.9–150.4 ms (target ≤100 ms). GPU submit-to-present is not verified (accepted as a known limitation, not proven). Other targets: see below |
-| Apple Photos recognition | **Owner-reported pass** | Rebuilt pair `9fw-gate5-fbe615a`; see below |
+| Apple Photos recognition | **Owner-reported pass** | Rebuilt pair retained as external evidence; see below |
 | VoiceOver | **Not verified** | Owner signed off as out of scope for the initial version (2026-10-13). The only accessibility evidence is the automated accessibility-tree (AXTree) inspection |
 
-Bead `lytronaut-re8.3` tracks these gates. The table above is a historical
-measurement snapshot; [acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md)
+Task `release acceptance` tracks these gates. The table above is a historical
+measurement snapshot; [acceptance reconciliation](../validation/release-acceptance.md)
 is the current source-bound status. The dated owner dispositions below remain
 unchanged within their original scope.
 
@@ -710,25 +710,24 @@ and no presentation was correlated. A headful trace run failed exact pixel
 comparison at device scale 2; it is not counted.
 
 **Apple Photos recognition is an owner-reported pass** (2026-10-13). The owner
-reported importing the rebuilt pair `9fw-gate5-fbe615a` (`focus.JPG` + `focus.MOV`)
+reported importing the rebuilt synthetic pair (`focus.JPG` + `focus.MOV`)
 into an isolated Photos library, where it showed as a Live Photo. No further detail
 was recorded. The manual procedure used follows. The pair to import is the rebuilt synthetic pair
-in the local evidence folder `lytronaut-evidence/9fw-gate5-fbe615a/`. It was built
+in the retained external evidence folder. It was built
 by `just live-photo-apple` from `fbe615a` code; its `SHA256SUMS` and `README.md`
 there give hashes and exact steps. On that pair, the Apple resource loader decoded
 3 frames, recognized it (`livePhotoResourceRecognized=true`) and rejected a
 mismatched pair. Independently parsed slice headers give idr_pic_id [0, 1, 0]
-in decode order. Do **not** import the older `35c7770` pair (folder
-`9fw-local-35c7770/gate5`): it predates the idr_pic_id fix, and its movie files
+in decode order. Do **not** import the older `35c7770` pair: it predates the idr_pic_id fix, and its movie files
 were removed. Automation could not create an isolated library: PhotoKit library creation
 needs a private entitlement and UI scripting is unavailable. A guarded launch
 pointed at an isolated library still opened system libraries, so it was stopped
 before import. A person must do the following:
 
 1. Hold Option while opening Photos and create
-   `/private/tmp/lytronaut-9fw-isolated-photos-20261012/Test.photoslibrary`,
+   `/private/tmp/Live Photo development-isolated-photos-20261012/Test.photoslibrary`,
    without making it the System Photo Library or enabling iCloud.
-2. Import `focus.JPG` and `focus.MOV` from `9fw-gate5-fbe615a/` together.
+2. Import `focus.JPG` and `focus.MOV` from the retained external evidence together.
 3. Confirm that one item appears with the LIVE badge, the key frame is correct
    and the motion plays.
 4. Reopen the usual library as the default and delete the test library.
@@ -760,15 +759,15 @@ server-side jobs are not covered; launch still rejects a busy lane with a messag
   immediately after create, out-of-range plane index) are now a separate
   exact-count group in `just postgres-parity` (`48bcc66`).
   At that checkpoint, the tests had limits subsequently addressed in
-  `lytronaut-0f6` (Strengthen Live Photo API tests and fix Flatten export durability
+  `export durability validation` (Strengthen Live Photo API tests and fix Flatten export durability
   gap). The historical
   DELETE-after-create case accepts either a running or an already-finished job,
   so it does not prove cancellation of in-flight work. The failed-plane case uses
   an out-of-range index, not an archived but unavailable plane. The in-process
   restart helper left earlier job workers running. Flatten export synced the
-  export root rather than the job's own directory; `lytronaut-cjq` corrected
+  export root rather than the job's own directory; `MVP validation` corrected
   that fsync and added the real missing-stored-plane failure case.
-  Admission uses the epic's reserved-space, free-floor and job-ordering accounting
+  Admission uses the delivery's reserved-space, free-floor and job-ordering accounting
   with the 18 MiB bundle reservation.
 
 The current `live_photo_delete_after_create_never_offers_a_half_pair` test
@@ -790,10 +789,10 @@ loss or establish a filesystem's hardware durability guarantees.
   H.264 7.4.3. The JPEG is unchanged; the MOV bytes change only in
   those slice headers. No golden hashes are committed.
 
-### Merged-tree validation (`b81e689` code, epic `7e65524` incorporated)
+### Merged-tree validation (`b81e689` code, delivery `7e65524` incorporated)
 
-The tree was validated locally after merging the SQLite/PostgreSQL epic, at code
-`b81e689`. The local evidence folder is named `9fw-local-4761d42` after an
+The tree was validated locally after merging the SQLite/PostgreSQL delivery, at code
+`b81e689`. The local evidence folder is retained externally with a revision note for an
 unpushed documentation amend that is not in branch history. That amend has the
 same non-documentation files as `b81e689`; a `REVISION-NOTE.txt` in the folder
 records this.
@@ -812,23 +811,23 @@ which is not load-contended, was also 150.4 ms. The host load average was about 
 but host load is not established as the cause. The merge changed no client or
 format code, but it did change the service, which is on the measured path. An
 A/B run of `623f2b9` and the merged code on a quiet host is required
-(`lytronaut-re8.3` item 10). No A/B run was possible here: load average was 8.5
+(`release acceptance` item 10). No A/B run was possible here: load average was 8.5
 when it was attempted. At the time of this run, Apple Photos, VoiceOver, the full
 counted budget and GPU submit-to-present were unverified; see
 [Owner results and accepted limitations](#owner-results-and-accepted-limitations-2026-10-13)
-for those dated owner dispositions; see [current acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md)
+for those dated owner dispositions; see [current acceptance reconciliation](../validation/release-acceptance.md)
 for later source-bound results.
 
 ## Owner results and accepted limitations (2026-10-13)
 
-Historical owner dispositions for `lytronaut-re8.3` on 2026-10-13. These apply
+Historical owner dispositions for `release acceptance` on 2026-10-13. These apply
 to the identified historical resource pair and accepted limitations; current
 new-byte acceptance is tracked separately in
-[acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md):
+[acceptance reconciliation](../validation/release-acceptance.md):
 
 | Gate | State |
 | --- | --- |
-| Apple Photos recognition | **Owner-reported pass.** The rebuilt pair `9fw-gate5-fbe615a` showed as a Live Photo in an isolated Photos library. No further detail recorded |
+| Apple Photos recognition | **Owner-reported pass.** The rebuilt synthetic pair showed as a Live Photo in an isolated Photos library. No further detail recorded |
 | VoiceOver | **NOT VERIFIED.** Owner signed off as out of scope for the initial version (2026-10-13). Only automated AXTree inspection exists |
 | iOS | **Out of scope** for this release (owner sign-off). Not verified and not supported |
 | Counted 64 MiB / 32 MiB budget | **Accepted limitation (written), not proven** |
@@ -853,23 +852,23 @@ gate (see `docs/operations/coverage.md`). It is verified by the physical-GPU
 reference-host runs. Optional software-adapter runs stay distinct from those.
 
 Neither limitation is upgraded to passed. Later source-bound work is tracked
-in [current acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md).
+in [current acceptance reconciliation](../validation/release-acceptance.md).
 The private rerun recorded on 2026-10-14 remains valid only for its historical
 source. The owner now reports updated-pair verification in Photos: “I already
 verified the updated pair in Photos. Looked great.” The supplied `c1b480f` pair
 is byte-identical to regenerated `877116c`, as recorded in
-[acceptance reconciliation](../validation/lytronaut-re8-3-acceptance.md#owner-reported-photos-verification-and-staged-landing-2026-10-18).
+[acceptance reconciliation](../validation/release-acceptance.md#owner-reported-photos-verification-and-staged-landing-2026-10-18).
 This records the owner report without adding itemized observations. The
-[final-source private rerun](../validation/lytronaut-f5a-private.md) under
-**lytronaut-f5a** now passes: all 109 streams and 320 exports, zero failures,
+[final-source private rerun](../validation/private-corpus-validation.md) under
+**private-corpus validation** now passes: all 109 streams and 320 exports, zero failures,
 with all 728 originals and 638 sealed blobs unchanged. This uses final
 production candidate `aa0073f` and its freshly built release client.
 Largest padded NAL/HRD and
 integrated PostgreSQL checks have since
 passed within their documented scope. Warm-only diagnostics did not establish
-grid-load acceptance. Later **lytronaut-b0e** production `aa0073f` passed actual
+grid-load acceptance. Later **focus acceptance** production `aa0073f` passed actual
 grid overlap and the 100 ms CPU targets in one fixed loaded-host A/B/B/A; see the
-[source-bound report](../validation/lytronaut-b0e-focus-acceptance.md).
+[source-bound report](../validation/focus-acceptance.md).
 The owner chose current load rather than a quiet-host condition. This does not
 upgrade GPU/counted-memory limitations or explain the historical CPU miss.
 Canonical validation and integration remain required. The staged source landing

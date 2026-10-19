@@ -43,11 +43,11 @@ Current operator and developer guides, architecture contracts, and preserved del
 
 ## Research
 
-[GPU/WebUI](spikes/lytronaut-0mz-rust-gpu.md) · [decode/calibration](spikes/lytronaut-4li-decode-calibration.md) · [corpus](spikes/lytronaut-7w9-library-corpus.md) · [processed interop](spikes/lytronaut-w6z-processed-interop.md)
+[GPU/WebUI](spikes/rust-gpu-feasibility.md) · [decode/calibration](spikes/decode-calibration.md) · [corpus](spikes/library-corpus.md) · [processed interop](spikes/processed-interop.md)
 
 ## Validation
 
-[PostgreSQL](validation/lytronaut-1yn-postgres-operations.md) · [restore](validation/lytronaut-25u-restore-reconciliation.md) · [streaming](validation/lytronaut-5ld-desktop-streaming.md) · [disk](validation/lytronaut-80j-disk-accounting.md) · [focus](validation/lytronaut-b0e-focus-acceptance.md) · [checkpoint](validation/lytronaut-cjq-final.md) · [private](validation/lytronaut-f5a-private.md) · [video](validation/lytronaut-hyy-video.md) · [deployment](validation/lytronaut-j2u-deployment.md) · [focus checkpoint](validation/lytronaut-m5h-focus.md) · [instrumentation](validation/lytronaut-q1o-instrumented.md) · [acceptance](validation/lytronaut-re8-3-acceptance.md) · [HRD](validation/lytronaut-re8-3-hrd.md) · [export](validation/lytronaut-u8i-export.md) · [GPU](validation/lytronaut-us7-gpu.md)
+[PostgreSQL](validation/postgres-operations.md) · [restore](validation/restore-reconciliation.md) · [streaming](validation/desktop-streaming.md) · [disk](validation/disk-accounting.md) · [focus](validation/focus-acceptance.md) · [checkpoint](validation/mvp-validation.md) · [private](validation/private-corpus-validation.md) · [video](validation/video-validation.md) · [deployment](validation/deployment-validation.md) · [focus checkpoint](validation/focus-validation.md) · [instrumentation](validation/instrumented-request-validation.md) · [acceptance](validation/release-acceptance.md) · [HRD](validation/hrd-validation.md) · [export](validation/export-validation.md) · [GPU](validation/gpu-validation.md)
 
 Design, spike, and validation documents are historical records. Their dates,
 source revisions, failures, and limitations remain authoritative for that
@@ -74,7 +74,7 @@ record; use current architecture and operations guides for present behavior.
 1. [Final-main status](validation/final-main-status.md)
 1. [Documentation audit](documentation-audit-2026-10-18.md)
 1. [Design scope](design/001-lytronaut.md)
-1. [Source-bound validation](validation/lytronaut-re8-3-acceptance.md)
+1. [Source-bound validation](validation/release-acceptance.md)
 
 ## Contributing to documentation
 

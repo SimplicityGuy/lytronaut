@@ -2,7 +2,7 @@
 
 > Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
 
-Bead: **lytronaut-4li — Spike: validate native format decoding and camera calibration feasibility**. Observed 2026-10-11. Research only; no application decoder has been implemented.
+Observed 2026-10-11. Research only; no application decoder has been implemented.
 
 ## Question
 
@@ -89,7 +89,7 @@ Ship archive-first import and previews while developing a bounded native decoder
 
 Implement camera calibration as a separate explicitly supplied asset with private provenance, hash and model/camera/sensor identity. Validate every reference and declared image size. Match camera and sensor identity first, then format/CFA/dimensions and lens-position coverage. An absent/mismatched identity must disable calibrated synthesis; never substitute a different camera's bundle. Where lens positions differ, permit selection/interpolation only after a separately documented, measured method establishes coverage and error bounds. Keep originals/metadata and compatible previews usable, and explain the missing capability in the UI. Missing calibration must not produce a plausible-looking silently incorrect image.
 
-Before lifting synthesis gates, a Rust compatibility bead should:
+Before lifting synthesis gates, a Rust compatibility task should:
 
 1. Reconcile all calibration sensor/metadata pairs and identify MOD trailers and bundle chaining. Authenticate private provenance without publishing identifiers; acquire Illum LFR + pairing archive and documented redistribution rights for CI fixtures separately.
 2. Establish independent microlens center/grid fitting with held-out calibration residuals. Proposed provisional acceptance: median center residual ≤0.25 sensor pixel and p95 ≤0.5 pixel; validate that those limits predict visible quality on both models before treating them as release guarantees.

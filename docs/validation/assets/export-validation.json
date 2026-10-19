@@ -106,7 +106,7 @@
       "session": 66080
     }
   ],
-  "coverage": "No 95% coverage assertion; final acceptance bead owns native and actual WASM instrumentation.",
+  "coverage": "No 95% coverage assertion; final acceptance validation owns native and actual WASM instrumentation.",
   "combined_regression": {
     "implementation_commit": "6747441c89983be9a5b801143b1c5dfbc0c35d47",
     "implementation_tree": "f56e98f1502b14448af71332f4347b6b1c58fffc",
@@ -374,6 +374,11 @@
         "warm_p50_ms": 66.6
       }
     ],
-    "combined_performance_acceptance": "Not passed; final acceptance bead must enforce isolated release CPU 100ms and compositor evidence."
+    "combined_performance_acceptance": "Not passed; final acceptance validation must enforce isolated release CPU 100ms and compositor evidence."
+  },
+  "presentation": {
+    "kind": "sanitized documentation summary",
+    "edits": "Two tracker-workflow ownership phrases were rewritten as final acceptance validation; numerical evidence and artifact fields are unchanged.",
+    "completeRecord": "The original evidence is retained in Git history at delivered baseline a3d0482896e6ca3361d7f900f0f0417cda20e4ac."
   }
 }

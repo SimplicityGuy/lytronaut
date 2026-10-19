@@ -1,9 +1,9 @@
-# Restore reconciliation validation — lytronaut-25u
+# Restore reconciliation validation
 
 > Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
 
 This follow-up extends the delivered main baseline, not the closed implementation
-epic. All fixtures are independent synthetic data; no source library is changed.
+delivery. All fixtures are independent synthetic data; no source library is changed.
 
 ## Changes and evidence
 
@@ -67,6 +67,5 @@ admission rule or assertion about retained accounting was relaxed.
 Canonical submission and exact-final-source CI are separate lifecycle stages;
 these historical results do not attest an unseen future SHA. Durable logs,
 source/tree metadata, executed programs, patches and checksum manifests are retained
-outside disposable worktrees in the delivery evidence directories `25u-working`,
-`25u-source-review`, `25u-focused-47b4cb0`, `25u-main-test-flake`, and
-`25u-mutations`. The later canonical/CI receipt must name its actual source.
+outside disposable worktrees in retained delivery-evidence directories for the
+working run, source review, focused check, main-test failure, and mutation checks. The later canonical/CI receipt must name its actual source.

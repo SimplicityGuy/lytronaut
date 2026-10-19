@@ -208,7 +208,7 @@ and explicit EXIF 1–8. The native HTTP path decodes the selected JPEG plane in
 independent Rust and returns a ZIP containing the paired JPEG, MOV, and
 provenance. The browser path instead handles archived AVC through WebCodecs;
 its comparator scope is documented in the
-[final private report](../validation/lytronaut-f5a-private.md).
+[final private report](../validation/private-corpus-validation.md).
 
 `GET /exports/{id}` returns typed `ExportProgress`
 (flatten/archive/restore/live-photo plus durable JobReport).

@@ -1,19 +1,19 @@
-# HISTORICAL FILED SPEC: epic lytronaut-re8. Current delivered baseline: docs/validation/final-main-status.md.
+# HISTORICAL FILED SPEC: implementation delivery. Current delivered baseline: docs/validation/final-main-status.md.
 # Original approval/kickoff text below records the state at filing.
-# Provenance: lytronaut-ck2; scope decision: lytronaut-zxk.
+# Provenance: compatibility research and the reviewed scope decision.
 epic:
   complexity: COMPLEX
   title: "Lytronaut: deliver a preservation-first Rust library explorer"
   tag: feature
   description: >-
-    Approved implementation from reviewed research epic lytronaut-ck2 and scope decision
-    lytronaut-zxk. Deliver private self-hosted schema-23 original-F01 library
+    Approved implementation from reviewed compatibility research and its scope
+    decision. Deliver private self-hosted schema-23 original-F01 library
     preservation, albums and JPEG browsing, verified discrete JPEG focus stacks,
     gated browser H.264 and optional Rust/wgpu derivative presentation, exports,
     backup and CPU-only Linux containers. Application logic remains Rust/WASM,
     original code MIT. No new calibrated synthesis, Illum claim, native C++/FFmpeg
     codec runtime, guessed Desktop edit parity or automated publication. This spec
-    is filed as epic lytronaut-re8 with operator-approved kickoff and delivery.
+    is filed as implementation delivery with operator-approved kickoff and delivery.
   design: >-
     docs/design/001-lytronaut.md and the four docs/spikes reports define the support
     matrix, privacy and acceptance boundaries. Dependency roots establish target
@@ -317,7 +317,7 @@ issues:
       source-file hashes, unknown fields/files, albums/order/events and metadata in
       private validation; public synthetic restore verifies the same invariants.
       Interrupted restore and conflicting bytes fail safely. Browser-video export
-      is not promised by this bead; preserve H.264 originals unmodified.
+      is not promised by this task; preserve H.264 originals unmodified.
   - handle: containers
     complexity: COMPLEX
     title: "Package CPU-only Linux self-hosting on amd64 and arm64"

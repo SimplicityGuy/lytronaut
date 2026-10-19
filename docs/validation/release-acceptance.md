@@ -8,7 +8,7 @@ Current-byte public decoding, largest padded writer execution and the
 independently reviewed narrow external HRD model pass. Integrated application
 PostgreSQL CI passes. Later `aa0073f` passed CPU and actual grid overlap under
 the operator-chosen current host load; no quiet-host claim is made.
-[Final-source private exports pass](lytronaut-f5a-private.md) at the same
+[Final-source private exports pass](private-corpus-validation.md) at the same
 production candidate: all 109 streams and 320 exports, with unchanged originals.
 Final combined canonical validation, remote checks and main integration remain
 required for the
@@ -18,8 +18,8 @@ staged landing below supersede earlier checkpoint statements that Photos
 verification was pending; those historical observations remain recorded.
 
 The acceptance worktree started at application revision
-`5a9ece369185c8e81908db2421d2a6d2e5223373`. Approved validation bead
-`lytronaut-cjq` landed in the epic at
+`5a9ece369185c8e81908db2421d2a6d2e5223373`. Approved validation task
+`MVP validation` landed in the delivery at
 `37809a2294223384717cda33a4a285c8b4818788`; its complete source tree is
 `0da6c71f574992f7e1d60a2a90f0468cb1a8a77e`, identical to validated `469aa4f`.
 Acceptance merge `440b9b5117b6772f7fec1619be31cfef669c3a05` incorporated that
@@ -37,8 +37,8 @@ supersede that status for `c1b480f`; release acceptance remains open.
 | VoiceOver | Not verified; owner signed off as out of scope for this version. Automated AXTree checks do not replace VoiceOver |
 | Counted 64/32 MiB memory | Partial evidence, accepted limitation; unmeasured owners remain unproven |
 | GPU submit-to-present ≤16.7 ms | Not verified, accepted limitation; animation-frame callbacks do not establish presentation |
-| Performance under grid load | **Runtime pass at `aa0073f`**: fixed A/B/B/A final B runs each have 24 actual same-body/same-image-decode overlap intervals; p95 62.0 / 76.8 ms. Scope: initial enabled-focus interaction on the name-sorted public page, separate warm batch. Canonical/integration pending; [source-bound evidence](lytronaut-b0e-focus-acceptance.md) |
-| Private-corpus export rerun | **Pass at final production candidate `aa0073f`**, using its freshly built release client: 109 streams, 320 verified exports, zero failures; all 728 originals and 638 sealed blobs unchanged. [Source binding and aggregate evidence](lytronaut-f5a-private.md) |
+| Performance under grid load | **Runtime pass at `aa0073f`**: fixed A/B/B/A final B runs each have 24 actual same-body/same-image-decode overlap intervals; p95 62.0 / 76.8 ms. Scope: initial enabled-focus interaction on the name-sorted public page, separate warm batch. Canonical/integration pending; [source-bound evidence](focus-acceptance.md) |
+| Private-corpus export rerun | **Pass at final production candidate `aa0073f`**, using its freshly built release client: 109 streams, 320 verified exports, zero failures; all 728 originals and 638 sealed blobs unchanged. [Source binding and aggregate evidence](private-corpus-validation.md) |
 | iOS | Owner signed off as out of scope; not verified or supported |
 | H.264 Level 5 first-frame check | Actual largest padded NAL/RBSP and reviewed external Type I/II HRD model pass at `b3f0850`; this narrow result does not claim general conformance or Apple consumption of that schedule |
 | Live Photo on PostgreSQL | **Pass for integrated application `877116c`**: five native HTTP Live Photo cases; full PostgreSQL parity 64 passed, zero failed/ignored. Final changed branch remote checks remain required |
@@ -47,7 +47,7 @@ supersede that status for `c1b480f`; release acceptance remains open.
 The release benchmark now rejects a first batch with zero pending grid images
 instead of accepting it as load-contended evidence. This prevents a false pass;
 it does not manufacture concurrent requests or prove load-contended latency.
-The later reviewed b0e protocol established actual grid body/decode overlap;
+The later reviewed focus acceptance protocol established actual grid body/decode overlap;
 the earlier unavailable/failed setups remain preserved below.
 
 The written owner dispositions above are recorded in the integrated
@@ -89,11 +89,11 @@ An independent SPS reader confirmed coded 1152×1856, displayed 1138×1842,
 Baseline profile 66, level 50, no reference frames and progressive coding.
 The formula above therefore needs at least 14.308 ms excess actual-over-nominal
 CPB removal delay. Timing was unresolved at this historical standalone probe;
-the later [reviewed external HRD model](lytronaut-re8-3-hrd.md) supplies an
+the later [reviewed external HRD model](hrd-validation.md) supplies an
 applicable schedule and exact actual movie checks, without claiming Apple
 consumes that schedule. Evidence, exact
 commands and synthetic source/program hashes are outside this worktree at
-`/private/tmp/lytronaut-re8-3-evidence`. This does not run the Plan regression,
+`/private/tmp/release-acceptance-evidence`. This does not run the Plan regression,
 MOV assembly, a decoder or the canonical check.
 
 Source: [ITU-T H.264 (08/2024), Annex A.3.1 and Table A-1](https://www.itu.int/rec/T-REC-H.264-202408-S/en).
@@ -127,7 +127,7 @@ subsequently passed at `c1b480f` and `85397a2`, within their stated source scope
 The format source has now changed relative to the private-run baseline, so
 that run does not attest these newly emitted SPS bytes.
 
-The [candidate external HRD experiment](lytronaut-re8-3-hrd.md) now records an
+The [candidate external HRD experiment](hrd-validation.md) now records an
 independent actual-NAL parser and rational schedule model, its normative
 coverage and actual public fixture results. Fresh review of `4e93d9b` found no
 remaining blocker within that narrow scope. Both largest padded orientations
@@ -137,7 +137,7 @@ Apple consumes the externally supplied parameters.
 
 ## Existing private and PostgreSQL evidence
 
-The validation branch's `lytronaut-cjq-final.md` records the private run at
+The validation branch's `mvp-validation.md` records the private run at
 `30800de`: 109 captures, three albums, 109 memberships, all 109 thumbnails and
 420 JPEG planes; 728 unchanged source files/bytes; three successful private
 Live Photo exports; and PostgreSQL restore with original-download equality.
@@ -175,8 +175,7 @@ commit API and the local validation head both give the identical full source
 tree `0da6c71f574992f7e1d60a2a90f0468cb1a8a77e`. This supports a source-bound
 pass for validation `469aa4f`, without claiming that future integration was
 tested. The retained log and metadata are
-`cjq-pg-parity-469aa4f.log` / `cjq-pg-parity-469aa4f.json` in the external
-evidence folder. Bead state and human gates have not been changed.
+the retained external log and metadata. Task state and human gates have not been changed.
 
 Source comparison on 2026-10-16 found no changes from private-run revision
 `30800deb642d94c3bdcc7dc6956043829eb7202d` to validation revision
@@ -185,7 +184,7 @@ format and contracts crate trees, root Cargo manifests/lock, mise/toolchain
 configuration, `.cargo`, or assets/web/static paths. The only changed crate file
 in that interval is the coverage tooling in `crates/xtask/src/coverage.rs`.
 This establishes application-source equality for that interval, not a rebuild
-or new runtime measurement. The epic's `37809a2` merge preserves the entire
+or new runtime measurement. The delivery's `37809a2` merge preserves the entire
 validated tree. The acceptance branch now contains those application fixes;
 later application changes still require scoped evidence review.
 
@@ -201,7 +200,7 @@ The earlier investigation stopped with insufficient free disk and excessive
 load for reliable latency acceptance. Disk cleanup has since completed; that
 historical resource condition is not a current blocker. At that checkpoint no
 local browser, private-corpus, PostgreSQL or performance rerun had been performed
-for this bead; the later public checks below supersede only their stated scope. The existing
+for this task; the later public checks below supersede only their stated scope. The existing
 remote PostgreSQL result above is retained instead. The bounded AVC probe above
 and focused Cargo regression above are the executable correctness experiments.
 Do not reinterpret the later
@@ -246,7 +245,7 @@ restore reconciliation and PostgreSQL operations follow-ups. The only textual
 merge conflict was the Node test recipe: both the sidebar request tests and the
 grid evidence guard remain in the canonical test command. This integration is
 not a validation result. Builds remain serialized with the other dispatched
-beads; no competing build or latency run is authorized by this report.
+tasks; no competing build or latency run is authorized by this report.
 
 The next executable work is staged as follows:
 
@@ -254,7 +253,7 @@ The next executable work is staged as follows:
    process ownership and load. Use one Cargo job, no incremental compilation,
    and no dev/test debug information. Clean the cached `xtask` package before
    a pristine checkout check so its compiled manifest path names that checkout.
-   Run `bh work check lytronaut-re8.3` through the mise-pinned environment.
+   Run `bh work check release acceptance` through the mise-pinned environment.
 2. Generate public native resources with `mise exec -- just live-photo-apple`
    and an external task-specific output directory. Preserve the new JPEG/MOV
    hashes and Apple verifier result. Run the public Rust/WASM Live Photo
@@ -296,7 +295,7 @@ cleaned once before canonical validation to remove stale manifest paths.
 
 | Check | Result |
 | --- | --- |
-| Canonical `bh work check lytronaut-re8.3` / mise-pinned `just check` | **Pass**, 516.0 seconds; 246 Rust tests passed, 48 opt-in tests ignored, 21 Node guards passed; lint, native/WASM builds, boundaries and 339 package licenses passed |
+| Canonical `bh work check release acceptance` / mise-pinned `just check` | **Pass**, 516.0 seconds; 246 Rust tests passed, 48 opt-in tests ignored, 21 Node guards passed; lint, native/WASM builds, boundaries and 339 package licenses passed |
 | Actual padded PCM RBSP parser | **Pass** in canonical tests: all 8,352 I_PCM macroblocks parsed, actual syntax bits within declared 3,200-bit ceiling; not an HRD schedule proof |
 | `just live-photo-apple` with regenerated public pair | **Pass**, 16.4 seconds; three decoded frames, correct selected still/key time, no audio, resource-loader recognition and mismatched-pair rejection; `photosLibraryOpened=false` |
 | Public `scripts/live-photo-test.cjs` | **Pass**, 6.1 seconds, Chrome 155.0.8059.82; actual Rust/WASM small, 2048×1024 and padded 1138×1842 complete pairs, software retry, cancellation and decoder cleanup |
@@ -308,8 +307,7 @@ current-source Apple resource-loader and Chrome decoding evidence, while GUI
 Photos import and full Level 5 conformance remain separate open gates.
 
 Programs, resources, logs, source metadata, `manifest.json` and `SHA256SUMS`
-are retained outside the repository under
-`delivery-evidence/re8-3-c1b480f` in the managed worktree root. All 23 listed
+are retained outside the repository. All 23 listed
 public evidence/program files were rehashed successfully. The new owner-import
 candidate is its `apple-public/focus.JPG` plus `apple-public/focus.MOV`; never
 substitute the historical pair for this new-byte observation.
@@ -359,13 +357,10 @@ validated-still route without changing product source or limits. Both largest
 padded orientations (1138×1842 and 1842×1138) pass actual NAL/RBSP parsing,
 Type I/II HRD simulation at every initialization, and Apple three-frame decode,
 selected-still/key-time/no-audio, pairing and mismatched-pair rejection. See the
-[HRD scope and results](lytronaut-re8-3-hrd.md). This does not establish that
+[HRD scope and results](hrd-validation.md). This does not establish that
 Apple consumes the external HRD schedule or accepts a GUI Photos import.
 
-Evidence remains outside the repository in
-`delivery-evidence/re8-3-release-baseline623`,
-`delivery-evidence/re8-3-release-current-877116c` and
-`delivery-evidence/re8-3-prepared-still-b3f0850`. These contain public synthetic
+Evidence remains outside the repository in retained external evidence for the baseline, current build, and prepared-still checks. These contain public synthetic
 resources only. Final canonical validation, final exact-source remote checks,
 private export verification, CPU latency and owner Photos observation remain
 open at this checkpoint.
@@ -400,9 +395,7 @@ frozen `c1b480f` owner-import candidate. Neither observation is a Photos GUI pas
 The early grid setup attempts failed before valid latency evidence: aggregate
 button text included pending-thumbnail icons, and then holding grid chunks
 prevented selected metadata from acquiring its full shared 64 MiB reservation.
-Those attempts remain in external `re8-3-focus-abba-contended`,
-`re8-3-focus-abba-selector-fixed-d375d43` and
-`re8-3-focus-abba-one-held-48f408c`. No failed attempt was relabeled as passing.
+Those attempts remain in retained external evidence for the contended, selector-corrected, and held-request attempts. No failed attempt was relabeled as passing.
 
 The independently reviewed `e0ee642` harness saves native plus 24 warm samples
 **before** attempting grid traffic, in a distinct immutable `.cpu.json` receipt.
@@ -429,14 +422,14 @@ All four CPU-only target checks passed. CPU idle samples ranged from 54.9% to
 A1/B1/B2 had no naturally pending grid images after selected focus readiness.
 A2 failed the strict 24-preview discovery before the grid loop. These are
 CPU-only diagnostics, not a complete acceptance pass or a grid latency result.
-Evidence and all raw samples are in `re8-3-focus-abba-warm-first-e0ee642`.
+Evidence and all raw samples are in the retained external evidence.
 
 One separately reviewed current-only probe at `2da8e64` removed the additional
 selection click, relying on the application's natural first-capture selection.
 It retained native/warm p95 4.5/82.8 ms (warm maximum 85.2 ms), but rejected the
 fixture's actual first capture, Synthetic 016, rather than assuming the focus
 capture Synthetic 000 was the default. No grid loop ran. Its failure and partial
-CPU receipt remain in `re8-3-focus-current-natural-2da8e64`; no further grid
+CPU receipt remains in the retained external evidence; no further grid
 experiment was repeated on this setup. New workloads must establish their own
 selection/order and real overlap without modifying product admission merely to
 make the test pass. No product lease or scheduling behavior changed here.
@@ -467,8 +460,7 @@ page, before the name-sort grid phase; they are not name-sorted grid timings.
 The real name-sorted grid phase again reported **unavailable**: every grid image
 had finished when the selected discrete focus became ready. There were zero
 valid grid intervals and no complete acceptance report. Partial receipts remain
-`complete=false` / `passed=false` in external
-`re8-3-focus-current-name-4500f23`. All failed and unavailable setups are
+`complete=false` / `passed=false` in the retained external evidence. All failed and unavailable setups are
 preserved. No further grid experiment or baseline rerun followed this result.
 
 The helper now supports this explicit ordered workload and fails closed when
@@ -485,18 +477,17 @@ great.” This is recorded as an **owner-reported pass for the current pair**.
 No additional itemized observations were recorded. The automated decoder and
 resource-loader results above remain separately scoped evidence.
 
-The supplied current-pair candidate was frozen at `c1b480f` in external
-`re8-3-c1b480f/apple-public`. Regeneration from integrated application `877116c`
-produced byte-identical resources, recorded in external
-`re8-3-release-current-877116c/public-320/source-equivalence.json`:
+The supplied current-pair candidate was frozen at `c1b480f`; regeneration from
+integrated application `877116c` produced byte-identical resources. Both
+receipts remain in external evidence:
 
 | Resource | SHA-256 at both revisions |
 | --- | --- |
 | `focus.JPG` | `9d8f443b2cd5bd8d7a3dff98cb0b6954a8b09f86be606cfe0f4e710991f65e32` |
 | `focus.MOV` | `bcf9d9bd0a3f9184c2441cafb198d684f12e04e34b1cf5a3cc2491b9c5f85155` |
 
-The owner then requested: “please wrap up the work and land it on main”. Bead
-`lytronaut-re8.3`, now **Land validated Live Photo fixes and acceptance
+The owner then requested: “please wrap up the work and land it on main”. Task
+`release acceptance`, now **Land validated Live Photo fixes and acceptance
 evidence**, covers that staged source landing with canonical validation,
 exact-source CI/coverage/container checks and a reviewed preserved merge.
 Application source is unchanged from `877116c` and validated `7724aea`; the
@@ -505,26 +496,26 @@ does not declare release acceptance or change the historical owner limitations.
 
 ### Deferred release acceptance
 
-Open epic **lytronaut-m7v — Complete deferred Live Photo release acceptance**
+Open delivery **deferred release acceptance — Complete deferred Live Photo release acceptance**
 preserves the release requirements in these children. The owner subsequently
 approved its kickoff and requested completion of both follow-ups:
 
-- **lytronaut-f5a — Verify final-source Live Photo exports on the sealed private
-  corpus.** The [actual final-source rerun passed](lytronaut-f5a-private.md):
+- **private-corpus validation — Verify final-source Live Photo exports on the sealed private
+  corpus.** The [actual final-source rerun passed](private-corpus-validation.md):
   final production candidate `aa0073f`, 109 streams, 320 independently verified
   exports, zero failures, with full
   original and sealed-copy integrity. This supplies current-byte evidence;
   the earlier private run remains separately scoped to its historical source.
   Documentation integration still requires canonical validation and remote CI.
-- **lytronaut-b0e — Complete current-host CPU and actual grid-overlap focus
+- **focus acceptance — Complete current-host CPU and actual grid-overlap focus
   acceptance.** Runtime pass at production `aa0073f`: one reviewed diagnostic
   and both final B runs in one fixed A/B/B/A each verified 24 actual overlap
   intervals with unchanged 100 ms targets. Baseline zero-overlap receipts remain
   unavailable; full warm batches and all failed attempts are retained. The owner
   authorized current host load rather than waiting for quiet. The validated
-  branch is integrated into the molecule at `196e811`; final combined validation
+  branch is integrated into the work group at `196e811`; final combined validation
   and main integration remain required. See the
-  [full report](lytronaut-b0e-focus-acceptance.md).
+  [full report](focus-acceptance.md).
 
 At the staged landing these kickoff gates were pending; that landing did not
 dispatch them. The operator subsequently approved the follow-up kickoff for both

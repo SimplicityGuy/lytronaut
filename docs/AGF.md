@@ -5,10 +5,10 @@ Lytronaut plans and delivers repository work through Beadhive's Agentic Git Flow
 
 ## Lifecycle
 
-1. A planner records scope, acceptance, dependencies, and gates as beads.
+1. A planner records scope, acceptance, dependencies, and gates as tasks.
 2. The operator approves the plan and kickoff. Agents never approve those gates.
 3. A dispatcher starts the approved epic and assigns or groups implementation work.
-4. A developer claims the bead or batch with `bh work`, works only in the printed
+4. A developer claims the task or batch with `bh work`, works only in the printed
    worktree, validates, and submits it for review.
 5. A reviewer approves or bounces the review gate.
 6. A merger lands approved work through `bh work`; developers do not merge it.

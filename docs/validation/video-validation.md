@@ -4,7 +4,7 @@
 
 Historical implementation proof: `29edb81dae0a598b9ab4d97046994c209a6756ca`, tree
 `3ab7de5b41f63690bb2e0cbbb2053294a055a8fa`.
-[Aggregate evidence](assets/lytronaut-hyy-video.json) contains only counts,
+[Aggregate evidence](assets/video-validation.json) contains only counts,
 environment and generated program artifact hashes. Private captures, metadata
 identities, original hashes, source paths, pixels and screenshots are absent.
 This report binds that exact source snapshot. The final integrated submission
@@ -68,5 +68,5 @@ nearest-selection properties and finite subtraction overflow.
 
 The existing canonical and HTTP viewer gates are required before submission.
 This evidence does **not** claim 95% first-party native plus actual WASM line
-coverage. The final acceptance bead owns that source-inclusive instrumentation
+coverage. The final acceptance task owns that source-inclusive instrumentation
 and its enforcing threshold, without application/error/security exclusions.

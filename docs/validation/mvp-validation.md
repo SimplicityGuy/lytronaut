@@ -1,4 +1,4 @@
-# Final MVP validation (lytronaut-cjq)
+# Final MVP validation
 
 > Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
 
@@ -31,7 +31,7 @@ GPU-specific WebGPU code is an owner-approved, itemised exception (2026-10-13):
 it is measured on its own row above and excluded from the WASM and union
 percentages. Without the exception the WASM(client) and union figures are the
 lower ones shown. GPU rendering correctness is verified on the physical-GPU
-reference host ([GPU report](lytronaut-us7-gpu.md)), never by a software adapter.
+reference host ([GPU report](gpu-validation.md)), never by a software adapter.
 
 ### Repeatability
 
@@ -100,7 +100,7 @@ host was a shared Apple M1 Pro (MacBookPro18,1) with a load average of about
 These stay visible; none is claimed:
 
 - CPU focus p95 at most 100 ms on the release reference host: **not met**. Earlier
-  post-export runs measured 104.7–150.7 ms ([export report](lytronaut-u8i-export.md));
+  post-export runs measured 104.7–150.7 ms ([export report](export-validation.md));
   the later merged-tree `b81e689` runs measured 137.9–150.4 ms
   ([owner results](../design/004-live-photo-export.md#owner-results-and-accepted-limitations-2026-10-13)).
   These historical stages do not measure the current delivery revision.
@@ -141,11 +141,11 @@ The optional software-adapter run remains optional under the owner clarification
 it does not establish physical-GPU correctness or presentation latency. Access
 documentation now follows ADR 002, CPU timings are attributed to their historical
 stages, and required-check enforcement remains an explicit release prerequisite.
-The earlier archive-admission documentation in `lytronaut-1yn` was superseded by
+The earlier archive-admission documentation in `PostgreSQL operations validation` was superseded by
 the any-size streaming bundle change: sizing now follows unique originals, not
 the configured upload-file limit. The operations guide also distinguishes active
 reservations from completed exports that still occupy disk. Its remaining
-deployment-test follow-ups are still open under that bead.
+deployment-test follow-ups are still open under that task.
 
 The first review-repair revision `3d86d2c` failed the browser workflow at
 `canvas-cleanup`: its global network-idle wait timed out and did not establish

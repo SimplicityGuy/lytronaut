@@ -58,7 +58,7 @@ Native controls and authenticated preserved originals remain usable.
 
 ## Evidence and limitations
 
-[GPU validation](../validation/lytronaut-us7-gpu.md) records actual Rust/WASM,
+[GPU validation](../validation/gpu-validation.md) records actual Rust/WASM,
 uploaded textures, compositor-visible pixel comparisons, failures and resource
 release on the declared Mac/Chrome. Rust submit markers and a headed compositor
 trace attempt distinguish queue submission from frame readiness and presentation.

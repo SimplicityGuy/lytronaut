@@ -54,36 +54,41 @@ through the repository license gate rather than edited by hand.
 
 | File | Disposition and evidence |
 | --- | --- |
-| `docs/spikes/lytronaut-0mz-rust-gpu.md` | Historical experiment; concept PNG classified as UI concept evidence, not schematic |
-| `docs/spikes/lytronaut-4li-decode-calibration.md` | Historical source/date scope retained |
-| `docs/spikes/lytronaut-7w9-library-corpus.md` | Historical aggregate corpus research retained; no private locators added |
-| `docs/spikes/lytronaut-w6z-processed-interop.md` | Historical interoperability observations retained |
+| `docs/spikes/rust-gpu-feasibility.md` | Historical experiment; concept PNG classified as UI concept evidence, not schematic |
+| `docs/spikes/decode-calibration.md` | Historical source/date scope retained |
+| `docs/spikes/library-corpus.md` | Historical aggregate corpus research retained; no private locators added |
+| `docs/spikes/processed-interop.md` | Historical interoperability observations retained |
 
 ## Historical validation reports
 
 | File | Disposition and evidence |
 | --- | --- |
-| `docs/validation/lytronaut-1yn-postgres-operations.md` | Source-bound PostgreSQL receipt retained |
-| `docs/validation/lytronaut-25u-restore-reconciliation.md` | Source-bound restore receipt retained |
-| `docs/validation/lytronaut-5ld-desktop-streaming.md` | Source-bound streaming receipt retained |
-| `docs/validation/lytronaut-80j-disk-accounting.md` | Historical failures/pending state retained; current guide reconciled separately |
-| `docs/validation/lytronaut-b0e-focus-acceptance.md` | Full source-bound focus/FIFO acceptance report retained |
-| `docs/validation/lytronaut-cjq-final.md` | Earlier acceptance checkpoint retained; final-main status added separately |
-| `docs/validation/lytronaut-f5a-private.md` | Corrected sealed-copy disposition after review; comparator limits retained |
-| `docs/validation/lytronaut-hyy-video.md` | Historical video receipt retained; no universal conformance claim |
-| `docs/validation/lytronaut-j2u-deployment.md` | Source-bound deployment receipt retained |
-| `docs/validation/lytronaut-m5h-focus.md` | Historical focus checkpoint retained |
-| `docs/validation/lytronaut-q1o-instrumented.md` | Historical diagnostic receipt retained |
-| `docs/validation/lytronaut-re8-3-acceptance.md` | Historical reconciliation retained; current status is separate |
-| `docs/validation/lytronaut-re8-3-hrd.md` | Narrow reviewed HRD result retained without universal claim |
-| `docs/validation/lytronaut-u8i-export.md` | Historical export receipt retained |
-| `docs/validation/lytronaut-us7-gpu.md` | Physical-host GPU evidence retained with timing limitations |
+| `docs/validation/postgres-operations.md` | Source-bound PostgreSQL receipt retained |
+| `docs/validation/restore-reconciliation.md` | Source-bound restore receipt retained |
+| `docs/validation/desktop-streaming.md` | Source-bound streaming receipt retained |
+| `docs/validation/disk-accounting.md` | Historical failures/pending state retained; current guide reconciled separately |
+| `docs/validation/focus-acceptance.md` | Full source-bound focus/FIFO acceptance report retained |
+| `docs/validation/mvp-validation.md` | Earlier acceptance checkpoint retained; final-main status added separately |
+| `docs/validation/private-corpus-validation.md` | Corrected sealed-copy disposition after review; comparator limits retained |
+| `docs/validation/video-validation.md` | Historical video receipt retained; no universal conformance claim |
+| `docs/validation/deployment-validation.md` | Source-bound deployment receipt retained |
+| `docs/validation/focus-validation.md` | Historical focus checkpoint retained |
+| `docs/validation/instrumented-request-validation.md` | Historical diagnostic receipt retained |
+| `docs/validation/release-acceptance.md` | Historical reconciliation retained; current status is separate |
+| `docs/validation/hrd-validation.md` | Narrow reviewed HRD result retained without universal claim |
+| `docs/validation/export-validation.md` | Historical export receipt retained |
+| `docs/validation/gpu-validation.md` | Physical-host GPU evidence retained with timing limitations |
 
 ## Non-Markdown evidence assets
 
-All tracked JSON and PNG assets under `docs/validation/assets/` were inventoried
-and preserved byte-for-byte. They are historical evidence, not current diagrams.
-`docs/spikes/assets/lytronaut-0mz-concept.png` is historical UI concept art.
+All tracked JSON and PNG assets under `docs/validation/assets/` were inventoried.
+Renamed assets preserve their bytes except three explicitly labelled published
+summaries: the native-identity summary omits documentation-path hashes, the
+arm64 report omits an internal image label, and the export report replaces two
+workflow-ownership phrases. Their presentation metadata points to the complete
+historical records at delivered baseline `a3d0482`. They are historical
+evidence, not current diagrams.
+`docs/spikes/assets/gpu-concept.png` is historical UI concept art.
 Before this refresh the repository contained no Mermaid, SVG, or HTML schematic.
 The new original schematics and their provenance are listed in
 [`docs/diagrams/STYLE.md`](diagrams/STYLE.md).

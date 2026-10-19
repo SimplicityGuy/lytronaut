@@ -1,4 +1,4 @@
-# CPU focus and grid-overlap acceptance — lytronaut-b0e
+# CPU focus and grid-overlap acceptance
 
 > Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
 
@@ -6,11 +6,11 @@
 
 This follow-up starts from main `17524c31b45252385082e33501f789fc0997c394`.
 The warm CPU and actual grid-overlap runtime gates now pass within the scope
-below. The validated branch is integrated into the molecule at `196e811`;
+below. The validated branch is integrated into the work group at `196e811`;
 final combined validation and main integration remain required. Earlier release
 warm A/B/B/A results met 100 ms but did not establish a quiet host. Every earlier
 grid setup produced zero valid overlap intervals. Neither those unavailable
-setups nor successful CI constitute a pass for this bead.
+setups nor successful CI constitute a pass for this task.
 
 The reviewed protocol's one authorized frozen current-release diagnostic stopped at its first
 unavailable grid window: zero valid overlap intervals. Native and warm CPU
@@ -149,7 +149,7 @@ quiet-host acceptance is not established. The CPU receipt explicitly retains
 `cpuThresholdsMet=true`. The unavailable receipt binds that CPU receipt's hash.
 
 External evidence is retained under
-`delivery-evidence/b0e-current-passive-9d44371-host/`: the immutable runner,
+The retained external evidence includes the immutable runner,
 exact command/source/tree/artifact/fixture bindings, raw CPU samples, unavailable
 receipt and timeline, driver failure log, before/after resource snapshots and
 owned-process drain receipt. Its `SHA256SUMS.json` covers the evidence files.
@@ -239,7 +239,7 @@ package caches were cleared before fresh optimized compilation. Dependencies
 and previous frozen programs were preserved. Exact commands, profile,
 source/tree, unchanged source-file hashes, Cargo.lock, raw WASM, bindgen command,
 generated pair and eight program hashes are frozen in external
-`delivery-evidence/b0e-release-aa0073f/`. Production uses default features,
+The retained external evidence binds this run. Production uses default features,
 without `test-harness` or coverage. Its evidence manifest SHA-256 is
 `28c25cc27c4caf93a08184c6842ecd83857886734b590957fe937b14fa2569e7`.
 
@@ -251,12 +251,12 @@ focus clock. Passive readiness arrived at 139.1–196.5 ms with `static-or-initi
 stage classification. This is an initial enabled-focus interaction that may
 supersede the initial default derivative, separate from the warm batch; it does
 not measure every browsing mode. Actual load was 7.15 / 5.50 / 4.99 before and
-6.56 / 5.46 / 4.98 afterward. `b0e-fifo-current-aa0073f` preserves all raw results.
+6.56 / 5.46 / 4.98 afterward. External evidence preserves all raw results.
 Independent review rehashed the programs, fixture and all four unchanged harness
 modules and recomputed every accepted interval and percentile.
 
-Separately compiled feature-only WASM in `b0e-harness-aa0073f` passed the actual
-browser regression in `b0e-fifo-adapter-aa0073f`. It verifies native abort wake,
+Separately compiled feature-only WASM passed the actual browser regression;
+both receipts remain in external evidence. It verifies native abort wake,
 deferred abort wake, already-aborted requests, cancellation after listener
 installation before first poll, active drain retention and reusable capacity.
 Existing stalled-read/cancel, remount, reentrant capture/main/library, unpolled
@@ -292,7 +292,7 @@ The one-minute host load was approximately 10–14 during this sequence. Before
 A1 it was 13.82 / 7.82 / 5.94; after A2 it was 13.44 / 8.36 / 6.22. Per-run
 before/after CPU, memory and process snapshots are preserved. These results
 satisfy the operator-chosen current-host experiment, **not a quiet-host claim**.
-External `b0e-fixed-abba-aa0073f/` retains 52 verified evidence files, with
+External evidence retains 52 verified evidence files, with
 `SHA256SUMS.json` SHA-256
 `d30cdde08fcafb2879e40784e6b97eb3517b242f3206d2eb9a32a35e27b1e31d`.
 All owned process groups were verified empty before the exclusive heavy lease
@@ -312,10 +312,10 @@ not asserted identical. The new tip's independent source-equivalence review
 binds the retained measurements to unchanged production semantics, rather than
 relabeling the old program sidecars. The separately owned private rerun against
 the exact frozen `aa0073f` production client has also passed; its corpus and
-integrity evidence remain with the private acceptance bead.
+integrity evidence remain with the private acceptance task.
 
 At the original documentation checkpoint, pristine submission, human review and
 remote CI were still required. The validated branch was subsequently merged into
-the molecule at `196e811b556b3acad0579a46afcc8cfb3bd23fc4`, preserving submitted
+the work group at `196e811b556b3acad0579a46afcc8cfb3bd23fc4`, preserving submitted
 `0e00d51cfa1f42c57195dd09820a5aef9b1daa78`. Final combined validation and main
 integration remain required. No acceptance gate was approved by the developer.

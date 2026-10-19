@@ -20,7 +20,7 @@ only moved a `cfg(test)` module, corrected a test probe, and updated documents;
 production item order matches after removing tests, but rebuilt artifact byte
 identity is not claimed.
 
-The [fixed A1/B1/B2/A2 run](lytronaut-b0e-focus-acceptance.md) passed without retries on the operator-selected loaded
+The [fixed A1/B1/B2/A2 run](focus-acceptance.md) passed without retries on the operator-selected loaded
 host (load 10–14). Both B runs contained 24 genuine same-body EOF and same-image
 decode overlap intervals and at least 19 pending thumbnails. Both baseline A
 grid measurements were unavailable, so there is no comparative baseline-grid
@@ -34,7 +34,7 @@ the first derivative; the warm batch is separate.
 | B2 final | 2.9 ms | 80.9 ms | 76.8 ms | 85.7 ms |
 | A2 baseline | 3.1 ms | 79.8 ms | unavailable | — |
 
-The [private final verification](lytronaut-f5a-private.md) passed 109 streams, 320/320 exports, cancellation and
+The [private final verification](private-corpus-validation.md) passed 109 streams, 320/320 exports, cancellation and
 recovery checks, with every original unchanged. The JPEG comparator used a
 browser JPEG of the platform-decoded selected AVC frame; it does not establish
 raw RGB, archival, or color parity. MOV pixel comparison covered the selected
@@ -44,5 +44,5 @@ sealed test copy was deleted after review. The owner's exact Photos report was:
 
 GPU compositor timing, opaque browser memory, VoiceOver, iOS, and universal HRD
 conformance remain outside the accepted proof. The [independently reviewed HRD
-result](lytronaut-re8-3-hrd.md) is deliberately narrow. No publishing or required-check enforcement was
+result](hrd-validation.md) is deliberately narrow. No publishing or required-check enforcement was
 enabled by the delivery.

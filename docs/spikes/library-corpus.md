@@ -2,7 +2,7 @@
 
 > Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
 
-Bead: **lytronaut-7w9**. Observed: 2026-10-11. This is a research result;
+Observed: 2026-10-11. This is a research result;
 there is no importer implementation yet.
 
 ## Question
@@ -153,8 +153,8 @@ companions reconcile, and source preservation is measured.
 unknown-schema semantic import, nonzero rating/flag interpretation, animation
 playback or Desktop edit parity. These need verified additional evidence.
 Original-camera identity, native decoding and calibration quality are governed
-by [the decoding spike](lytronaut-4li-decode-calibration.md), and derivative/edit
-behavior by [the interoperability spike](lytronaut-w6z-processed-interop.md).
+by [the decoding spike](decode-calibration.md), and derivative/edit
+behavior by [the interoperability spike](processed-interop.md).
 
 ## Recommendation
 
@@ -208,4 +208,4 @@ Require the following implementation acceptance checks before enabling uploads:
    validation separately.
 
 These requirements do not authorize publication of source data or implementation
-dispatch; the scope decision bead must incorporate all four spike results first.
+dispatch; the scope decision task must incorporate all four spike results first.
