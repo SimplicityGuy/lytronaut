@@ -229,7 +229,9 @@ fn hex_fixture(value: &str) -> Vec<u8> {
         .collect();
     assert_eq!(digits.len() % 2, 0);
     digits
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digit = |byte: u8| match byte {
                 b'0'..=b'9' => byte - b'0',
