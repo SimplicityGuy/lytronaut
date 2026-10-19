@@ -233,7 +233,7 @@ pub(crate) fn preflight(path: &Path, l: &Limits) -> Result<Vec<Entry>, StorageEr
             || uncompressed > l.file_bytes
             || compressed > l.encoded_bytes
             || method == 0 && compressed != uncompressed
-            || dir && (compressed != 0 || uncompressed != 0)
+            || dir && (uncompressed != 0 || method == 0 && compressed != 0)
         {
             return Err(StorageError::Quota);
         }
@@ -278,18 +278,28 @@ pub(crate) fn preflight(path: &Path, l: &Limits) -> Result<Vec<Entry>, StorageEr
                 }
                 local_zip64 = true;
                 let value = &local_extra[extra_at..extra_at + n];
-                let mut at = 0;
-                for size in [&mut local_size, &mut local_compressed] {
-                    if *size == u32::MAX as u64 {
-                        if at + 8 > value.len() {
-                            return Err(StorageError::Invalid);
-                        }
-                        *size = u64v(value, at);
-                        at += 8;
+                if local_size != u32::MAX as u64 && local_compressed != u32::MAX as u64 {
+                    // Chromium's macOS package archiver emits this unused ZIP64
+                    // placeholder while keeping both authoritative 32-bit sizes.
+                    // Accept only that exact inert form; no other surplus ZIP64
+                    // payload is ignored.
+                    if flags & 8 != 0 || n != 16 || value.iter().any(|byte| *byte != 0) {
+                        return Err(StorageError::Invalid);
                     }
-                }
-                if at != n {
-                    return Err(StorageError::Invalid);
+                } else {
+                    let mut at = 0;
+                    for size in [&mut local_size, &mut local_compressed] {
+                        if *size == u32::MAX as u64 {
+                            if at + 8 > value.len() {
+                                return Err(StorageError::Invalid);
+                            }
+                            *size = u64v(value, at);
+                            at += 8;
+                        }
+                    }
+                    if at != n {
+                        return Err(StorageError::Invalid);
+                    }
                 }
             }
             extra_at += n;
@@ -332,7 +342,21 @@ pub(crate) fn preflight(path: &Path, l: &Limits) -> Result<Vec<Entry>, StorageEr
         }
         intervals.push((local, record_end));
         f.seek(SeekFrom::Start(next))?;
-        if !dir {
+        if dir {
+            // Chrome's package archiver writes the canonical two-byte raw
+            // DEFLATE empty stream for directory records. Keep this exception
+            // exact so truncated streams, trailing bytes and compressed work
+            // disguised as structure never enter an inflater.
+            if method == 8 {
+                if compressed != 2 || u32v(&c, 16) != 0 {
+                    return Err(StorageError::Invalid);
+                }
+                f.seek(SeekFrom::Start(data))?;
+                if read::<2>(&mut f)? != [0x03, 0x00] {
+                    return Err(StorageError::Invalid);
+                }
+            }
+        } else {
             entries.push(Entry {
                 name,
                 size: uncompressed,
@@ -342,6 +366,7 @@ pub(crate) fn preflight(path: &Path, l: &Limits) -> Result<Vec<Entry>, StorageEr
                 data,
             });
         }
+        f.seek(SeekFrom::Start(next))?;
     }
     if f.stream_position()? != central_end {
         return Err(StorageError::Invalid);

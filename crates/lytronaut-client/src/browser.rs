@@ -1011,9 +1011,13 @@ struct Ui {
     job: RwSignal<String>,
     progress: RwSignal<u64>,
     total: RwSignal<u64>,
+    import_phase: RwSignal<String>,
     upload_abort: Rc<RefCell<Option<web_sys::XmlHttpRequest>>>,
     active_import: Rc<RefCell<Option<OpaqueId>>>,
     upload_cancelled: Rc<RefCell<bool>>,
+    import_generation: Rc<Cell<u64>>,
+    import_poll_epoch: Rc<Cell<u64>>,
+    import_poll_abort: Rc<RefCell<Option<AbortController>>>,
     export_job: RwSignal<Option<ExportProgress>>,
     export_busy: RwSignal<bool>,
     export_abort: Rc<RefCell<Option<AbortController>>>,
@@ -1128,9 +1132,13 @@ impl Ui {
             job: RwSignal::new(String::new()),
             progress: RwSignal::new(0),
             total: RwSignal::new(1),
+            import_phase: RwSignal::new(String::new()),
             upload_abort: Rc::default(),
             active_import: Rc::default(),
             upload_cancelled: Rc::default(),
+            import_generation: Rc::default(),
+            import_poll_epoch: Rc::default(),
+            import_poll_abort: Rc::default(),
             export_job: RwSignal::new(None),
             export_busy: RwSignal::new(false),
             export_abort: Rc::default(),
@@ -1567,12 +1575,20 @@ impl Ui {
     /// originating handler returns (see `supersede`).
     fn cancel_upload(&self) {
         *self.upload_cancelled.borrow_mut() = true;
+        self.stop_import_poll();
         ImportCleanup::cancel(&self.net, &self.active_import);
         let xhr = self.upload_abort.borrow().clone();
         if let Some(xhr) = xhr {
             spawn_local(async move {
                 let _ = xhr.abort();
             });
+        }
+    }
+    fn stop_import_poll(&self) {
+        self.import_poll_epoch
+            .set(self.import_poll_epoch.get().wrapping_add(1));
+        if let Some(abort) = self.import_poll_abort.borrow_mut().take() {
+            supersede(abort);
         }
     }
     fn cancel_browse(&self, lane: BrowseLane) {
@@ -2427,19 +2443,91 @@ impl Ui {
         if !self.attached(mount) {
             return Ok(());
         }
+        self.show_import_progress(&progress);
+        Ok(())
+    }
+    fn show_import_progress(&self, progress: &ImportProgress) {
         self.progress.set(progress.intake.completed_bytes);
         self.total.set(progress.intake.total_bytes.max(1));
+        let phase = import_phase_label(progress.phase);
+        self.import_phase.set(phase.into());
         self.status.set(format!(
-            "Import: {:?}; catalog: {:?}. Committed {} of {} bytes",
-            progress.phase,
-            progress.catalog_state,
-            progress.intake.completed_bytes,
-            progress.intake.total_bytes
+            "{phase}. Preserved {} of {} bytes",
+            progress.intake.completed_bytes, progress.intake.total_bytes
         ));
         if progress.phase == ImportPhase::CatalogComplete {
-            self.request_libraries(0, progress.library);
+            self.request_libraries(0, progress.library.clone());
         }
-        Ok(())
+    }
+    fn start_import_poll(
+        &self,
+        id: OpaqueId,
+        mount: u64,
+        generation: u64,
+        transmitted: Rc<Cell<bool>>,
+    ) {
+        self.stop_import_poll();
+        let epoch = self.import_poll_epoch.get();
+        let task = self.clone();
+        spawn_local(async move {
+            loop {
+                pause(500).await;
+                if !task.attached(mount)
+                    || task.import_generation.get() != generation
+                    || task.import_poll_epoch.get() != epoch
+                    || *task.upload_cancelled.borrow()
+                    || task
+                        .active_import
+                        .borrow()
+                        .as_ref()
+                        .is_none_or(|active| active != &id)
+                {
+                    break;
+                }
+                // XHR progress remains the source of truth until transmission
+                // reaches its declared byte count.
+                if !transmitted.get() {
+                    continue;
+                }
+                let Ok(abort) = AbortController::new() else {
+                    continue;
+                };
+                *task.import_poll_abort.borrow_mut() = Some(abort.clone());
+                let result: Result<ImportProgress> = task
+                    .net
+                    .browse_json(&format!("/imports/{}", id.as_str()), &abort)
+                    .await;
+                let current = task
+                    .import_poll_abort
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|value| js_sys::Object::is(value.as_ref(), abort.as_ref()));
+                if current {
+                    task.import_poll_abort.borrow_mut().take();
+                }
+                if task.import_poll_epoch.get() != epoch
+                    || task.import_generation.get() != generation
+                    || !task.attached(mount)
+                    || *task.upload_cancelled.borrow()
+                    || task
+                        .active_import
+                        .borrow()
+                        .as_ref()
+                        .is_none_or(|active| active != &id)
+                {
+                    break;
+                }
+                // A transient polling failure does not override the authoritative
+                // XHR result or cancel the durable import.
+                if let Ok(progress) = result {
+                    let terminal = import_phase_terminal(progress.phase);
+                    task.show_import_progress(&progress);
+                    if terminal {
+                        break;
+                    }
+                }
+            }
+        });
     }
     async fn change_video(&self, index: usize, abort: &AbortController) -> Result<()> {
         let Some(file) = self.detail.get_untracked().and_then(|d| {
@@ -2554,6 +2642,10 @@ impl Ui {
         let _busy_guard = BusyGuard(self.busy);
         self.job.set(String::new());
         *self.upload_cancelled.borrow_mut() = false;
+        self.stop_import_poll();
+        let import_generation = self.import_generation.get().wrapping_add(1);
+        self.import_generation.set(import_generation);
+        self.import_phase.set("Preparing selection".into());
         self.status
             .set("Preparing bounded import selection…".into());
         let (mut declared_bytes, mut declared_files) = declaration(
@@ -2639,9 +2731,10 @@ impl Ui {
                 if !self.attached(mount) { return Err("Cancelled".into()); }
                 if *self.upload_cancelled.borrow(){return Err("Import cancelled. Originals already committed remain preserved".into());}
                 self.status.set(format!("Uploading file {} of {}",index+1,files.len()));
+                self.import_phase.set("Uploading to the server".into());
                 let route=if kind==ImportKind::Directory {format!("/imports/{}/file",id.as_str())} else {format!("/imports/{}/zip",id.as_str())};
                 let hex=if kind==ImportKind::Directory {let path=Reflect::get(file,&"webkitRelativePath".into()).ok().and_then(|v|v.as_string()).unwrap_or_else(||file.name());Some(path_hex(&path).map_err(str::to_owned)?)}else{None};
-                self.send_file(&route,file,hex.as_deref(),base).await?;
+                self.send_file(&route,file,hex.as_deref(),base,(kind==ImportKind::ZipLibrary).then(||id.clone()),import_generation).await?;
                 base+=file.size() as u64;
             }
             self.net.mutation(&format!("/imports/{}/finish",id.as_str()),"mutation").await?;
@@ -2651,10 +2744,19 @@ impl Ui {
             if !self.attached(mount) { return Err("Cancelled".into()); }
             self.status_job().await
         }.await;
+        self.stop_import_poll();
         self.upload_abort.borrow_mut().take();
         result
     }
-    async fn send_file(&self, path: &str, file: &File, hex: Option<&str>, base: u64) -> Result<()> {
+    async fn send_file(
+        &self,
+        path: &str,
+        file: &File,
+        hex: Option<&str>,
+        base: u64,
+        poll: Option<OpaqueId>,
+        generation: u64,
+    ) -> Result<()> {
         let xhr = web_sys::XmlHttpRequest::new().map_err(|_| "Upload unavailable")?;
         xhr.open_with_async("PUT", path, true)
             .map_err(|_| "Upload unavailable")?;
@@ -2682,6 +2784,12 @@ impl Ui {
         );
         let upload = xhr.upload().map_err(|_| "Upload unavailable")?;
         upload.set_onprogress(Some(onprogress.as_ref().unchecked_ref()));
+        let transmitted = Rc::new(Cell::new(false));
+        let transmitted_event = transmitted.clone();
+        let upload_done = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            transmitted_event.set(true);
+        });
+        upload.set_onload(Some(upload_done.as_ref().unchecked_ref()));
         let (sender, receiver) = futures::channel::oneshot::channel();
         let sender = Rc::new(RefCell::new(Some(sender)));
         let tx = sender.clone();
@@ -2694,10 +2802,15 @@ impl Ui {
         *self.upload_abort.borrow_mut() = Some(xhr.clone());
         let sent = xhr.send_with_opt_blob(Some(file));
         if sent.is_ok() {
+            if let Some(id) = poll {
+                self.start_import_poll(id, mount, generation, transmitted);
+            }
             let _ = receiver.await;
         }
+        self.stop_import_poll();
         xhr.set_onloadend(None);
         upload.set_onprogress(None);
+        upload.set_onload(None);
         if sent.is_err() {
             return Err("Upload could not start".into());
         }
@@ -2936,8 +3049,10 @@ fn Workspace() -> impl IntoView {
                 {move||albums.get().into_iter().map(|album|{let selected=ui().album;let id=album.id.as_str().to_owned();let click_id=id.clone();view!{<button class="rail-item album-item" aria-pressed=move||if selected.get().as_deref()==Some(&id){"true"}else{"false"} on:click=move |_|{let u=ui();u.album.set(Some(click_id.clone()));u.sort.set("order".into());u.request_page(0);}>{format!("{}{} · {}",album.name,if album.name_truncated{" [truncated]"}else{""},album.captures)}</button>}}).collect_view()}
                 <div class="sidebar-pagination" aria-label="Album pages"><button id="album-prev" disabled=move||album_target.get()==0 on:click=move |_|{let u=ui();u.request_albums(album_target.get_untracked().saturating_sub(PAGE_SIZE),None);}>"Previous albums"</button><span id="album-page">{move||format!("Page {}",album_offset.get()/PAGE_SIZE+1)}</span><button id="album-next" disabled=move||album_next.get().is_none() on:click=move |_|{let u=ui();u.request_albums(album_next.get_untracked().unwrap_or(0),None);}>"Next albums"</button></div>
                 <div class="import"><h2>"IMPORT LIBRARY"</h2><label for="directory">"Library directory"</label><input id="directory" type="file" multiple=true node_ref=directory_ref disabled=move||busy.get()||import_pending.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::Directory,files).await}});input.set_value("");}/>
+                    <label for="package">"macOS Lytro library package"</label><input id="package" type="file" accept=".lytrolibrary" disabled=move||busy.get()||import_pending.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::ZipLibrary,files).await}});input.set_value("");}/>
+                    <p>"On tested Chrome for macOS, choose the .lytrolibrary package directly. Browser package handling varies; use the directory or ZIP controls when direct selection is unavailable."</p>
                     <label for="zip">"ZIP library archive"</label><input id="zip" type="file" accept=".zip,application/zip" disabled=move||busy.get()||import_pending.get() on:change=move|event|{let input=event_target::<web_sys::HtmlInputElement>(&event);let u=ui();let task=u.clone();let selected=input.clone();launch(u,ActionLane::Import,move || {let files=selected.files().map(|list|(0..list.length()).filter_map(|i|list.get(i)).collect::<Vec<_>>()).unwrap_or_default();async move{task.upload(ImportKind::ZipLibrary,files).await}});input.set_value("");}/>
-                    <Show when=move||!job.get().is_empty()><label for="import-progress">"Upload / committed bytes"</label><progress id="import-progress" value=move||progress.get() max=move||total.get()></progress><span>{move||format!("{} / {} bytes",progress.get(),total.get())}</span>
+                    <Show when=move||!job.get().is_empty()><label for="import-progress">"Import progress"</label><progress id="import-progress" value=move||progress.get() max=move||total.get()></progress><span>{move||format!("{} / {} bytes",progress.get(),total.get())}</span><output id="import-phase" aria-live="polite">{move||import_phase.get()}</output>
                         <button disabled=move||!busy.get() || job.get().is_empty() on:click=move |_|{let u=ui();u.cancel_upload();let task=u.clone();launch(u,ActionLane::ImportCancel,move || async move{task.net.mutation(&format!("/imports/{}/cancel",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Cancel import"</button>
                         <button disabled=move||busy.get()||import_pending.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.status_job().await});}>"Recover import status"</button>
                         <button disabled=move||busy.get()||import_pending.get() on:click=move |_|{let u=ui();let task=u.clone();launch(u,ActionLane::Import,move || async move{task.net.mutation(&format!("/imports/{}/finish",task.job.get_untracked()),"mutation").await?;task.status_job().await});}>"Retry catalog adaptation"</button>

@@ -404,6 +404,39 @@ const chromeArgs=(process.env.LYTRONAUT_CHROME_ARGS||'').split(/\s+/).filter(Boo
     await page.waitForFunction(()=>document.querySelectorAll('.capture img').length===24,{timeout:120000});
    }
    await page.screenshot({path:path.join(root,'synthetic-browser.png'),fullPage:true});
+   checkpoint='package-control-server-progress';
+   assert.equal(await page.$eval('#package',e=>e.getAttribute('accept')),'.lytrolibrary');
+   assert(await page.$('#directory'));assert(await page.$('#zip'));
+   const packageArchive=path.join(root,'chrome-macos-library-package.zip');
+   assert.equal(crypto.createHash('sha256').update(fs.readFileSync(packageArchive)).digest('hex'),'a04150890b4043e1e0decae07b346b257274b0565854ba151a3c322e8c239dbe');
+   const packageCdp=await page.target().createCDPSession();let delayedPackage=null,packageReleased=false;
+   await packageCdp.send('Fetch.enable',{patterns:[{urlPattern:'*/imports/*/zip',requestStage:'Response'}]});
+   packageCdp.on('Fetch.requestPaused',event=>{delayedPackage=event;});
+   await page.setRequestInterception(true);let packagePolls=0,packageHandlerError=null,packageActive=true;
+   const packageDelay=request=>{(async()=>{
+    const url=new URL(request.url());
+    if(packageActive&&request.method()==='GET'&&/^\/imports\/[0-9a-f]{32}$/.test(url.pathname)){
+     packagePolls++;
+     if(packagePolls===1){await request.respond({status:503,contentType:'application/json',body:'{"version":1,"code":"storage_unavailable","retryable":true}'});return;}
+     const id=url.pathname.split('/').pop();
+     if(packagePolls===2){await request.respond({status:200,contentType:'application/json',body:JSON.stringify({version:1,id,state:'running',completed_bytes:21,total_bytes:63,error:null,phase:'intake',library:null,catalog_state:null,catalog_error:null})});return;}
+     if(packagePolls===3){await request.respond({status:200,contentType:'application/json',body:JSON.stringify({version:1,id,state:'succeeded',completed_bytes:63,total_bytes:63,error:null,phase:'catalog_pending',library:null,catalog_state:null,catalog_error:null})});return;}
+    }
+    await request.continue();
+   })().catch(error=>{packageHandlerError=error;request.abort().catch(()=>{});});};
+   page.on('request',packageDelay);
+   try{
+    await page.evaluate(()=>{window.__importPhases=[];new MutationObserver(()=>window.__importPhases.push(document.querySelector('#import-phase')?.textContent||'')).observe(document.querySelector('.import'),{subtree:true,childList:true,characterData:true});});
+    await (await page.$('#package')).uploadFile(packageArchive);
+    await page.waitForFunction(()=>document.querySelector('#import-phase')?.textContent==='Library ready'&&document.querySelector('#package').disabled,{timeout:120000});
+    assert(delayedPackage,'actual package response remains held while server progress reaches ready');
+    await packageCdp.send('Fetch.continueResponse',{requestId:delayedPackage.requestId});packageReleased=true;
+    await page.waitForFunction(()=>!document.querySelector('#package').disabled,{timeout:120000});
+   }finally{packageActive=false;page.off('request',packageDelay);await page.setRequestInterception(false);if(delayedPackage&&!packageReleased)await packageCdp.send('Fetch.continueResponse',{requestId:delayedPackage.requestId}).catch(()=>{});await packageCdp.send('Fetch.disable').catch(()=>{});await packageCdp.detach().catch(()=>{});}
+   assert(delayedPackage?.responseStatusCode>=200&&delayedPackage.responseStatusCode<300,'actual browser package PUT reached the service before its response was held');
+   assert.equal(packageHandlerError,null);assert(packagePolls>=4&&packagePolls<=5,'one bounded serial status poller reports delayed package processing');
+   const observedImportPhases=await page.evaluate(()=>window.__importPhases);
+   assert(observedImportPhases.includes('Preserving and verifying originals'));assert(observedImportPhases.includes('Preparing the catalog'));assert(observedImportPhases.includes('Library ready'));
    for(const zipName of ['synthetic.zip','synthetic-zip64.zip']){const zip=await page.$('#zip');await zip.uploadFile(path.join(root,zipName));
    await page.waitForFunction(async()=>{const id=sessionStorage.getItem('lytronaut-import');if(!id||document.querySelector('#zip').disabled)return false;return (await (await fetch('/imports/'+id)).json()).phase==='catalog_complete';},{timeout:120000});}
   }

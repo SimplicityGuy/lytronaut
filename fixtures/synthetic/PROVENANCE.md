@@ -10,6 +10,19 @@ No private library was accessed to author these fixtures.
 Future format vectors must record their independent construction and license
 here; private corpus evidence is never a public fixture.
 
+`chrome-macos-library-package.hex` is the hexadecimal encoding of a 729-byte
+archive produced on 2026-10-18 when Google Chrome 155.0.8059.82 on macOS 27.0.1
+selected an independently authored synthetic Finder package. The package held
+only a 42-byte invented text file and a 21-byte invented binary file. Its source
+payload SHA-256 values are
+`70cf00fea36e4459db9b65e1b2fedf3cf25614d0a2834482429da47e4ddf10b0` and
+`1457c648d708a4b69a38dc85f1c5d137367e46975eddea9cd21543cacb2c2b06`;
+the archive SHA-256 is
+`a04150890b4043e1e0decae07b346b257274b0565854ba151a3c322e8c239dbe`.
+The fixture records Chrome's independently generated ZIP framing and is licensed
+under this repository's MIT license. It contains no photograph, camera identity,
+calibration data, private library content or reference-project source.
+
 `crates/lytronaut-format/tests/formats.rs` independently constructs MIT test
 vectors in memory: the packed bytes `ab cd ef`, invented minimal F01/unknown
 metadata, synthetic SHA1-framed sections, two tiny RGB JPEG pixels encoded by
