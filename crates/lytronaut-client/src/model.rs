@@ -45,7 +45,11 @@ pub fn viewer_bytes(manifest: &AssetManifest) -> Result<u64, &'static str> {
 }
 pub fn verified(bytes: &[u8], manifest: &AssetManifest) -> bool {
     bytes.len() as u64 == manifest.encoded_bytes
-        && format!("{:x}", Sha256::digest(bytes)) == String::from(manifest.content_sha256.clone())
+        && Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+            == String::from(manifest.content_sha256.clone())
 }
 pub fn query(search: &str, sort: &str, offset: u32) -> Result<String, &'static str> {
     if search.len() > 128 || search.chars().any(char::is_control) {
@@ -176,7 +180,12 @@ mod tests {
         assert!(viewer_bytes(&m).is_ok());
         assert!(!verified(&[0; 16], &m));
         assert!(!verified(&[0; 15], &m));
-        m.content_sha256 = format!("{:x}", Sha256::digest([0; 16])).try_into().unwrap();
+        m.content_sha256 = Sha256::digest([0; 16])
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+            .try_into()
+            .unwrap();
         assert!(verified(&[0; 16], &m));
         m.encoded_bytes = 48 * 1024 * 1024;
         m.chunks = (0..6)
@@ -460,7 +469,11 @@ pub fn verified_derivative(
     derivative: &lytronaut_contracts::FocusDerivative,
 ) -> bool {
     bytes.len() as u64 == derivative.encoded_bytes
-        && format!("{:x}", Sha256::digest(bytes)) == String::from(derivative.content_sha256.clone())
+        && Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+            == String::from(derivative.content_sha256.clone())
 }
 
 #[cfg(test)]
@@ -469,7 +482,7 @@ mod derivative_integrity_tests {
     #[test]
     fn generated_derivative_length_and_digest_reject_corruption_and_truncation() {
         let bytes = b"independent generated JPEG response stand-in";
-        let derivative:lytronaut_contracts::FocusDerivative=serde_json::from_value(serde_json::json!({"version":1,"representation":"jpeg_focus_plane","id":"synthetic","plane_index":0,"lambda":0.0,"source_dimensions":{"width":360,"height":360},"output_dimensions":{"width":360,"height":360},"orientation":1,"encoded_bytes":bytes.len(),"content_sha256":format!("{:x}",Sha256::digest(bytes)),"color_space":"unknown","provenance":"Lossy synthetic derivative"})).unwrap();
+        let derivative:lytronaut_contracts::FocusDerivative=serde_json::from_value(serde_json::json!({"version":1,"representation":"jpeg_focus_plane","id":"synthetic","plane_index":0,"lambda":0.0,"source_dimensions":{"width":360,"height":360},"output_dimensions":{"width":360,"height":360},"orientation":1,"encoded_bytes":bytes.len(),"content_sha256":Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>(),"color_space":"unknown","provenance":"Lossy synthetic derivative"})).unwrap();
         assert!(verified_derivative(bytes, &derivative));
         assert!(!verified_derivative(&bytes[..bytes.len() - 1], &derivative));
         let mut corrupt = bytes.to_vec();

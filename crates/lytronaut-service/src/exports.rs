@@ -1188,7 +1188,7 @@ async fn flatten(
         ExportFormat::Jpeg => lytronaut_format::encode_derivative(&oriented, limits),
     }
     .map_err(err)?;
-    let recipe=ExportRecipe{version:WireVersion::V1,asset,source_variant:variant.into(),plane_index:index,lambda,orientation,source_dimensions,visible_geometry:[0,0,output_dimensions.width,output_dimensions.height],output_dimensions,format,color_space:ColorSpace::Unknown,encoded_bytes:output.len() as u64,content_sha256:format!("{:x}",Sha256::digest(&output)).try_into().map_err(storage)?,color_policy:"Decoded channel values retained without color conversion; ICC/profile and EXIF metadata are not copied; source color remains unknown.".into(),processing_loss:match format{ExportFormat::Png=>"PNG preserves decoded stored JPEG pixels; original JPEG was already lossy; profile unverified",ExportFormat::Jpeg=>"Lossy quality-90 JPEG re-encode of decoded stored JPEG pixels; profile unverified"}.into(),refocus_loss:true,imported_adjustments:"Processed recipe may already be baked; imported recipe/sidecar/catalog orientation preserved only. No aperture, perspective, tone, denoise, animation or calibrated synthesis applied.".into()};
+    let recipe=ExportRecipe{version:WireVersion::V1,asset,source_variant:variant.into(),plane_index:index,lambda,orientation,source_dimensions,visible_geometry:[0,0,output_dimensions.width,output_dimensions.height],output_dimensions,format,color_space:ColorSpace::Unknown,encoded_bytes:output.len() as u64,content_sha256:Sha256::digest(&output).iter().map(|b| format!("{b:02x}")).collect::<String>().try_into().map_err(storage)?,color_policy:"Decoded channel values retained without color conversion; ICC/profile and EXIF metadata are not copied; source color remains unknown.".into(),processing_loss:match format{ExportFormat::Png=>"PNG preserves decoded stored JPEG pixels; original JPEG was already lossy; profile unverified",ExportFormat::Jpeg=>"Lossy quality-90 JPEG re-encode of decoded stored JPEG pixels; profile unverified"}.into(),refocus_loss:true,imported_adjustments:"Processed recipe may already be baked; imported recipe/sidecar/catalog orientation preserved only. No aperture, perspective, tone, denoise, animation or calibrated synthesis applied.".into()};
     Ok((output, recipe))
 }
 async fn restore_upload(Extension(a): Extension<Api>, request: Request) -> Response {
@@ -1558,8 +1558,11 @@ mod tests {
         let fixture = crate::bundle::portable_bundle_tests::Fixture::new(false).await;
         let store = fixture.seed().await;
         let blob = format!(
-            "{:x}-{}",
-            Sha256::digest(crate::bundle::portable_bundle_tests::BLOB),
+            "{}-{}",
+            Sha256::digest(crate::bundle::portable_bundle_tests::BLOB)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
             crate::bundle::portable_bundle_tests::BLOB.len()
         );
         fs::remove_file(fixture.root.join("originals").join(blob)).unwrap();

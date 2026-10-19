@@ -174,7 +174,10 @@ async fn run() -> Result<(), ()> {
             }
             bytes.extend(r.2);
         }
-        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let hash = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         if manifest["content_sha256"].as_str() != Some(hash.as_str()) {
             return Err(());
         }

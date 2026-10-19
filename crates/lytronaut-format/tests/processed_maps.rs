@@ -6,7 +6,13 @@ use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
 fn id(p: &[u8]) -> String {
-    format!("sha1-{:x}", Sha1::digest(p))
+    format!(
+        "sha1-{}",
+        Sha1::digest(p)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
 }
 fn section(out: &mut Vec<u8>, directory: bool, payload: &[u8]) {
     out.extend_from_slice(if directory {

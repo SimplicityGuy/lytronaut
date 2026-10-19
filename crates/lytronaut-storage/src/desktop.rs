@@ -226,7 +226,14 @@ fn copy_verified(
         hash.update(&buffer[..n]);
         dst.write_all(&buffer[..n])?;
     }
-    if bytes != entry.length || format!("{:x}", hash.finalize()) != entry.digest {
+    if bytes != entry.length
+        || hash
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+            != entry.digest
+    {
         return Err(CatalogError::Invalid);
     }
     Ok(())
@@ -774,7 +781,11 @@ async fn import_owned(
         hash.update(e.digest.as_bytes());
         hash.update(e.length.to_le_bytes());
     }
-    let fingerprint = format!("{:x}", hash.finalize());
+    let fingerprint = hash
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     if let Some(id) =
         sqlx::query_scalar::<_, i64>("SELECT id FROM catalog_versions WHERE fingerprint=$1")
             .bind(&fingerprint)
@@ -1133,7 +1144,10 @@ mod tests {
     fn copy_rejects_changed_bytes_even_when_length_is_unchanged() {
         let entry = SourceEntry {
             logical_path: "lytrolibrary.db".into(),
-            digest: format!("{:x}", Sha256::digest(b"sealed")),
+            digest: Sha256::digest(b"sealed")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
             length: 6,
         };
         let mut out = Vec::new();

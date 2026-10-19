@@ -42,7 +42,7 @@ fn audit(source: &Path) -> Result<BTreeMap<String, serde_json::Value>, ()> {
                     }
                     hash.update(&buf[..n]);
                 }
-                out.insert(name,serde_json::json!({"sha256":format!("{:x}",hash.finalize()),"bytes":m.len(),"mtime_ns":m.modified().map_err(|_|())?.duration_since(UNIX_EPOCH).map_err(|_|())?.as_nanos() as u64}));
+                out.insert(name,serde_json::json!({"sha256":hash.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>(),"bytes":m.len(),"mtime_ns":m.modified().map_err(|_|())?.duration_since(UNIX_EPOCH).map_err(|_|())?.as_nanos() as u64}));
             } else {
                 return Err(());
             }

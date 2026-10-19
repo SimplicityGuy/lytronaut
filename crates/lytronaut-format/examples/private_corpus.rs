@@ -37,7 +37,10 @@ fn check(
             return Err("source size/mtime changed");
         }
         let bytes = fs::read(p).map_err(|_| "source read")?;
-        if format!("{:x}", Sha256::digest(&bytes))
+        if Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
             != v["sha256"].as_str().ok_or("manifest digest")?
         {
             return Err("source digest changed");
