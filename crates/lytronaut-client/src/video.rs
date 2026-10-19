@@ -522,7 +522,10 @@ pub async fn decode_container(
     if geometry != first.geometry {
         return Err("output image extent mismatch");
     }
-    let content_sha256 = format!("{:x}", Sha256::digest(&encoded));
+    let content_sha256 = Sha256::digest(&encoded)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     Ok(Decoded {
         frames: parsed.units.len(),
         reference_frames: parsed.sequence.reference_frames,

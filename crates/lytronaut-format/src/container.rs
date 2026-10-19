@@ -81,7 +81,14 @@ impl<'a> Container<'a> {
             }
             let payload_end = end.checked_add(n).ok_or(E::Truncated)?;
             let payload = bytes.get(end..payload_end).ok_or(E::Truncated)?;
-            if format!("sha1-{:x}", Sha1::digest(payload)) != id {
+            if format!(
+                "sha1-{}",
+                Sha1::digest(payload)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ) != id
+            {
                 return Err(E::Identity);
             }
             if !seen.insert(id) {

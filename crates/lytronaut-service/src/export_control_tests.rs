@@ -138,7 +138,10 @@ async fn fixture(pg: bool, stage: Stage) -> (Fixture, Store, Api, String, Vec<u8
         synthetic::live_focus_fixture()
     };
     use sha2::{Digest, Sha256};
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let digest = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     let path = fx
         .root
         .join("originals")

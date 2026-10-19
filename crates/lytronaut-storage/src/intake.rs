@@ -952,7 +952,11 @@ impl Store {
             self.fault(FaultPoint::BeforeSync)?;
             f.sync_all()?;
             self.fault(FaultPoint::AfterSync)?;
-            let digest = format!("{:x}", hash.finalize());
+            let digest = hash
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
             let dest = self.0.originals.join(format!("{digest}-{n}"));
             use std::os::unix::fs::PermissionsExt;
             f.set_permissions(fs::Permissions::from_mode(0o400))?;
@@ -1549,7 +1553,12 @@ fn verify_digest(
         }
         h.update(&buf[..n]);
     }
-    if format!("{:x}", h.finalize()) != digest {
+    if h.finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+        != digest
+    {
         return Err(StorageError::Conflict);
     }
     Ok(())

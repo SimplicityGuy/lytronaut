@@ -2,7 +2,13 @@ use lytronaut_format::*;
 use serde_json::json;
 use sha1::{Digest, Sha1};
 fn id(p: &[u8]) -> String {
-    format!("sha1-{:x}", Sha1::digest(p))
+    format!(
+        "sha1-{}",
+        Sha1::digest(p)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
 }
 fn container(parts: &[(bool, Vec<u8>)]) -> Vec<u8> {
     let mut b = b"\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0".to_vec();

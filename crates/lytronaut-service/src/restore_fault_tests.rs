@@ -195,7 +195,10 @@ impl Sentinels {
             library(&fx.catalog).await == self.library,
             "live library changed"
         );
-        let digest = format!("{:x}", Sha256::digest(BLOB));
+        let digest = Sha256::digest(BLOB)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         assert_eq!(
             fs::read(
                 fx.root
@@ -446,7 +449,10 @@ impl Env {
                 logical_tables(&restored, &skip).await
                     == logical_tables(&self.fx.catalog, &skip).await
             );
-            let digest = format!("{:x}", Sha256::digest(BLOB));
+            let digest = Sha256::digest(BLOB)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
             assert_eq!(
                 fs::read(result.join(format!("originals/{digest}-{}", BLOB.len()))).unwrap(),
                 BLOB

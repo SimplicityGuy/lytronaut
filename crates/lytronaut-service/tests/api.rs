@@ -16,7 +16,15 @@ use std::{
 };
 fn synthetic_focus(jpeg: &[u8]) -> Vec<u8> {
     use sha1::{Digest, Sha1};
-    let identity = |b: &[u8]| format!("sha1-{:x}", Sha1::digest(b));
+    let identity = |b: &[u8]| {
+        format!(
+            "sha1-{}",
+            Sha1::digest(b)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        )
+    };
     let directory = serde_json::to_vec(&json!({"version":{"major":1,"minor":0},"picture":{"recipe":{"orientation":8,"unknown":"preserve"},"accelerationArray":[{"type":"com.lytro.acceleration.refocusStack","vendorContent":{"imageArray":[{"representation":"jpeg","width":2,"height":1,"lambda":-1,"imageRef":identity(jpeg)},{"representation":"jpeg","width":2,"height":1,"lambda":1,"imageRef":identity(jpeg)}]}}]}})).unwrap();
     let mut bytes = b"\x89LFP\r\n\x1a\n\0\0\0\x01\0\0\0\0".to_vec();
     for (directory, payload) in [(true, directory.as_slice()), (false, jpeg)] {
@@ -885,7 +893,10 @@ async fn direct_flatten_png_jpeg_exact_pixels_provenance_cancel_and_restart() {
         assert!(r.1.contains("image/png"));
         assert_eq!(
             recipe["content_sha256"],
-            format!("{:x}", Sha256::digest(&r.2))
+            Sha256::digest(&r.2)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         );
         let output = image::load_from_memory_with_format(&r.2, image::ImageFormat::Png)
             .unwrap()

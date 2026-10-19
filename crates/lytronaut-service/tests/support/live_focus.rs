@@ -9,7 +9,15 @@ pub fn live_focus_fixture_with(missing_second: bool) -> Vec<u8> {
 }
 pub fn sized(missing_second: bool, width: u32, height: u32, third: bool) -> Vec<u8> {
     use sha1::{Digest, Sha1};
-    let hash = |b: &[u8]| format!("sha1-{:x}", Sha1::digest(b));
+    let hash = |b: &[u8]| {
+        format!(
+            "sha1-{}",
+            Sha1::digest(b)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        )
+    };
     let planes: Vec<Vec<u8>> = [[255u8, 0, 0], [0, 0, 255], [0, 255, 0]]
         .into_iter()
         .take(if third { 3 } else { 2 })

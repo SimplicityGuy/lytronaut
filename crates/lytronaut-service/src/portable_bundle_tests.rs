@@ -73,7 +73,10 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let digest = format!("{:x}", Sha256::digest(BLOB));
+        let digest = Sha256::digest(BLOB)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         let path = self
             .root
             .join("originals")
@@ -236,7 +239,10 @@ fn sparse_sized_digests(sizes: &[u64]) -> Vec<String> {
                 hash.update(&zeros[..n]);
                 remaining -= n as u64;
             }
-            format!("{:x}", hash.finalize())
+            hash.finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         })
         .collect()
 }
@@ -435,7 +441,10 @@ async fn verify_ordered(catalog: &Catalog, original_root: &Path, job_order: &[i6
             .await
             .unwrap();
     assert_eq!(pending, "synthetic-pending");
-    let digest = format!("{:x}", Sha256::digest(BLOB));
+    let digest = Sha256::digest(BLOB)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     assert_eq!(
         fs::read(original_root.join(format!("{digest}-{}", BLOB.len()))).unwrap(),
         BLOB
@@ -633,7 +642,13 @@ async fn legacy_library_beyond_upload_budget_restores_onto_sqlite() {
         .await
         .unwrap();
     let (database_hash, database_bytes) = hash_file(&database).unwrap();
-    let mut inventory = vec![(format!("{:x}", Sha256::digest(BLOB)), BLOB.len() as u64)];
+    let mut inventory = vec![(
+        Sha256::digest(BLOB)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        BLOB.len() as u64,
+    )];
     inventory.extend(
         sparse_digests(COUNT, SIZE)
             .into_iter()

@@ -1135,7 +1135,7 @@ async fn focus_plane(
         let derivative = FocusDerivative { version: WireVersion::V1, representation: Representation::JpegFocusPlane, id: stack.id.clone(),
             plane_index: index, lambda: stack.lambdas[index], source_dimensions: source,
             output_dimensions: output, orientation, encoded_bytes: bytes.len() as u64,
-            content_sha256: format!("{:x}", Sha256::digest(&bytes)).try_into().map_err(|_| Failure::invalid())?,
+            content_sha256: Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>().try_into().map_err(|_| Failure::invalid())?,
             color_space: ColorSpace::Unknown,
             provenance: "Lossy JPEG re-encode of stored JPEG plane; explicit viewer EXIF transform. Processed recipe may be baked; imported recipe/sidecar/catalog orientation preserved, never replayed.".into() };
         derivative.validate(&stack).map_err(|_| Failure(StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::ResourceLimit))?;

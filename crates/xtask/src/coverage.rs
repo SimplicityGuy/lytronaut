@@ -186,7 +186,10 @@ fn resolve_gpu_exemptions(
             .take(end - start + 1)
             .collect::<Vec<_>>()
             .join("\n");
-        let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+        let digest = Sha256::digest(body.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         if digest != entry.source_sha256 {
             return Err(format!("GPU exemption source changed: {}::{:?}: {digest}; review the exact scope before updating its digest", entry.path, entry.function).into());
         }

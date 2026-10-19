@@ -46,6 +46,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | codespan-reporting | 0.13.1 | Apache-2.0 |
 | collection_literals | 1.0.3 | MIT |
 | config | 0.15.27 | MIT OR Apache-2.0 |
+| const-oid | 0.10.2 | Apache-2.0 OR MIT |
 | const-str | 1.1.0 | MIT |
 | const_format | 0.2.36 | Zlib |
 | const_format_proc_macros | 0.2.34 | Zlib |
@@ -57,7 +58,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
 | crc | 3.4.0 | MIT OR Apache-2.0 |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 |
-| crc32fast | 1.5.0 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.2 | MIT OR Apache-2.0 |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 |
 | crunchy | 0.2.4 | MIT |
@@ -129,7 +130,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | icu_provider | 2.3.1 | Unicode-3.0 |
 | idna | 1.1.0 | MIT OR Apache-2.0 |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT |
-| image | 0.25.9 | MIT OR Apache-2.0 |
+| image | 0.25.10 | MIT OR Apache-2.0 |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT |
 | interpolator | 0.5.0 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
@@ -162,7 +163,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.4 | MIT |
-| moxcms | 0.7.11 | BSD-3-Clause OR Apache-2.0 |
+| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | naga | 30.0.1 | MIT OR Apache-2.0 |
 | naga-types | 30.0.1 | MIT OR Apache-2.0 |
 | next_tuple | 0.1.0 | MIT |
@@ -219,17 +220,16 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
 | semver | 1.0.28 | MIT OR Apache-2.0 |
 | send_wrapper | 0.6.0 | MIT/Apache-2.0 |
-| serde | 1.0.228 | MIT OR Apache-2.0 |
-| serde_core | 1.0.228 | MIT OR Apache-2.0 |
-| serde_derive | 1.0.228 | MIT OR Apache-2.0 |
-| serde_json | 1.0.150 | MIT OR Apache-2.0 |
+| serde | 1.0.229 | MIT OR Apache-2.0 |
+| serde_core | 1.0.229 | MIT OR Apache-2.0 |
+| serde_derive | 1.0.229 | MIT OR Apache-2.0 |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serde_path_to_error | 0.1.20 | MIT OR Apache-2.0 |
 | serde_qs | 0.15.0 | MIT/Apache-2.0 |
 | serde_spanned | 1.1.2 | MIT OR Apache-2.0 |
 | server_fn | 0.8.13 | MIT |
 | server_fn_macro | 0.8.12 | MIT |
 | server_fn_macro_default | 0.8.6 | MIT |
-| sha1 | 0.10.6 | MIT OR Apache-2.0 |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | sha2 | 0.11.0 | MIT OR Apache-2.0 |
@@ -265,7 +265,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | throw_error | 0.3.1 | MIT |
 | tinystr | 0.8.4 | Unicode-3.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
-| tokio | 1.53.2 | MIT |
+| tokio | 1.53.3 | MIT |
 | tokio-macros | 2.7.2 | MIT |
 | tokio-stream | 0.1.19 | MIT |
 | toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 |
