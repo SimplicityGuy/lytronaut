@@ -1,4 +1,6 @@
-# Desktop catalog streaming (lytronaut-5ld)
+# Desktop catalog streaming validation
+
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
 
 Status: implementation and independent source review complete. Focused SQLite
 contracts and actual PostgreSQL parity passed; canonical submission and final
@@ -15,7 +17,7 @@ Beadhive. Regression checkpoint `56389c3` precedes the production change. The le
 then preserved-merge synced landed restore/operations work through main
 `c9090ffce609`. Initially no Cargo work was allowed at about 2.7 GiB free. Cleanup
 restored headroom. After acceptance released its exclusive build lease, this
-bead ran serially with an owned 2 GiB free-space watchdog. The runtime results
+task ran serially with an owned 2 GiB free-space watchdog. The runtime results
 below supersede that earlier source-only checkpoint.
 
 The old adapter retained all `Records`, identity/membership sets and missing-file
@@ -131,8 +133,8 @@ field `00ff`. This proves fixture shape, not application behavior.
   It still checks SQLite close/drain, retained quota, denied restart, later clean
   recovery, zero partial versions and preserved original bytes.
 
-Logs, original failures and source provenance are retained in the private
-`/private/tmp/lytronaut-5ld-evidence` directory. The remote workflows for `b64c23b`
+Logs, original failures and source provenance are retained in external evidence.
+The remote workflows for `b64c23b`
 are CI `39016005899`, coverage `39016015112` and containers `39016018801`; their
 results do not substitute for fresh checks of the corrected fixture source.
 

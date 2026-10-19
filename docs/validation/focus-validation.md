@@ -1,8 +1,10 @@
 # Discrete JPEG focus validation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Implementation revision: `cef102f4198c96b36f6507e8a24ca8db8e15467d`.
 The later evidence-only commit changes documentation, with identical application
-source objects listed in the [aggregate report](assets/lytronaut-m5h-focus.json).
+source objects listed in the [aggregate report](assets/focus-validation.json).
 Release artifacts were rebuilt from this exact checked-out implementation before
 measurement; hashes below identify program artifacts, never private source files.
 
@@ -77,5 +79,5 @@ remain preserved-only. Processed recipes may be baked, so identity is default;
 explicit user EXIF transforms are separate from preserved sidecar/catalog edits.
 Catalog 0 is invalid EXIF. No Desktop parity, calibrated synthesis, Illum support,
 manual VoiceOver certification, or measured 95% native+WASM line coverage is
-claimed. The final acceptance bead owns coverage instrumentation and exact CI
+claimed. The final acceptance task owns coverage instrumentation and exact CI
 acceptance; this proof supplies meaningful tested paths for that gate.

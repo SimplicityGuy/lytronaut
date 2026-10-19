@@ -1,5 +1,4 @@
 {
-  "image": "lytronaut:j2u-arm64-final",
   "platform": "linux/arm64",
   "checks": [
     "native readiness; no credentials; offline internal network",
@@ -131,5 +130,10 @@
   "imageID": "sha256:25f0b8d4d75beb9b70c36285897a23627c5d5244e341785ce11f034584601464",
   "engineArchitecture": "aarch64",
   "runtimeArchitecture": "arm64",
-  "revision": "4950b8a4b9001c22eeb77f7d44b7d682104025dd"
+  "revision": "4950b8a4b9001c22eeb77f7d44b7d682104025dd",
+  "presentation": {
+    "kind": "sanitized documentation summary",
+    "omission": "The historical local image tag contained an internal tracker identifier and is omitted.",
+    "completeRecord": "The original evidence is retained in Git history at delivered baseline a3d0482896e6ca3361d7f900f0f0417cda20e4ac."
+  }
 }

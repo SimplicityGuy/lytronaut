@@ -1,6 +1,8 @@
 # Rust/wgpu uploaded derivative validation
 
-Bead **lytronaut-us7 — Integrate optional Rust wgpu derivative presentation with safe fallback**.
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
+Task **GPU validation — Integrate optional Rust wgpu derivative presentation with safe fallback**.
 Public fixtures are independently Rust-encoded abstract colored scenes; no private
 capture, source identifier, calibration or original library was used.
 
@@ -29,10 +31,10 @@ Neither queue completion, mapped readback nor one prepaint rAF is substituted fo
 presentation. No physical scanout/photon timing is measured.
 
 The final frozen application source is `35eb53c0f60ae3a4d47ec94192729073582b1e8b`.
-The [public aggregate report](assets/lytronaut-us7-gpu.json) records artifact hashes,
+The [public aggregate report](assets/gpu-validation.json) records artifact hashes,
 hardware, browser run 47886 and the previous exact-code run 67559. Later evidence
 and harness commits leave the Rust application and frozen artifacts unchanged.
-The [orientation-six screenshot](assets/lytronaut-us7-gpu-orientation6.png) is a
+The [orientation-six screenshot](assets/gpu-orientation6.png) is a
 public synthetic canvas output. Native and WASM artifacts use debug profiles.
 
 At the 256 cap, run 47886 measured double-rAF post-frame callback p95 **23.9 ms**;
@@ -83,6 +85,6 @@ mise exec -- node scripts/browser-test.cjs
 ```
 
 The existing temporary login harness is used for this branch's proof; deployment
-access-control changes are owned by the integration bead. It is not a requirement
+access-control changes are owned by the integration task. It is not a requirement
 for final built-in user accounts. Actual application-line native/WASM coverage and
-a fail-closed 95% GitHub floor remain the final acceptance bead's gate.
+a fail-closed 95% GitHub floor remain the final acceptance task's gate.

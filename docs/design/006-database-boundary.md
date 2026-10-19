@@ -1,6 +1,8 @@
 # Application database boundary
 
-Bead: `lytronaut-e7y`, within the approved `lytronaut-p9o` molecule.
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
+This record covers persistence parity within the approved catalog-backend work.
 
 ## Baseline and validation
 
@@ -10,7 +12,7 @@ to ingestion, catalog adaptation, API reads, and export jobs. The original
 Lytro Desktop database reader separately owns a bounded, immutable
 `SqliteConnection`; that input reader stays SQLite regardless of the selected
 application database. Existing backup snapshots use SQLite `VACUUM INTO` and
-must retain that behavior until the portable backup bead replaces it.
+must retain that behavior until the portable backup task replaces it.
 
 The exclusive validation slot is currently held by packaging. This document
 records a source inspection baseline, not a fresh passing execution. Before
@@ -70,16 +72,16 @@ is hidden behind a domain repository trait. Storage never imports the service.
    choices. Validate SQLite migration, conflict handling, cancellation, recovery,
    concurrent quota/publication and literal search against both actual engines.
 3. Wire deployment selection and redacted startup errors; retain SQLite snapshot
-   compatibility and provide the next backup bead a consistent catalog read seam.
+   compatibility and provide the next backup task a consistent catalog read seam.
 4. Integrate the landed packaging/access change, freeze source-bound evidence,
    refine and submit through Beadhive.
 
-Portable same/cross-backend archive restore belongs to `lytronaut-1ga`;
+Portable same/cross-backend archive restore belongs to portable backup implementation;
 PostgreSQL Compose and broader deployment/cross-restore CI belong to
-`lytronaut-55g`. The scoped e7y actual-engine parity CI job is described below.
+deployment parity validation. The scoped persistence parity actual-engine parity CI job is described below.
 These are initial
 release requirements and are not disabled or represented as complete by this
-bead. Final coverage includes every added first-party application path.
+task. Final coverage includes every added first-party application path.
 
 ## Source text fidelity
 
@@ -113,7 +115,7 @@ its generated schema and immutable originals; snapshots remove transient job
 order references alongside transient jobs. Restore accepts only the current exact
 trusted schema or that exact schema minus the newly introduced order table, which
 startup reconstructs from legacy SQLite rowids. Portable PostgreSQL bundles remain
-assigned to lytronaut-1ga; this checkpoint does not claim that capability complete.
+assigned to portable backup implementation; this checkpoint does not claim that capability complete.
 
 PostgreSQL generated catalog identity allocation follows the retained table maximum
 under writer admission: max+1 for every retained signed64 maximum below MAX (including negative and zero),
@@ -174,7 +176,7 @@ certificate data. These notices do not change the original project's MIT license
 This is preliminary evidence, not final submission: canonical login-removal
 integration, service API/export/migration adverse-path testing, whole-application
 checks, and the release coverage threshold remain required. Portable cross-backend
-backup and deployment CI remain owned by their approved downstream beads.
+backup and deployment CI remain owned by their approved downstream tasks.
 
 
 ## Canonical login-removal source integration
@@ -216,7 +218,7 @@ also does not replace runtime tests or the final gate on the integrated source.
 
 ## Login-free actual-engine parity CI (source checkpoint)
 
-The approved e7y `persistence-parity` job uses the official PostgreSQL 18.6
+The approved persistence parity `persistence-parity` job uses the official PostgreSQL 18.6
 stable image, pinned to the multi-platform index digest
 `sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873`.
 The PostgreSQL [version policy](https://www.postgresql.org/support/versioning/)
@@ -224,7 +226,7 @@ still lists 18.6 as stable; 19 Beta is a prerelease. Fresh official registry
 manifest metadata matched its `Docker-Content-Digest` by SHA-256 of the original
 10,293 response bytes, with Linux amd64 and arm64 descriptors. No manifest
 reserialization, image pull or local service startup was needed for this check.
-Re-verified for `lytronaut-55g` on 2026-10-13: the versioning page and the
+Re-verified for deployment parity validation on 2026-10-13: the versioning page and the
 official source listing still show 18.6 as the newest stable release (19 beta 4
 newest prerelease); the `18.6-alpine` tag and the pinned digest both return the
 same 10,293-byte OCI index whose SHA-256 equals the digest; its linux/amd64 and
@@ -245,7 +247,7 @@ redacts the URL and password from test output and nothing is uploaded.
 
 `mise exec -- just postgres-test` requires `LYTRONAUT_TEST_POSTGRES_URL` rather
 than falling back to SQLite or skipping tests. `mise exec -- just postgres-parity`
-(used by the CI job, `lytronaut-55g`) provisions exactly this role and sentinel in
+(used by the CI job, deployment parity validation) provisions exactly this role and sentinel in
 a disposable, uniquely named container and volume of the release pinned in
 `compose.postgres.yaml`, with generated passwords, asserts `server_version_num`,
 runs `postgres-test` and removes its own container and volume. The recipe runs
@@ -255,7 +257,7 @@ its case list:
 - Seven actual PostgreSQL storage unit contracts (including actual SQLite oracles).
 - Two idle-import contracts: task-owned writer/reader drains, abandoned upload
   cleanup and slot/quota reuse; and ZIP decoder admission/preflight through idle
-  deadlines, explicit cancellation and an orphaned caller (`lytronaut-3ep`).
+  deadlines, explicit cancellation and an orphaned caller (`intake hardening`).
 - One actual Desktop intake/adaptation/originals/conflict/reopen contract.
 - Four HTTP upload-boundary scenarios (streaming progress and Unicode names;
   stream overflow, content encoding and unsafe names; malformed declarations
@@ -273,8 +275,8 @@ its case list:
   pair (completion may win that race); an out-of-range plane failure across
   restart; and a real missing stored plane failing in the worker while preserving
   its original. Admission rejects a non-stack original; stored-plane completeness
-  remains a worker check (`lytronaut-cjq`).
-- Two deterministic native HTTP control contracts (`lytronaut-0f6`): DELETE while
+  remains a worker check (MVP validation).
+- Two deterministic native HTTP control contracts (export durability validation): DELETE while
   rendering and after a real partial artifact write; shutdown draining an active
   worker before catalog close and immediate reopen without Busy retries. Each
   runs through the real router, worker, monitor and owned cleanup. These Rust
@@ -284,7 +286,7 @@ its case list:
   four exact version-1 legacy forms, near-32 MiB legacy files (one large cell;
   many small rows) restored onto PostgreSQL, and a library whose originals exceed
   the former single-upload bundle ceiling round-tripped SQLite→PostgreSQL and
-  PostgreSQL→SQLite (`lytronaut-lbk`). SQLite-only counterparts run by default.
+  PostgreSQL→SQLite (`portable backup decision`). SQLite-only counterparts run by default.
 
 - Twenty-two restore failure/cleanup scenarios on a PostgreSQL deployment: corrupt
   archives, free-space admission refusals with their shortfall and mid-restore
@@ -306,12 +308,12 @@ its case list:
   refuse startup (per-job blocked cleanup starts the service). Unrelated SQL and
   filesystem sentinels, including restore-named decoys, must survive each case.
 
-The `lytronaut-0f6` transport check exercised a 64 MiB synthetic restore upload
+The export durability validation transport check exercised a 64 MiB synthetic restore upload
 in actual Chrome 155 against the frozen `3affd39` service and Rust/WASM client,
 with an intentionally unsatisfiable server free-space floor. The service returned
 429 and the client displayed the typed shortfall; no request failure or generic
 “Connection interrupted” message occurred. The earlier report was not reproduced
-on that stack, so this bead makes no transport change. This observation does not
+on that stack, so this task makes no transport change. This observation does not
 guarantee that every browser or proxy will preserve an early response if its
 connection is reset; the existing generic interruption path remains distinct
 from a successfully received admission refusal.
@@ -334,7 +336,7 @@ the service is job-scoped and never shares a user database.
 
 No PostgreSQL case is excluded. The lossless portable bundle HTTP scenario
 (`public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_and_interruption`)
-runs on PostgreSQL in this recipe since `lytronaut-1ga`, and `lytronaut-55g`
+runs on PostgreSQL in this recipe since portable backup implementation, and deployment parity validation
 added the upload-boundary group; the earlier staging exclusion no longer exists.
 The recipe fails if any group reports a different count, any failed, ignored or
 measured test, or no result. Deployment-level execution of both engines (Compose

@@ -1,16 +1,18 @@
-# PostgreSQL operations follow-up: lytronaut-1yn
+# PostgreSQL operations validation
+
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
 
 ## Change and scope
 
 Based on the implementation container at
 `3f7d5b82bfb294e1ed93ed6957ca65bc74fe7afc` (including the canonical
-lytronaut-80j disk-accounting fixes). This follow-up changes deployment test
+disk-accounting validation disk-accounting fixes). This follow-up changes deployment test
 orchestration and operations documentation only; application code, bootstrap
 validation rules and resource limits are unchanged. All deployment data and
 passwords are generated synthetic fixtures, never operator credentials.
 
-The earlier lytronaut-cjq reconciliation already removed obsolete bounded
-whole-library backup sizing. The lytronaut-80j implementation subsequently added
+The earlier MVP validation reconciliation already removed obsolete bounded
+whole-library backup sizing. The disk-accounting validation implementation subsequently added
 metadata-inclusive filesystem costs. This follow-up documents those current
 rules instead of restoring the obsolete configured-upload-file-limit formula.
 

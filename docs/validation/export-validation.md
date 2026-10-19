@@ -1,8 +1,10 @@
 # Export and lossless restore validation
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Implementation commit: `67545924a8e42477e2eb02d628d53fbe5ea4362e`, tree
 `4274b3cb993baca8091402c3dc8477c2d44895d2`. The first evidence and test-report
-commit leaves all application source objects unchanged. The [aggregate evidence](assets/lytronaut-u8i-export.json)
+commit leaves all application source objects unchanged. The [aggregate evidence](assets/export-validation.json)
 records exact release program artifact hashes, reference hardware and results.
 Shared Cargo builds were serialized; native service, private harness, synthetic
 fixture generator and release WASM/glue were frozen before releasing the build slot.
@@ -64,10 +66,10 @@ CPU performance acceptance. GPU post-frame callbacks also do not establish the
 16.7 ms physical submit-to-present gate. The final integration acceptance must
 resolve these timing gates using isolated release native and release WASM runs.
 
-This bead does not certify 95% native or actual WASM line coverage, calibrated
+This task does not certify 95% native or actual WASM line coverage, calibrated
 synthesis, imported adjustment replay, browser video export, Live Photo or manual
-VoiceOver. The final acceptance bead owns coverage and combined release timing.
+VoiceOver. The final acceptance task owns coverage and combined release timing.
 The video integration must disable flattened export while verified video is
 displayed, requiring an explicit switch to JPEG/static pixels; archive remains
 available. Deployment-level access control replaces legacy login in its separate
-authorized bead, which must update the exact app-schema snapshot preflight.
+authorized task, which must update the exact app-schema snapshot preflight.

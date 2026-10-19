@@ -58,7 +58,7 @@ Native controls and authenticated preserved originals remain usable.
 
 ## Evidence and limitations
 
-[GPU validation](../validation/lytronaut-us7-gpu.md) records actual Rust/WASM,
+[GPU validation](../validation/gpu-validation.md) records actual Rust/WASM,
 uploaded textures, compositor-visible pixel comparisons, failures and resource
 release on the declared Mac/Chrome. Rust submit markers and a headed compositor
 trace attempt distinguish queue submission from frame readiness and presentation.
@@ -69,6 +69,7 @@ unverified where a frame cannot be attributed; physical display photon timing
 is also unmeasured. Optional quality is reduced and no frame-rate guarantee or
 Safari/Firefox/Windows/Linux/mobile renderer support is claimed.
 
-Final first-party native plus actual instrumented WASM line coverage and the
-failing 95% CI floor belong to lytronaut-cjq; this renderer's behavioral tests do
-not claim that coverage threshold has already passed.
+Final exact-main coverage passed: native 96.14%, client 96.00%, and union 96.19%
+under the unchanged itemized GPU exception. This renderer's behavioral and
+physical-host tests remain the correctness evidence for the exempt GPU code;
+they do not establish the 16.7 ms compositor-presentation target.

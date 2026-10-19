@@ -8,7 +8,8 @@ Illum, promoted one verified file variant at a time.
 
 ## Status
 
-The initial release candidate (`lytronaut-re8`) is in final validation. It
+The initial release candidate completed its planned delivery and landed on
+`main` at `a3d0482` on 2026-10-18. It
 imports Lytro Desktop schema-23 libraries from the original camera, preserves
 every original byte-exact, browses static JPEG previews and albums, offers
 discrete focus for archived JPEG focus stacks, optional browser H.264 focus and
@@ -17,7 +18,9 @@ export, and a portable backup/restore of any size. Lytro Illum, calibrated
 raw light-field synthesis and imported-edit appearance parity are not supported.
 See the [supported variants and capabilities](docs/operations/supported-variants.md)
 for exactly what is verified, conditional, not verified or out of scope, and the
-[evidence and scope decision](docs/design/001-lytronaut.md).
+[evidence and scope decision](docs/design/001-lytronaut.md). The
+[documentation index](docs/README.md) separates current operator guidance from
+date- and source-bound design, spike, and validation records.
 
 The source repository is public. Private photographs, originals, catalog
 identifiers and camera serial numbers never enter it: CI and committed reports
@@ -80,6 +83,11 @@ runs are never presented as physical-GPU results. The CI jobs and how they becom
 See [browser operation and evidence](docs/architecture/browser.md),
 [deployment access](docs/architecture/authentication.md), and
 [workspace contracts](docs/architecture/contracts.md).
+
+Exact-main validation for `a3d0482` passed CI run `39167915596`, coverage run
+`39167915581`, and Linux containers run `39167915561`; PostgreSQL parity passed
+64 cases with none failed or ignored. The final coverage report measured native
+96.14%, client 96.00%, and union 96.19% under the documented GPU exception.
 
 ## Architecture direction
 

@@ -1,6 +1,8 @@
 # Rust WebUI and accelerated viewer feasibility
 
-Bead: **lytronaut-0mz — Spike: measure Rust WebUI and GPU rendering with accessible fallback**. Evidence collected 2026-10-11. Only synthetic data was used; no personal library files were opened by this spike.
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
+Evidence collected 2026-10-11. Only synthetic data was used; no personal library files were opened by this spike.
 
 ## Question
 
@@ -44,7 +46,7 @@ The downloaded crate manifests declare MSRVs Axum 1.80, Leptos 1.88, wgpu 1.87.0
 
 ### Actual measurements
 
-[Machine-readable results](assets/lytronaut-0mz-measurements.json) preserve raw summary values. Timings below are milliseconds, rounded for readability.
+[Machine-readable results](assets/gpu-measurements.json) preserve raw summary values. Timings below are milliseconds, rounded for readability.
 
 | Output | Rust/WASM CPU median / p95 | WebGPU completion median / p95 | WebGPU including mapped readback median / p95 | Native Rust CPU median / p95 |
 | --- | --- | --- | --- | --- |
@@ -68,11 +70,11 @@ Visual concept: c2dca12d3131cee701abf1872e4d23197ee39153ef0ce0e39baca8ee838d6812
 
 ### Visual concept and accessibility checks
 
-![Synthetic graphite/cyan Lytronaut concept](assets/lytronaut-0mz-concept.png)
+![Synthetic graphite/cyan Lytronaut concept](assets/gpu-concept.png)
 
 The direction is a photo-workstation aesthetic: a restrained graphite shell, shallow beveled gradient header, 238-pixel album rail, generously framed image stage, persistent control strip, subtle 4–6-pixel radii, cyan links/selection/focus, and system sans-serif typography. Keep image pixels visually dominant. Import and export are plainly labeled; view edits are separated from original capture details. The concept uses an abstract generated gradient, not a personal photograph. The screenshot is a **design artifact**, not implemented product behavior.
 
-The disposable DOM used semantic buttons, labeled native ranges, a named library nav, a synthetic image description, a numeric focus output, and a details link. In Chrome, nine successive Tab presses reached Import, All captures, Albums, Favorites, Focus, Aperture, Reset, Export, and Capture details, each with a 3-pixel focus outline after refinement. ArrowRight changed focus from 0 to 0.1. Emulating `prefers-reduced-motion: reduce` yielded matching media query, `transition-duration: 0s`, and `animation-name: none`. [Keyboard and motion evidence](assets/lytronaut-0mz-accessibility.json) records these results. No screen-reader audit, touch/mobile test, high-contrast forced-colors test, or 200% zoom audit was performed; these are implementation acceptance items.
+The disposable DOM used semantic buttons, labeled native ranges, a named library nav, a synthetic image description, a numeric focus output, and a details link. In Chrome, nine successive Tab presses reached Import, All captures, Albums, Favorites, Focus, Aperture, Reset, Export, and Capture details, each with a 3-pixel focus outline after refinement. ArrowRight changed focus from 0 to 0.1. Emulating `prefers-reduced-motion: reduce` yielded matching media query, `transition-duration: 0s`, and `animation-name: none`. [Keyboard and motion evidence](assets/gpu-accessibility.json) records these results. No screen-reader audit, touch/mobile test, high-contrast forced-colors test, or 200% zoom audit was performed; these are implementation acceptance items.
 
 Calculated sRGB contrast `(lighter luminance + .05)/(darker + .05)`:
 
@@ -122,4 +124,4 @@ Proposed acceptance budgets, **targets rather than measured product results**:
 
 WebGPU compute completion is not presentation timing: measure `requestAnimationFrame`/submitted frame latency in the actual Rust viewer before accepting the 16.7 ms goal. Browser memory API totals may be unavailable; report counted allocations separately from measured process/heap/residency figures. If 9 layers fail budgets, reduce resolution/resident views and retain the preview baseline. Rust WebGL2 can be reconsidered after supported browser evidence justifies maintaining another rendering path.
 
-Final validation note: both disposable compatibility checks passed: WASM Leptos 0.8.22 + wgpu 30.0.1, and native Axum 0.8.9, using Rust 1.99.0. The initial probe used an older wgpu constructor signature and failed; adapting it to wgpu 30's owned `InstanceDescriptor::new_without_display_handle()` API produced the passing result. This illustrates why implementation should follow version-pinned examples rather than stale snippets. Repository validation uses `bh work check lytronaut-0mz` (mise-pinned `just check`); committed changes are documentation/evidence only.
+Final validation note: both disposable compatibility checks passed: WASM Leptos 0.8.22 + wgpu 30.0.1, and native Axum 0.8.9, using Rust 1.99.0. The initial probe used an older wgpu constructor signature and failed; adapting it to wgpu 30's owned `InstanceDescriptor::new_without_display_handle()` API produced the passing result. This illustrates why implementation should follow version-pinned examples rather than stale snippets. Repository validation uses `mise exec -- just check`; committed changes are documentation/evidence only.
