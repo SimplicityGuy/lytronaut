@@ -3036,6 +3036,7 @@ fn Workspace() -> impl IntoView {
     let job = s.job;
     let progress = s.progress;
     let total = s.total;
+    let import_phase = s.import_phase;
     let export_job = s.export_job;
     let export_busy = s.export_busy;
     view! {
