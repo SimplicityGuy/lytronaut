@@ -811,6 +811,28 @@ pub fn refusal_message(body: &[u8]) -> Option<String> {
         byte_label(shortfall.available_bytes)
     ))
 }
+pub fn import_phase_label(phase: lytronaut_contracts::ImportPhase) -> &'static str {
+    use lytronaut_contracts::ImportPhase;
+    match phase {
+        ImportPhase::Intake => "Preserving and verifying originals",
+        ImportPhase::CatalogPending => "Preparing the catalog",
+        ImportPhase::CatalogComplete => "Library ready",
+        ImportPhase::CatalogFailed => "Catalog preparation failed",
+        ImportPhase::Failed => "Import failed",
+        ImportPhase::Cancelled => "Import cancelled",
+        ImportPhase::Cancelling => "Cancelling import",
+    }
+}
+pub fn import_phase_terminal(phase: lytronaut_contracts::ImportPhase) -> bool {
+    use lytronaut_contracts::ImportPhase;
+    matches!(
+        phase,
+        ImportPhase::CatalogComplete
+            | ImportPhase::CatalogFailed
+            | ImportPhase::Failed
+            | ImportPhase::Cancelled
+    )
+}
 #[cfg(test)]
 mod refusal_tests {
     use super::*;
@@ -834,6 +856,29 @@ mod refusal_tests {
             b"not json",
         ] {
             assert_eq!(refusal_message(other), None);
+        }
+    }
+    #[test]
+    fn import_phases_have_honest_labels_and_terminal_policy() {
+        use lytronaut_contracts::ImportPhase::*;
+        assert_eq!(
+            import_phase_label(Intake),
+            "Preserving and verifying originals"
+        );
+        assert_eq!(import_phase_label(CatalogPending), "Preparing the catalog");
+        assert_eq!(import_phase_label(CatalogComplete), "Library ready");
+        assert_eq!(
+            import_phase_label(CatalogFailed),
+            "Catalog preparation failed"
+        );
+        assert_eq!(import_phase_label(Failed), "Import failed");
+        assert_eq!(import_phase_label(Cancelled), "Import cancelled");
+        assert_eq!(import_phase_label(Cancelling), "Cancelling import");
+        for phase in [CatalogComplete, CatalogFailed, Failed, Cancelled] {
+            assert!(import_phase_terminal(phase));
+        }
+        for phase in [Intake, CatalogPending, Cancelling] {
+            assert!(!import_phase_terminal(phase));
         }
     }
 }

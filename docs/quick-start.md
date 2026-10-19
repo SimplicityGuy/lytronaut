@@ -15,8 +15,11 @@ mise exec -- just demo
 ```
 
 `just demo` prints a disposable synthetic library and serves the application at
-<http://127.0.0.1:3000>. Import the printed directory. For persistent or remote
-operation, continue with [Linux operation](operations/linux.md) and
+<http://127.0.0.1:3000>. Import the printed directory. On Chrome for macOS, the
+separate package control can select a recognized `.lytrolibrary` directly;
+browser and platform behavior varies, so directory and ZIP import remain
+available. Import is ready for browsing only when the progress display says
+“Library ready.” For persistent or remote operation, continue with [Linux operation](operations/linux.md) and
 [configuration](configuration.md).
 
 ## Verify a checkout

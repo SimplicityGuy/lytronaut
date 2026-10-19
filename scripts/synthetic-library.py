@@ -2,6 +2,8 @@
 """Independently authored schema-23 records; synthetic JPEG provided by Rust encoder."""
 import pathlib, sqlite3, sys, zipfile, json, hashlib, struct
 root = pathlib.Path(sys.argv[1]); root.mkdir(mode=0o700, parents=True, exist_ok=True)
+package_hex = pathlib.Path(__file__).resolve().parents[1] / 'fixtures' / 'synthetic' / 'chrome-macos-library-package.hex'
+(root / 'chrome-macos-library-package.zip').write_bytes(bytes.fromhex(package_hex.read_text()))
 source = root / 'Synthetic.lytrolibrary'; source.mkdir(exist_ok=True)
 (source / 'lytrolibrary.db').unlink(missing_ok=True)
 c = sqlite3.connect(source / 'lytrolibrary.db')

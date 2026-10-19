@@ -26,7 +26,11 @@ bytes, a 56-byte ZIP64 record when present, and at most 32 MiB central metadata
 for expanded-byte/file admission. Classic and ZIP64 declarations are independent
 client preflight; the server still verifies all hostile framing, file types,
 paths and actual quotas. Upload progress distinguishes transferred bytes from
-committed intake/status. Cancellation aborts XHR and requests durable cancellation.
+committed intake/status. While a ZIP request remains open after transmission,
+one serial status request at a bounded cadence reports preservation and catalog
+preparation; only `catalog_complete` refreshes the library list. Cancellation,
+page disposal and replacement abort the in-flight request and its status poll.
+Cancellation aborts XHR and requests durable cancellation.
 Selection preflight clears viewer imagery and holds the shared 64 MiB working
 lease, preventing ZIP metadata copies from overlapping retained previews. It checks
 directory path metadata incrementally against 32 MiB without retaining expanded
@@ -34,6 +38,13 @@ hexadecimal paths. A scoped busy guard prevents simultaneous selections and
 releases controls on every preflight failure. Recover status after restart; reselect input to create a new bounded intake after
 interruption, with server content deduplication. Retry catalog adaptation seals
 or retries semantic readiness through the idempotent finish endpoint.
+
+Chrome 155.0.8059.82 on macOS 27.0.1 can select a recognized `.lytrolibrary`
+package through the dedicated normal file input and supplies its contents as a
+ZIP. Lytronaut validates that archive as bytes and never trusts its name or MIME
+type. This native package behavior is platform integration rather than a
+cross-browser guarantee; the ordinary directory and explicit ZIP controls remain
+available.
 
 Libraries and albums have bounded load-more controls. Capture/file pages hold
 24 items. Search is literal, URI encoded, and capped at 128 UTF-8 bytes. Album

@@ -3,7 +3,7 @@
 //! bytes, while every hostile framing variant fails closed before any original
 //! is published.
 use lytronaut_contracts::{ImportKind, ImportRequest, WireVersion};
-use lytronaut_storage::{Catalog, Limits, StorageError, Store};
+use lytronaut_storage::{Catalog, Limits, SourceEntry, StorageError, Store};
 use std::{fs, path::PathBuf};
 
 struct Fixture {
@@ -51,6 +51,14 @@ impl Fixture {
             .count()
     }
     async fn import(&self, bytes: &[u8]) -> Result<Vec<(String, u64)>, StorageError> {
+        Ok(self
+            .import_entries(bytes)
+            .await?
+            .into_iter()
+            .map(|e| (e.logical_path, e.length))
+            .collect())
+    }
+    async fn import_entries(&self, bytes: &[u8]) -> Result<Vec<SourceEntry>, StorageError> {
         let s = &self.store;
         let id = s
             .begin(&ImportRequest {
@@ -64,12 +72,7 @@ impl Fixture {
         spool.write(bytes).await?;
         spool.sync().await?;
         match s.import_zip(&id, spool).await {
-            Ok(()) => Ok(s
-                .manifest(&id)
-                .await?
-                .into_iter()
-                .map(|e| (e.logical_path, e.length))
-                .collect()),
+            Ok(()) => s.manifest(&id).await,
             Err(e) => {
                 let _ = s.cancel(&id).await;
                 Err(e)
@@ -217,6 +220,101 @@ fn build_with(items: &[Item], gap: &[u8]) -> Vec<u8> {
 }
 fn build(items: &[Item]) -> Vec<u8> {
     build_with(items, &[])
+}
+
+fn hex_fixture(value: &str) -> Vec<u8> {
+    let digits: Vec<u8> = value
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    assert_eq!(digits.len() % 2, 0);
+    digits
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let digit = |byte: u8| match byte {
+                b'0'..=b'9' => byte - b'0',
+                b'a'..=b'f' => byte - b'a' + 10,
+                _ => panic!("invalid fixture hex"),
+            };
+            digit(pair[0]) << 4 | digit(pair[1])
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn chrome_macos_package_archive_preserves_files_and_rejects_placeholder_lies() {
+    let archive = hex_fixture(include_str!(
+        "../../../fixtures/synthetic/chrome-macos-library-package.hex"
+    ));
+    assert_eq!(archive.len(), 729);
+    let f = Fixture::new().await;
+    let mut entries = f.import_entries(&archive).await.unwrap();
+    entries.sort_by(|a, b| a.logical_path.cmp(&b.logical_path));
+    let manifest: Vec<_> = entries
+        .iter()
+        .map(|entry| (entry.logical_path.clone(), entry.length))
+        .collect();
+    assert_eq!(
+        manifest,
+        [
+            ("Synthetic.lytrolibrary/catalog.txt".to_owned(), 42),
+            ("Synthetic.lytrolibrary/nested/asset.bin".to_owned(), 21),
+        ]
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.digest.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "70cf00fea36e4459db9b65e1b2fedf3cf25614d0a2834482429da47e4ddf10b0",
+            "1457c648d708a4b69a38dc85f1c5d137367e46975eddea9cd21543cacb2c2b06",
+        ]
+    );
+
+    // Every local record has an inert 16-byte ZIP64 placeholder. Nonzero data
+    // remains invalid rather than being ignored.
+    let local = archive
+        .windows(4)
+        .position(|bytes| bytes == b"PK\x03\x04")
+        .unwrap();
+    let name = u16::from_le_bytes(archive[local + 26..local + 28].try_into().unwrap()) as usize;
+    let placeholder = local + 30 + name + 4;
+    let mut nonzero = archive.clone();
+    nonzero[placeholder] = 1;
+    assert_eq!(f.import(&nonzero).await, Err(StorageError::Invalid));
+
+    let locals: Vec<usize> = archive
+        .windows(4)
+        .enumerate()
+        .filter_map(|(at, bytes)| (bytes == b"PK\x03\x04").then_some(at))
+        .collect();
+    let centrals: Vec<usize> = archive
+        .windows(4)
+        .enumerate()
+        .filter_map(|(at, bytes)| (bytes == b"PK\x01\x02").then_some(at))
+        .collect();
+    let directory = locals[2];
+    let directory_name =
+        u16::from_le_bytes(archive[directory + 26..directory + 28].try_into().unwrap()) as usize;
+    let directory_extra =
+        u16::from_le_bytes(archive[directory + 28..directory + 30].try_into().unwrap()) as usize;
+    let mut invalid_stream = archive.clone();
+    invalid_stream[directory + 30 + directory_name + directory_extra] ^= 1;
+    assert_eq!(f.import(&invalid_stream).await, Err(StorageError::Invalid));
+    for compressed in [1_u32, 3] {
+        let mut wrong_length = archive.clone();
+        wrong_length[directory + 18..directory + 22].copy_from_slice(&compressed.to_le_bytes());
+        wrong_length[centrals[2] + 20..centrals[2] + 24].copy_from_slice(&compressed.to_le_bytes());
+        assert_eq!(f.import(&wrong_length).await, Err(StorageError::Invalid));
+    }
+    let mut false_crc = archive.clone();
+    false_crc[directory + 14] = 1;
+    false_crc[centrals[2] + 16] = 1;
+    assert_eq!(f.import(&false_crc).await, Err(StorageError::Invalid));
+    assert_eq!(f.published(), 2);
 }
 
 #[tokio::test]
