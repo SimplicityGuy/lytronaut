@@ -17,7 +17,7 @@ image publication remain disabled; images are built locally.
 |---|---|---|
 | Lytro Desktop library, schema 23 | Supported | Synthetic import, album order, metadata and restore tests in CI; private 109-capture library validated locally (aggregate counts only, [validation](#private-library-validation)) |
 | Desktop library, other schema versions | Preserved only | Byte-exact preservation; no semantic import (synthetic schema-99 fixture) |
-| Desktop library larger than about 1,700 captures | Bounded streaming | No fixed capture/cell-count ceiling; source DB <=32 MiB and value/parser/scratch bounds still apply ([limitations](linux.md#limitations), [validation](../validation/lytronaut-5ld-desktop-streaming.md)) |
+| Desktop library larger than about 1,700 captures | Bounded streaming | No fixed capture/cell-count ceiling; source DB <=32 MiB and value/parser/scratch bounds still apply ([limitations](linux.md#limitations), [validation](../validation/desktop-streaming.md)) |
 | Original Lytro camera (F01) containers | Supported: preserve, validate, download | Container/reference validation and lossless 12-bit extraction; sensor samples are not shown as photographs |
 | LFE 11 JPEG focus stacks | Supported: discrete focus | Nearest stored plane by validated lambda; no continuous optical refocus |
 | LFE 10/11 archived H.264 focus stacks | Conditional | Browser WebCodecs only; decode failure falls back to JPEG/static ([H.264](#browser-h264-focus)) |
@@ -41,11 +41,11 @@ image publication remain disabled; images are built locally.
 |---|---|---|
 | Library browsing, albums, search, original download (no GPU, no codec) | Supported | Actual Rust/WASM client in headless Chrome against the real service in CI (`just browser-test`) |
 | Discrete JPEG focus | Supported | CI synthetic stacks; private 58 stacks / 420 planes validated locally at the release source |
-| CPU focus latency p95 at most 100 ms | **Not met** | Release measurements exceed 100 ms; the later merged-tree runs at `b81e689` measured 137.9–150.4 ms. Historical stages and limitations remain visible ([design 004](../design/004-live-photo-export.md#owner-results-and-accepted-limitations-2026-10-13)) |
-| Browser H.264 focus <a id="browser-h264-focus"></a> | Conditional | All 109 private streams / 654 frames decoded on Chrome 154, macOS, Apple M1 Pro, by the actual Rust/WASM decoder path with `prefer-software` retry ([report](../validation/lytronaut-hyy-video.md)); functional only, no latency or hardware-acceleration claim; other browsers unmeasured |
-| Rust/wgpu GPU presentation | Conditional, automatic | Probed automatically, falls back to CPU on any failure. Correctness verified on a physical-GPU reference host (Apple M1 Pro, Chrome 154: exact pixels for all eight EXIF transforms, [report](../validation/lytronaut-us7-gpu.md)). Software adapters (SwiftShader) are never reported as physical-GPU results |
+| CPU focus latency p95 at most 100 ms | **Met in final scoped run** | B1/B2 warm p95 54.2/80.9 ms and grid p95 62.0/76.8 ms on the operator-selected loaded host; baseline grid unavailable and no quiet-host claim ([final status](../validation/final-main-status.md)) |
+| Browser H.264 focus <a id="browser-h264-focus"></a> | Conditional | All 109 private streams / 654 frames decoded on Chrome 154, macOS, Apple M1 Pro, by the actual Rust/WASM decoder path with `prefer-software` retry ([report](../validation/video-validation.md)); functional only, no latency or hardware-acceleration claim; other browsers unmeasured |
+| Rust/wgpu GPU presentation | Conditional, automatic | Probed automatically, falls back to CPU on any failure. Correctness verified on a physical-GPU reference host (Apple M1 Pro, Chrome 154: exact pixels for all eight EXIF transforms, [report](../validation/gpu-validation.md)). Software adapters (SwiftShader) are never reported as physical-GPU results |
 | GPU compositor presentation target (16.7 ms) | Not verified | Accepted limitation; headless compute timings are not submit-to-present evidence |
-| Safari, Firefox, Windows, Linux and mobile browsers | Not verified | Only Chrome 154 is measured |
+| Safari, Firefox, Windows, Linux and mobile browsers | Not verified | Chrome 154 physical-GPU/video evidence and Chrome 155 final private export evidence are measured; other browsers are unmeasured |
 | Screen readers (VoiceOver) | **Not verified** | Owner signed off as out of scope for the initial version (2026-10-13); the only evidence is automated accessibility-tree inspection |
 
 ## Export, backup and restore
@@ -53,10 +53,10 @@ image publication remain disabled; images are built locally.
 | Capability | Status | Evidence / boundary |
 |---|---|---|
 | Flattened PNG/JPEG export with provenance | Supported | Exact-pixel tests for all eight EXIF transforms; originals unchanged |
-| Apple Live Photo pair export | Supported on macOS Photos | Owner-reported PASS importing into an isolated Photos library ([design 004](../design/004-live-photo-export.md#owner-results-and-accepted-limitations-2026-10-13)); counted 64/32 MiB memory budget only partly proven (accepted limitation) |
+| Apple Live Photo pair export | Supported on macOS Photos | Final private run passed 320/320 pairs; owner report for the updated public pair: “great. I already verified the updated pair in Photos. Looked great.” ([final status](../validation/final-main-status.md)); counted 64/32 MiB memory budget only partly proven |
 | Live Photo on iOS | **Out of scope** | Owner sign-off for this release: not verified and not supported |
 | Portable backup and restore | Supported, any size | 64-bit bundle, streamed with constant memory; CI round-trips a bundle above 4 GiB (`large-bundle` job). The logical catalog section holds about 33,800 captures; a larger catalog fails at backup time without a partial bundle ([sizing](linux.md#backup-bundle-size-and-free-space)) |
-| Restore into a running deployment | Isolated copy | Restores into a separate store you verify before a stopped-service volume swap |
+| Restore into a running deployment | Isolated copy | Restores into job-owned storage; copy it to operator-owned storage before explicit activation or job deletion ([operation](linux.md#verifying-a-restored-copy)) |
 
 ## Test coverage rule
 
@@ -72,16 +72,13 @@ recorded baseline, and is verified instead by physical-GPU reference-host runs.
 The operator's private library is validated locally only. The retained result is
 aggregate and non-identifying (counts, pass/fail, program hashes); no path,
 name, identifier, hash of a private file or pixel leaves the machine. Current
-aggregate: see [the final validation report](../validation/lytronaut-cjq-final.md).
+aggregate: see [the final validation report](../validation/mvp-validation.md).
 
 ## Open items (next evidence prerequisites)
 
 - Required-check enforcement on `main` through homelab (not yet enforced;
   [adoption procedure](required-checks.md)).
-- Exact delivery-revision CI, coverage and container results after final changes.
-- CPU focus p95 at most 100 ms on the release reference host (not met).
-- Performance under grid load at the current source.
-- H.264 Level 5 frame-size check (1138 x 1842).
-- Live Photo export end to end on PostgreSQL.
+- Opaque browser-memory measurement, VoiceOver, and iOS Live Photo behavior.
+- Broader H.264/HRD conformance beyond the reviewed narrow Level 5 model.
 - Physical-GPU presentation timing (compositor target) and non-Chrome browsers.
 - Illum and calibrated synthesis need authorized samples and calibration data.

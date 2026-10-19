@@ -1,25 +1,25 @@
 # Workspace and version 1 contracts
 
-The operator approved implementation epic `lytronaut-re8`, including kickoff,
-delivery, review and landing. Foundation bead `lytronaut-922` implements these
-boundaries; it does not advertise usable import, browsing, decoding or refocus.
+The initial implementation is complete.
+The contracts below describe the current application; historical foundation
+policy is retained in the dated design records.
 
 | Crate | Responsibility | Target |
 |---|---|---|
 | lytronaut-contracts | Versioned serde DTOs and input invariants | Native and WASM |
 | lytronaut-format | Independent bounded format implementations | Platform neutral |
-| lytronaut-storage | Application SQLite catalog and durable jobs | Native |
+| lytronaut-storage | SQLite/PostgreSQL catalog abstraction and durable jobs | Native |
 | lytronaut-service | Axum HTTP and redacted diagnostics | Native |
 | lytronaut-client | Leptos CSR application entry point | WASM |
 | xtask | Dependency boundaries and license evidence | Development host |
 
 Native default members exclude the client. Client platform dependencies are
-WASM-specific; SQLite is native-specific. `just dependencies` checks actual
+WASM-specific; database drivers are native-specific. `just dependencies` checks actual
 normal/build dependency trees for the service and client. CI independently
 compiles/tests the native service and compiles and binds the WASM artifact.
 Do not use `--workspace --target wasm32-unknown-unknown`: the native service is
-intentionally a separate target. Optional GPU/codec dependencies will belong
-only to the client, when their own acceptance gates pass.
+intentionally a separate target. Optional GPU and WebCodecs dependencies belong
+only to the client and retain their runtime probes and fallbacks.
 
 ## Contract rules
 
@@ -57,9 +57,7 @@ be checked before decompression even when a generic asset has valid dimensions.
 
 `CapabilityState` distinguishes available, preserved-only, unverified, disabled
 and unavailable with a normalized reason. Optional renderer/codec states are
-independent. Foundation reports import/static/focus disabled, synthesis/GPU/codec
-unverified and legacy edits preserved-only as a policy. This policy does not claim
-that the foundation has already imported originals or edit sidecars.
+independent; the current API reports them from actual catalog and runtime probes.
 
 `ApiError` contains only version, code and retryability, plus an optional
 `shortfall` (`required_bytes`, `available_bytes`) on a `resource_limit` refusal
@@ -71,13 +69,13 @@ appears on 429 free-space admission responses of `POST /imports`,
 Lytronaut browser clients never decode a 429 body. Services map internal
 errors to codes and keep filesystem paths, credentials and serials out of the
 wire and routine logs. Public `GET /healthz` performs an actual catalog query and returns 503 on
-catalog failure, with no source metadata. The service authentication boundary
+catalog failure, with no source metadata. The Host/Origin request boundary
 protects every application route and fallback; see
 [authentication and extension contracts](authentication.md).
 
 ## Reproducible toolchain and provenance
 
-Rust 1.99.0, Axum 0.8.9, Leptos 0.8.22 CSR, SQLx 0.9.0 (SQLite only), Tokio 1.53.2,
+Rust 1.99.0, Axum 0.8.9, Leptos 0.8.22 CSR, SQLx 0.9.0 (SQLite and PostgreSQL), Tokio 1.53.2,
 and wasm-bindgen crate/CLI 0.2.129 are pinned. Cargo.lock records the resolved
 graph. The bare `just check` entry point invokes `mise exec` itself before
 running every check, so clean Beadhive review/merge checkouts do not depend on
@@ -88,10 +86,12 @@ command-local validation; `wasm-build` resolves its wasm-bindgen input through
 that directory, falling back to `target` when unset. Source checkouts remain
 pristine and all locked native/WASM, boundary and license checks still run.
 Keep `CARGO_BUILD_JOBS=2` on constrained shared hosts.
-SQLx uses bundled SQLite (a public-domain database engine); no native image
-or video codec is included. The service binds loopback and uses only its own application database.
-The authentication contract defines private local bootstrap state and the
-exact-origin/TLS reverse-proxy deployment policy.
+SQLx uses bundled SQLite (a public-domain database engine). JPEG decoding and
+Live Photo encoding are independent Rust implementations; Lytronaut includes no
+FFmpeg/C++ codec runtime or native AVC decoder. The service binds loopback and
+uses only its own application database.
+The deployment-access contract defines the exact-origin/TLS reverse-proxy policy;
+the application has no account, login, cookie, or credential bootstrap state.
 
 API sources checked against upstream crate code/docs:
 [Axum Router/serve](https://docs.rs/axum/0.8.9/axum/),

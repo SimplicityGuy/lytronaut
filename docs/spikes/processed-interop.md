@@ -1,6 +1,8 @@
 # Processed stacks, depth and legacy edits
 
-Bead: **lytronaut-w6z**. Observed: 2026-10-11. Research only; no product
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
+Observed: 2026-10-11. Research only; no product
 implementation or private capture assets are committed.
 
 ## Question
@@ -213,7 +215,7 @@ of unsupported imported edits with an actionable explanation; never silently
 claim they were applied. Archive/export-original must preserve every source
 byte, unknown sidecar field and calibration association without rewriting LFPs.
 
-Acceptance for the implementation molecule: all 109 thumbnails and all 420
+Acceptance for the implementation work group: all 109 thumbnails and all 420
 JPEG planes decode; a browser probe reproduces both measured five-frame stacks
 or cleanly enters preview fallback; coded padding never appears in output;
 missing optional stacks do not block import; synthetic malformed-length,

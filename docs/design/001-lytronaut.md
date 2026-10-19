@@ -1,9 +1,11 @@
 # Lytronaut: evidence-led scope and implementation roadmap
 
-Status: **Approved implementation epic lytronaut-re8; kickoff approved; delivery active**.
-Decision bead: **lytronaut-zxk — Scope verdict and next implementation plan**.
-Evidence date: 2026-10-11. Research epic: **lytronaut-ck2 — Lytronaut: prove
-library compatibility and Rust rendering architecture**.
+> Historical source- and date-bound record. See the [delivered application baseline](../validation/final-main-status.md) for current status.
+
+Status: **Historical approved implementation roadmap; delivery is complete**.
+Decision: **Scope verdict and next implementation plan**.
+Evidence date: 2026-10-11. Research objective: **prove library compatibility and
+Rust rendering architecture**.
 Name: **Lytronaut**. Repository: `SimplicityGuy/lytronaut` (public; private samples remain local).
 Tagline: **an explorer for your light-field library**.
 
@@ -16,11 +18,11 @@ The first supported semantic adapter is **Desktop schema 23, original F01**.
 Support both original Lytro and Illum over time through independently verified
 variants; this decision does not advertise Illum support or calibrated synthesis.
 
-The research molecule is complete: all four spike reports and this scope
-decision have been reviewed and landed. `plans/implementation.yaml` is filed as implementation epic `lytronaut-re8`.
-The operator approved filing, kickoff, delivery, review and landing of its 13
-tasks. Foundation bead `lytronaut-922` establishes the compiled workspace and
-contracts; product capabilities remain gated by each downstream acceptance.
+The research work group is complete: all four spike reports and this scope
+decision have been reviewed and landed. `plans/implementation.yaml` preserves
+the filed implementation plan. The operator approved its delivery, review, and
+landing. The compiled workspace and contracts establish the foundation;
+product capabilities remain gated by each downstream acceptance.
 Release, image publication and private data publication remain disabled.
 
 The baseline is useful without a GPU, camera calibration or browser video codec:
@@ -34,18 +36,18 @@ estimation, metric stereo reconstruction and lost-data recovery are outside this
 This document preserves the research decisions and original roadmap. Current
 implementation support and release evidence are recorded in the
 [support matrix](../operations/supported-variants.md) and
-[final validation report](../validation/lytronaut-cjq-final.md). The access model
+[final validation report](../validation/mvp-validation.md). The access model
 was superseded by [ADR 002](002-deployment-access.md): access is protected at the
 HTTPS proxy; the application has no login or accounts.
 
 ## Reviewed evidence
 
-| Research bead | Report | Finding that changes the plan |
+| Research task | Report | Finding that changes the plan |
 |---|---|---|
-| lytronaut-7w9 — Desktop fidelity and authorized corpus | [Library corpus](../spikes/lytronaut-7w9-library-corpus.md) | 109 pictures, 3 albums, 109 ordered memberships, 2 bins, 3 events; all companions reconcile; 728 files/2,001,830,074 bytes unchanged across SHA-256 checks; legacy picture hashes empty |
-| lytronaut-4li — Native decoding and calibration | [Decoder/calibration](../spikes/lytronaut-4li-decode-calibration.md) | All 109 actual camera models F01; 3280 × 3280 packed 12-bit; 1,172,665,600 samples roundtrip exactly; local calibration exists but lens selection/quality is unverified |
-| lytronaut-w6z — Processed stacks, depth and edits | [Interoperability](../spikes/lytronaut-w6z-processed-interop.md) | All 109 thumbnails + 420 JPEG planes decoded in native Rust; 654 standard H.264 frames verified only by external research reference; two five-frame browser representatives pass only with software preference |
-| lytronaut-0mz — Rust WebUI and GPU budgets | [GPU/CPU and design](../spikes/lytronaut-0mz-rust-gpu.md) | Rust dependencies compile; physical direct-WebGPU synthetic compute is measured, but full Rust/wgpu presentation remains unverified; concrete graphite/cyan concept and keyboard checks available |
+| library research — Desktop fidelity and authorized corpus | [Library corpus](../spikes/library-corpus.md) | 109 pictures, 3 albums, 109 ordered memberships, 2 bins, 3 events; all companions reconcile; 728 files/2,001,830,074 bytes unchanged across SHA-256 checks; legacy picture hashes empty |
+| decode research — Native decoding and calibration | [Decoder/calibration](../spikes/decode-calibration.md) | All 109 actual camera models F01; 3280 × 3280 packed 12-bit; 1,172,665,600 samples roundtrip exactly; local calibration exists but lens selection/quality is unverified |
+| interoperability research — Processed stacks, depth and edits | [Interoperability](../spikes/processed-interop.md) | All 109 thumbnails + 420 JPEG planes decoded in native Rust; 654 standard H.264 frames verified only by external research reference; two five-frame browser representatives pass only with software preference |
+| GPU research — Rust WebUI and GPU budgets | [GPU/CPU and design](../spikes/rust-gpu-feasibility.md) | Rust dependencies compile; physical direct-WebGPU synthetic compute is measured, but full Rust/wgpu presentation remains unverified; concrete graphite/cyan concept and keyboard checks available |
 
 The catalog has LFE 10/0 for 51 captures and LFE 11/0 for 58, 109 raw/depth/stack/view
 companions, 58 optional low-quality stacks, 109 JPEG thumbnails, 109 version-4 edit
@@ -154,7 +156,7 @@ rendered transforms; other legacy edit fields remain preserved-only.
 
 ### Viewer and design
 
-Use the [synthetic design concept](../spikes/assets/lytronaut-0mz-concept.png):
+Use the [synthetic design concept](../spikes/assets/gpu-concept.png):
 graphite shell, cyan links/focus, subtle beveled header/gradients, compact controls,
 album rail, filmstrip, large photo stage and small-radius panels. Real application
 screens must retain keyboard navigation, labelled numeric ranges, visible focus,
@@ -183,8 +185,7 @@ they must never make baseline browsing unavailable.
 ## Supported implementation phases and measurable acceptance
 
 The complete runnable dependency DAG is [plans/implementation.yaml](../../plans/implementation.yaml).
-It links provenance to research epic `lytronaut-ck2`; implementation epic
-`lytronaut-re8` is now filed and approved for delivery.
+The filed plan follows the reviewed compatibility research and scope decision.
 
 1. **Foundations and safe intake.** Separate native and WASM dependencies, validate
    licenses and contracts, then protect deployment access before uploads. Implement
@@ -236,7 +237,7 @@ picking needs verified coordinates and confidence interpretation. Perspective,
 aperture and stereo require geometry, occlusion and rendering references.
 Imported edit parity needs independently measured transfer functions and
 transform precedence. Browser expansion requires actual platform runtime tests.
-These deferred capabilities have no implementation beads in the approved MVP.
+These deferred capabilities have no implementation tasks in the approved MVP.
 
 ## Reference evidence and MIT boundary
 

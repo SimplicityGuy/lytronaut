@@ -31,12 +31,12 @@ const NATIVE_GATE: &[&str] = &[
 ];
 /// Crate measured by the WASM gate: all browser-only first-party code.
 const WASM_GATE: &[&str] = &["lytronaut-client"];
-/// Owner-approved exception (2026-10-13, lytronaut-cjq): "if we can't hit 95% on
+/// Owner-approved exception (2026-10-13): "if we can't hit 95% on
 /// gpu specific tests, that's fine". GPU-specific WebGPU code is still measured and
 /// reported on its own row, but removed from the WASM(client) and union gate
 /// denominators and numerators. Native is unaffected. Shared non-GPU logic (for
 /// example model.rs or generic browser flows) can never be listed here.
-const GPU_EXEMPTION_APPROVAL: &str = "Owner-approved GPU-specific exception, 2026-10-13 (lytronaut-cjq); GPU rendering is verified by the physical-GPU reference host, not by this line gate";
+const GPU_EXEMPTION_APPROVAL: &str = "Owner-approved GPU-specific exception, 2026-10-13; GPU rendering is verified by the physical-GPU reference host, not by this line gate";
 struct GpuExemption {
     path: &'static str,
     /// `None` exempts the whole file (only allowed for the dedicated GPU module).

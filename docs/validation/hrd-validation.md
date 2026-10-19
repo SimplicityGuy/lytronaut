@@ -1,5 +1,7 @@
 # Candidate external HRD conformance experiment
 
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
 Status: **not accepted as a completed release gate**. Fresh independent review
 of `4e93d9b` found no remaining blocker within the narrow model/source-review
 scope. Largest padded final-source execution subsequently passed in both
@@ -163,7 +165,7 @@ buffering-period initializations. Apple resource decoding separately decoded
 all three frames, verified the selected still/key time and absence of audio,
 recognized the resource pair and rejected a mismatched pair. No Photos library
 was opened. Logs, programs and resource hashes are retained outside the repo
-under `delivery-evidence/re8-3-prepared-still-b3f0850`.
+in the retained external evidence.
 
 The example's explicit `width height --prepared-still` test mode encodes the
 selected red frame as a genuine quality-90 JPEG before calling the existing
@@ -171,7 +173,7 @@ selected red frame as a genuine quality-90 JPEG before calling the existing
 Plan and JPEG geometry admission remain unchanged. A same-area transposed JPEG
 is rejected by the integration test. Ordinary native generation at the largest
 geometry returned `Budget` under the unchanged 128 MiB JPEG working-set limit;
-that failure is retained in `re8-3-release-current-877116c/public-padded`.
+that failure is retained in the retained external evidence.
 Prepared-still success is no claim of native JPEG-stack support at that size or
 of the test encoder meeting product memory limits. Application source files
 are byte-identical between `877116c` and `b3f0850`; only the example/test changed.

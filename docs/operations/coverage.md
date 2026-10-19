@@ -94,7 +94,7 @@ any coverage-specific error. The following guards make incomplete execution fail
 Three historical runs over two commits reported identical aggregate WASM client
 totals, but two failed the old per-script gate. They do not establish three
 passing repetitions of one commit; the exact revisions and conclusions are in
-[the validation report](../validation/lytronaut-cjq-final.md#repeatability). The
+[the validation report](../validation/mvp-validation.md#repeatability). The
 native total can differ by two lines: `lytronaut-storage/src/desktop.rs`, where the second of
 two concurrent imports of one library (`tokio::join!` in the PostgreSQL desktop
 test) finds the first already installed only if both passed the early

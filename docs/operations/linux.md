@@ -331,11 +331,22 @@ docker compose -f compose.yaml [-f compose.postgres.yaml] -f verify.yaml up -d -
 ```
 
 Browse it, then recreate the service without `verify.yaml` to return to the
-active catalog. Keep or adopt the copy deliberately: with SQLite, stop the service
-and replace the three locations with the verified copy; with PostgreSQL, keep
-`LYTRONAUT_DATABASE_SCHEMA` pointing at the restored schema and use the copy's
-originals. Otherwise `DELETE /exports/<job>` removes it. A bundle from either
-backend restores into either backend.
+active catalog. The restored path and, for PostgreSQL, restored schema are owned
+by the export job. `DELETE /exports/<job>` and startup reconciliation may remove
+them, so never make either job-owned location the permanent active state.
+
+To adopt a verified result, stop the service and first copy it into
+administrator-owned locations outside `staging.exports`. For SQLite, copy the
+restored catalog, originals, and work layout into new private locations, fsync
+them, then point the normal deployment configuration at those copies. For
+PostgreSQL, provision a separate operator-owned database, dump the restored
+schema and restore it into that database under the same schema name, and copy
+the restored originals into a new private originals location. Use fresh
+operator-owned data and staging roots; do not copy `staging.exports`, restore
+journals, or other job ownership markers. Point `LYTRONAUT_DATABASE_URL`,
+`LYTRONAUT_DATABASE_SCHEMA`, and storage settings at the independent copies.
+Start and verify the adopted configuration; only then delete the restore job. A
+bundle from either backend restores into either backend.
 
 ### PostgreSQL backup, recovery and upgrades
 
@@ -366,12 +377,13 @@ it is not empty), restore the dump as the role through `exec -T` (the service ha
 no published port), then start the application:
 
 ```sh
-C="docker compose -f compose.yaml -f compose.postgres.yaml"
-$C up -d --no-build --wait postgres
-$C exec -T postgres psql -U postgres -d lytronaut -v ON_ERROR_STOP=1 -c 'DROP SCHEMA lytronaut'
-$C exec -T postgres pg_restore -U postgres -d lytronaut --no-owner --no-acl \
+docker compose -f compose.yaml -f compose.postgres.yaml up -d --no-build --wait postgres
+docker compose -f compose.yaml -f compose.postgres.yaml exec -T postgres \
+  psql -U postgres -d lytronaut -v ON_ERROR_STOP=1 -c 'DROP SCHEMA lytronaut'
+docker compose -f compose.yaml -f compose.postgres.yaml exec -T postgres \
+  pg_restore -U postgres -d lytronaut --no-owner --no-acl \
   --role=lytronaut --exit-on-error < lytronaut-catalog.dump
-$C up -d --no-build
+docker compose -f compose.yaml -f compose.postgres.yaml up -d --no-build
 ```
 
 For an external server, dump the same `--schema='lytronaut*'` with your
@@ -422,8 +434,8 @@ rollback.
 A portable bundle carries every unique original plus a logical catalog of at most
 288 MiB, in one `.lytronaut` file of any size (sizes are 64-bit; there is no 4 GiB
 boundary). Creating, downloading and restoring it stream through a fixed 64 KiB
-buffer, and an upload is written one HTTP frame (at most a few hundred KiB) at a
-time, so memory use does not grow with the library. The
+buffer. HTTP transport frames are implementation-defined and are not treated as
+a hard memory cap; streaming memory does not grow with the library. The
 single-upload budgets (`LYTRONAUT_UPLOAD_BYTES`, `LYTRONAUT_ENCODED_BYTES`) and the
 aggregate `LYTRONAUT_RESERVED_BYTES` do not limit it; only free space in the work
 location does. For `N` bytes of unique originals:
@@ -572,7 +584,7 @@ First build `lytronaut:smoke-relay` with
 This test-only Rust ingress relay connects the host runner to the service's
 internal network. The application has no external route; the relay forwards only
 to that fixed service and is absent from the application image.
-See the bead's validation record for measured architecture and artifact evidence.
+See the task's validation record for measured architecture and artifact evidence.
 
 The Justfile shares the container build and proof commands with CI. On a native
 Linux host, choose an architecture, local image names, exact source revision and

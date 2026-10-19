@@ -1,10 +1,12 @@
 # Final-source private Live Photo verification
 
-Bead **lytronaut-f5a — Verify final-source Live Photo exports on the sealed
+> Historical source- and date-bound record. See the [delivered application baseline](final-main-status.md) for current status.
+
+Task **private-corpus validation — Verify final-source Live Photo exports on the sealed
 private corpus**: runtime acceptance **passed** at final production candidate
 `aa0073f`, 2026-10-18. This closes the
 private-corpus rerun criterion, separately from the CPU/grid criterion in
-**lytronaut-b0e**. It does not declare complete release acceptance.
+**focus acceptance**. It does not declare complete release acceptance.
 
 ## Source and artifact binding
 
@@ -19,7 +21,7 @@ opening the corpus. The raw WASM and bindgen receipts bind the generated pair to
 that source. This new client includes the production FIFO admission change;
 the older `877116c` client does not substitute for this rerun.
 
-The approved implementation was subsequently integrated into the molecule at
+The approved implementation was subsequently integrated into the work group at
 `196e811b556b3acad0579a46afcc8cfb3bd23fc4`, preserving submitted
 `0e00d51cfa1f42c57195dd09820a5aef9b1daa78`. Its only change under
 crates/assets/Cargo inputs relative to `aa0073f` is the admission test-module
@@ -63,7 +65,9 @@ Private locators, file inventories, fixture hashes, sealed resources and detaile
 integrity receipts remain in a mode-0700 directory outside Git, with private
 receipt files mode 0600. No private paths, identifiers, images, calibration data
 or fixture hashes are included here. The browser saved no derived pair resources.
-The sealed test copy is retained pending evidence review.
+The sealed test copy was deleted after successful review. The authorized
+original library remained untouched; private aggregate receipts remain outside
+Git without locators or inventories.
 
 ## Actual export results
 
@@ -124,7 +128,7 @@ differed under crates/assets/Cargo inputs. That run also passed 109 streams,
 including the supervisor's post-run original rehash). Its WASM hash was
 `3b707f966956cf6495c406a584fa61ff558fb7ee0d7ce4930b12f4a98d10271d` and glue hash
 `186bbd058a89521c1fde34e3983abe12b13069a0655aae959d272bace4657afd`.
-Its original receipts and sealed copy remain preserved separately. The final
-`aa0073f` rerun reused that same copy without a new import, and again checked all
+Its original receipts remain preserved separately. The final `aa0073f` rerun
+reused that same copy before its post-review deletion, and again checked all
 728 originals and 638 copied blobs. Neither proof relies on the other run's
 program hashes or integrity result.
