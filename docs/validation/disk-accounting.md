@@ -10,7 +10,7 @@ No approval or merge is implied.
 
 Base: approved delivery `64ee928bd302546f5a5d19b4252e24f145472d9e`, after
 “Strengthen Live Photo API tests and fix Flatten export durability gap”
-(`export durability validation`) closed. No private libraries or captures are used.
+(export durability validation) closed. No private libraries or captures are used.
 
 ## Findings and dispositions
 
@@ -43,7 +43,7 @@ The test retains under 0.1% for block rounding alone and checks exact metadata
 bytes plus under 0.11% combined. The subsequent five focused groups passed
 6 + 2 + 1 + 1 + 1 tests, including existing per-file estimate/writer enforcement
 and the 200,000-tiny-file refusal before extraction. Both the failing expanded
-attempt and passing attempt remain local under `/private/tmp/disk-accounting validation-*`.
+attempt and passing attempt remain in retained external evidence.
 
 Mutation checks deliberately remove existing protections, then restore the exact
 authored source. Bypassing the validation permit fails the retained-permit

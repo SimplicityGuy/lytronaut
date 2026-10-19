@@ -377,7 +377,7 @@ non-restore integrity-policy disposition below.
 
 ## Verification
 
-The `disk-accounting validation` additions (metadata-inclusive sizing, oversized allocation
+The disk-accounting validation additions (metadata-inclusive sizing, oversized allocation
 units, inode serialization and actual HTTP/1.1 upload frames) have separately
 scoped evidence in [disk accounting validation](../validation/disk-accounting.md).
 That source snapshot distinguishes local results from additional PostgreSQL/CI
@@ -414,7 +414,7 @@ Executed on SQLite in the default suite and on PostgreSQL 18.6 through the stric
   that keeps the result, and whole-store failures that still refuse startup.
   Every case checks unrelated SQL/filesystem sentinels and the live library.
 
-The new `restore reconciliation` cases executed at source `47b4cb0`: SQLite restore-fault
+The new restore reconciliation cases executed at source `47b4cb0`: SQLite restore-fault
 matrix **22 passed**, active monitor retry **1 passed**, and strict PostgreSQL
 **62 passed**, each with zero failures or ignored cases. They cover startup
 re-verification after repaired ownership; published/missing-row and published/

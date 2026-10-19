@@ -383,9 +383,8 @@ oversize header/chunk rejection, stream interruption and actual aborted-signal
 mapping. These reader tests passed in the owner suites locally at `623f2b9` and in CI run 38425987841 at `a697acc`; reader
 cleanup behavior and source/metadata admission are unchanged.
 
-Pinned Rust 1.99.0 source audit is recorded in the external receipt
-`Live Photo development-rust199-capacity-source.json` with compiler identity and exact source
-digests. This reader's Vec extension reserves, copies and deallocates the chunk;
+Pinned Rust 1.99.0 source audit is retained externally with compiler identity
+and exact source digests. This reader's Vec extension reserves, copies and deallocates the chunk;
 it does not steal its buffer. Growth stores `max(2*old_capacity, required, 8)`,
 yielding capacity below twice the admitted limit when the limit is at least eight
 bytes. Count old/new storage conservatively during growth. This implementation
@@ -573,8 +572,8 @@ capacity comes from `ui_source_begin`, not the slice length in `metadata_export`
 The layouts come from the existing actual-target `retained_layout_*` rows.
 Snapshot quantities are not additive independent peaks or a whole-memory total.
 
-Source receipt `/private/tmp/Live Photo development-metadata-source-audit-1f8e166.json`
-records pinned Rust 1.99 BTree slots (11 leaf slots, 12 internal edges) and
+The retained external source receipt records pinned Rust 1.99 BTree slots
+(11 leaf slots, 12 internal edges) and
 serde_json 1.0.150's BTree map implementation. It establishes neither private node
 WASM ABI nor physical allocation sizes. Deserializer scratch is cleared/reused for
 escaped text while the output String is copied, and is gone when `bounded_json`
@@ -725,7 +724,7 @@ pointed at an isolated library still opened system libraries, so it was stopped
 before import. A person must do the following:
 
 1. Hold Option while opening Photos and create
-   `/private/tmp/Live Photo development-isolated-photos-20261012/Test.photoslibrary`,
+   `/private/tmp/lytronaut-test-photos/Test.photoslibrary` (example path),
    without making it the System Photo Library or enabling iCloud.
 2. Import `focus.JPG` and `focus.MOV` from the retained external evidence together.
 3. Confirm that one item appears with the LIVE badge, the key frame is correct
@@ -759,13 +758,13 @@ server-side jobs are not covered; launch still rejects a busy lane with a messag
   immediately after create, out-of-range plane index) are now a separate
   exact-count group in `just postgres-parity` (`48bcc66`).
   At that checkpoint, the tests had limits subsequently addressed in
-  `export durability validation` (Strengthen Live Photo API tests and fix Flatten export durability
+  export durability validation (Strengthen Live Photo API tests and fix Flatten export durability
   gap). The historical
   DELETE-after-create case accepts either a running or an already-finished job,
   so it does not prove cancellation of in-flight work. The failed-plane case uses
   an out-of-range index, not an archived but unavailable plane. The in-process
   restart helper left earlier job workers running. Flatten export synced the
-  export root rather than the job's own directory; `MVP validation` corrected
+  export root rather than the job's own directory; MVP validation corrected
   that fsync and added the real missing-stored-plane failure case.
   Admission uses the delivery's reserved-space, free-floor and job-ordering accounting
   with the 18 MiB bundle reservation.

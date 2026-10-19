@@ -76,9 +76,9 @@ is hidden behind a domain repository trait. Storage never imports the service.
 4. Integrate the landed packaging/access change, freeze source-bound evidence,
    refine and submit through Beadhive.
 
-Portable same/cross-backend archive restore belongs to `portable backup implementation`;
+Portable same/cross-backend archive restore belongs to portable backup implementation;
 PostgreSQL Compose and broader deployment/cross-restore CI belong to
-`deployment parity validation`. The scoped persistence parity actual-engine parity CI job is described below.
+deployment parity validation. The scoped persistence parity actual-engine parity CI job is described below.
 These are initial
 release requirements and are not disabled or represented as complete by this
 task. Final coverage includes every added first-party application path.
@@ -226,7 +226,7 @@ still lists 18.6 as stable; 19 Beta is a prerelease. Fresh official registry
 manifest metadata matched its `Docker-Content-Digest` by SHA-256 of the original
 10,293 response bytes, with Linux amd64 and arm64 descriptors. No manifest
 reserialization, image pull or local service startup was needed for this check.
-Re-verified for `deployment parity validation` on 2026-10-13: the versioning page and the
+Re-verified for deployment parity validation on 2026-10-13: the versioning page and the
 official source listing still show 18.6 as the newest stable release (19 beta 4
 newest prerelease); the `18.6-alpine` tag and the pinned digest both return the
 same 10,293-byte OCI index whose SHA-256 equals the digest; its linux/amd64 and
@@ -247,7 +247,7 @@ redacts the URL and password from test output and nothing is uploaded.
 
 `mise exec -- just postgres-test` requires `LYTRONAUT_TEST_POSTGRES_URL` rather
 than falling back to SQLite or skipping tests. `mise exec -- just postgres-parity`
-(used by the CI job, `deployment parity validation`) provisions exactly this role and sentinel in
+(used by the CI job, deployment parity validation) provisions exactly this role and sentinel in
 a disposable, uniquely named container and volume of the release pinned in
 `compose.postgres.yaml`, with generated passwords, asserts `server_version_num`,
 runs `postgres-test` and removes its own container and volume. The recipe runs
@@ -275,8 +275,8 @@ its case list:
   pair (completion may win that race); an out-of-range plane failure across
   restart; and a real missing stored plane failing in the worker while preserving
   its original. Admission rejects a non-stack original; stored-plane completeness
-  remains a worker check (`MVP validation`).
-- Two deterministic native HTTP control contracts (`export durability validation`): DELETE while
+  remains a worker check (MVP validation).
+- Two deterministic native HTTP control contracts (export durability validation): DELETE while
   rendering and after a real partial artifact write; shutdown draining an active
   worker before catalog close and immediate reopen without Busy retries. Each
   runs through the real router, worker, monitor and owned cleanup. These Rust
@@ -308,7 +308,7 @@ its case list:
   refuse startup (per-job blocked cleanup starts the service). Unrelated SQL and
   filesystem sentinels, including restore-named decoys, must survive each case.
 
-The `export durability validation` transport check exercised a 64 MiB synthetic restore upload
+The export durability validation transport check exercised a 64 MiB synthetic restore upload
 in actual Chrome 155 against the frozen `3affd39` service and Rust/WASM client,
 with an intentionally unsatisfiable server free-space floor. The service returned
 429 and the client displayed the typed shortfall; no request failure or generic
@@ -336,7 +336,7 @@ the service is job-scoped and never shares a user database.
 
 No PostgreSQL case is excluded. The lossless portable bundle HTTP scenario
 (`public_lossless_bundle_unknown_bytes_catalog_restore_tamper_conflict_and_interruption`)
-runs on PostgreSQL in this recipe since `portable backup implementation`, and `deployment parity validation`
+runs on PostgreSQL in this recipe since portable backup implementation, and deployment parity validation
 added the upload-boundary group; the earlier staging exclusion no longer exists.
 The recipe fails if any group reports a different count, any failed, ignored or
 measured test, or no result. Deployment-level execution of both engines (Compose

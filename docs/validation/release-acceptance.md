@@ -19,7 +19,7 @@ verification was pending; those historical observations remain recorded.
 
 The acceptance worktree started at application revision
 `5a9ece369185c8e81908db2421d2a6d2e5223373`. Approved validation task
-`MVP validation` landed in the delivery at
+MVP validation landed in the delivery at
 `37809a2294223384717cda33a4a285c8b4818788`; its complete source tree is
 `0da6c71f574992f7e1d60a2a90f0468cb1a8a77e`, identical to validated `469aa4f`.
 Acceptance merge `440b9b5117b6772f7fec1619be31cfef669c3a05` incorporated that
@@ -92,8 +92,8 @@ CPB removal delay. Timing was unresolved at this historical standalone probe;
 the later [reviewed external HRD model](hrd-validation.md) supplies an
 applicable schedule and exact actual movie checks, without claiming Apple
 consumes that schedule. Evidence, exact
-commands and synthetic source/program hashes are outside this worktree at
-`/private/tmp/release-acceptance-evidence`. This does not run the Plan regression,
+commands and synthetic source/program hashes are retained outside the repository.
+This does not run the Plan regression,
 MOV assembly, a decoder or the canonical check.
 
 Source: [ITU-T H.264 (08/2024), Annex A.3.1 and Table A-1](https://www.itu.int/rec/T-REC-H.264-202408-S/en).
@@ -253,7 +253,7 @@ The next executable work is staged as follows:
    process ownership and load. Use one Cargo job, no incremental compilation,
    and no dev/test debug information. Clean the cached `xtask` package before
    a pristine checkout check so its compiled manifest path names that checkout.
-   Run `bh work check release acceptance` through the mise-pinned environment.
+   Run `mise exec -- just check` through the pinned environment.
 2. Generate public native resources with `mise exec -- just live-photo-apple`
    and an external task-specific output directory. Preserve the new JPEG/MOV
    hashes and Apple verifier result. Run the public Rust/WASM Live Photo
@@ -295,7 +295,7 @@ cleaned once before canonical validation to remove stale manifest paths.
 
 | Check | Result |
 | --- | --- |
-| Canonical `bh work check release acceptance` / mise-pinned `just check` | **Pass**, 516.0 seconds; 246 Rust tests passed, 48 opt-in tests ignored, 21 Node guards passed; lint, native/WASM builds, boundaries and 339 package licenses passed |
+| Canonical mise-pinned `just check` | **Pass**, 516.0 seconds; 246 Rust tests passed, 48 opt-in tests ignored, 21 Node guards passed; lint, native/WASM builds, boundaries and 339 package licenses passed |
 | Actual padded PCM RBSP parser | **Pass** in canonical tests: all 8,352 I_PCM macroblocks parsed, actual syntax bits within declared 3,200-bit ceiling; not an HRD schedule proof |
 | `just live-photo-apple` with regenerated public pair | **Pass**, 16.4 seconds; three decoded frames, correct selected still/key time, no audio, resource-loader recognition and mismatched-pair rejection; `photosLibraryOpened=false` |
 | Public `scripts/live-photo-test.cjs` | **Pass**, 6.1 seconds, Chrome 155.0.8059.82; actual Rust/WASM small, 2048×1024 and padded 1138×1842 complete pairs, software retry, cancellation and decoder cleanup |

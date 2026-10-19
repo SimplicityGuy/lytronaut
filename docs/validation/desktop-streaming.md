@@ -133,8 +133,8 @@ field `00ff`. This proves fixture shape, not application behavior.
   It still checks SQLite close/drain, retained quota, denied restart, later clean
   recovery, zero partial versions and preserved original bytes.
 
-Logs, original failures and source provenance are retained in the private
-`/private/tmp/desktop-streaming validation-evidence` directory. The remote workflows for `b64c23b`
+Logs, original failures and source provenance are retained in external evidence.
+The remote workflows for `b64c23b`
 are CI `39016005899`, coverage `39016015112` and containers `39016018801`; their
 results do not substitute for fresh checks of the corrected fixture source.
 

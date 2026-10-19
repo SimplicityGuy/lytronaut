@@ -141,7 +141,7 @@ The optional software-adapter run remains optional under the owner clarification
 it does not establish physical-GPU correctness or presentation latency. Access
 documentation now follows ADR 002, CPU timings are attributed to their historical
 stages, and required-check enforcement remains an explicit release prerequisite.
-The earlier archive-admission documentation in `PostgreSQL operations validation` was superseded by
+The earlier archive-admission documentation in PostgreSQL operations validation was superseded by
 the any-size streaming bundle change: sizing now follows unique originals, not
 the configured upload-file limit. The operations guide also distinguishes active
 reservations from completed exports that still occupy disk. Its remaining
