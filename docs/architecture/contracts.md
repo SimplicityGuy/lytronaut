@@ -75,7 +75,7 @@ protects every application route and fallback; see
 
 ## Reproducible toolchain and provenance
 
-Rust 1.99.0, Axum 0.8.9, Leptos 0.8.22 CSR, SQLx 0.9.0 (SQLite and PostgreSQL), Tokio 1.53.2,
+Rust 1.99.1, Axum 0.8.9, Leptos 0.8.22 CSR, SQLx 0.9.0 (SQLite and PostgreSQL), Tokio 1.54.0,
 and wasm-bindgen crate/CLI 0.2.129 are pinned. Cargo.lock records the resolved
 graph. The bare `just check` entry point invokes `mise exec` itself before
 running every check, so clean Beadhive review/merge checkouts do not depend on

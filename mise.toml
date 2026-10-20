@@ -1,5 +1,5 @@
 [tools]
-rust = "1.99.0"
+rust = { version = "1.99.1", profile = "minimal", components = ["clippy", "rustfmt"], targets = ["wasm32-unknown-unknown"] }
 just = "1.58.0"
 gitleaks = "8.30.1"
 "cargo:wasm-bindgen-cli" = "0.2.129"

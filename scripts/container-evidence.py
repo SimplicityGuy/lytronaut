@@ -116,7 +116,7 @@ provenance = {
     'nativeExecution': True,
     'runnerMachine': platform.machine(),
     'profiles': 'Linux native release; Rust/WASM release',
-    'rustVersion': '1.99.0',
+    'rustVersion': '1.99.1',
     'wasmBindgenVersion': '0.2.129',
     'github': {name: os.environ.get(name) for name in ['GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_WORKFLOW', 'GITHUB_REF']},
     'dockerServer': json.loads(command('docker', 'version', '--format', '{{json .Server}}')),

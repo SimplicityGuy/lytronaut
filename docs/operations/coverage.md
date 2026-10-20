@@ -32,7 +32,7 @@ runtime). Output lives in `target/coverage/`; the report is
 
 ## How the WASM client is measured
 
-The product toolchain stays Rust 1.99.0 (`rust-toolchain.toml`). Only the
+The product toolchain stays Rust 1.99.1 (`rust-toolchain.toml`). Only the
 coverage build of the client uses the dated nightly pinned in
 `scripts/coverage.sh`, because `-Zno-profiler-runtime` is nightly-only; its LLVM
 must equal the stable toolchain's and the runtime bundled by `minicov` 0.3.9

@@ -40,3 +40,4 @@ drain_filter_polyfill-0.1.3 archive Cargo.toml.orig SPDX declaration; upstream=h
 winapi-i686-pc-windows-gnu-0.4.0 archive Cargo.toml declares MIT/Apache-2.0; shared winapi-rs upstream license texts retained byte-exact from winapi 0.3.9 package LICENSE-MIT/LICENSE-APACHE; repository=https://github.com/retep998/winapi-rs branch=0.3
 winapi-x86_64-pc-windows-gnu-0.4.0 archive Cargo.toml declares MIT/Apache-2.0; shared winapi-rs upstream license texts retained byte-exact from winapi 0.3.9 package LICENSE-MIT/LICENSE-APACHE; repository=https://github.com/retep998/winapi-rs branch=0.3
 profiling 1.0.18 exact published-vcs=8271551172eb6fa4cba47369aedd93790c623df9 https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT and LICENSE-APACHE
+reactive_graph 0.2.16 exact published-vcs=fa7f7bd30bf3b835c00bf4878339d8672a94490a https://raw.githubusercontent.com/leptos-rs/leptos/fa7f7bd30bf3b835c00bf4878339d8672a94490a/LICENSE

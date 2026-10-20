@@ -5040,7 +5040,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## cc 1.8.0
+## cc 1.9.0
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -8945,7 +8945,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## crypto-common 0.1.7
+## crypto-common 0.1.6
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -11091,7 +11091,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## equivalent 1.0.2
+## equivalent 1.0.3
 
 SPDX: Apache-2.0 OR MIT
 Selected license: MIT
@@ -12534,7 +12534,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## find-msvc-tools 0.1.14
+## find-msvc-tools 0.1.15
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -16194,7 +16194,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## generic-array 0.14.7
+## generic-array 0.14.9
 
 SPDX: MIT
 Selected license: MIT
@@ -22987,7 +22987,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## libc 0.2.190
+## libc 0.2.191
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -24075,7 +24075,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-## litrs 1.0.0
+## litrs 1.0.1
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -24773,7 +24773,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## manyhow 0.14.0
+## manyhow 0.14.1
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -25010,7 +25010,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## manyhow-macros 0.14.0
+## manyhow-macros 0.14.1
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -33487,7 +33487,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-## reactive_graph 0.2.15
+## reactive_graph 0.2.16
 
 SPDX: MIT
 Selected license: MIT
@@ -36119,7 +36119,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## rustls 0.23.45
+## rustls 0.23.46
 
 SPDX: Apache-2.0 OR ISC OR MIT
 Selected license: MIT
@@ -39735,7 +39735,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## sha2 0.11.0
+## sha2 0.11.1
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -42189,7 +42189,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## syn 3.0.8
+## syn 3.0.9
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -43891,7 +43891,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-## tokio 1.53.3
+## tokio 1.54.0
 
 SPDX: MIT
 Selected license: MIT
@@ -46119,7 +46119,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## unicode-ident 1.0.26
+## unicode-ident 1.0.27
 
 SPDX: (MIT OR Apache-2.0) AND Unicode-3.0
 Selected license: MIT AND Unicode-3.0
@@ -46377,10 +46377,10 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-## unicode-normalization 0.1.25
+## unicode-normalization 0.1.26
 
-SPDX: MIT OR Apache-2.0
-Selected license: MIT
+SPDX: (MIT OR Apache-2.0) AND Unicode-3.0
+Selected license: MIT AND Unicode-3.0
 
 ### COPYRIGHT
 
@@ -46628,6 +46628,50 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+```
+
+### LICENSE-UNICODE
+
+```text
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2023 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
 ```
 
 ## unicode-properties 0.1.4
@@ -51530,7 +51574,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## webpki-roots 1.0.9
+## webpki-roots 1.0.10
 
 SPDX: CDLA-Permissive-2.0
 Selected license: CDLA-Permissive-2.0
@@ -57015,7 +57059,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-## zerocopy 0.8.62
+## zerocopy 0.8.63
 
 SPDX: BSD-2-Clause OR Apache-2.0 OR MIT
 Selected license: MIT
@@ -57285,7 +57329,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## zerocopy-derive 0.8.62
+## zerocopy-derive 0.8.63
 
 SPDX: BSD-2-Clause OR Apache-2.0 OR MIT
 Selected license: MIT
