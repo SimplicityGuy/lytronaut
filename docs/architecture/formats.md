@@ -42,7 +42,7 @@ clamping confidence above 1 or claiming metres or correct depth picking.
 
 JPEG SOF/segment preflight bounds dimensions and conservative scratch/output
 allocation before even constructing `image`'s decoder. The JPEG-only `image`
-0.25.9 path uses `zune-jpeg` 0.5.15 and no native codec. The working estimate is
+0.25.10 path uses `zune-jpeg` 0.5.15 and no native codec. The working estimate is
 64 bytes per pixel plus twice encoded input. `image::Limits` additionally guards
 dimensions/allocations, but its best-effort allocation limit is not relied on
 as a strict allocator quota. Resource admission bounds individual operations;

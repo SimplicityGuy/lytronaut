@@ -125,7 +125,7 @@ successful without product polling sleeps or hidden retries.
 
 ## Application coverage gate
 
-Production builds remain on stable Rust 1.99.0. The coverage recipe uses its
+Production builds remain on stable Rust 1.99.1. The coverage recipe uses its
 pinned matching nightly only for actual instrumented Rust/WASM execution in
 Chrome. Exact-main coverage passed at native 96.14%, client 96.00%, and union
 96.19%, with the unchanged itemized GPU exception. See

@@ -17,7 +17,7 @@ docker compose -f compose.yaml -f compose.postgres.yaml up -d --no-build        
 docker compose -f compose.yaml -f compose.postgres-external.yaml up -d --no-build  # existing server
 ```
 
-The image builds locked Rust 1.99.0 native and Rust/WASM code plus matching
+The image builds locked Rust 1.99.1 native and Rust/WASM code plus matching
 wasm-bindgen 0.2.129 glue inside the target Linux architecture. An emulator may
 build/run the other architecture. The runtime is CPU-only: it installs no Python,
 C#, FFmpeg, browser or GPU devices. Optional browser GPU and WebCodecs APIs
