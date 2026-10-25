@@ -9427,7 +9427,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## ctutils 0.4.3
+## ctutils 0.4.5
 
 SPDX: Apache-2.0 OR MIT
 Selected license: MIT
@@ -36621,7 +36621,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## rustls-webpki 0.103.15
+## rustls-webpki 0.103.16
 
 SPDX: ISC
 Selected license: ISC
@@ -43891,7 +43891,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-## tokio 1.54.0
+## tokio 1.54.1
 
 SPDX: MIT
 Selected license: MIT
