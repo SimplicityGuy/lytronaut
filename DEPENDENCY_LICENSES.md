@@ -64,7 +64,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | crunchy | 0.2.4 | MIT |
 | crypto-common | 0.1.6 | MIT OR Apache-2.0 |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
-| ctutils | 0.4.3 | Apache-2.0 OR MIT |
+| ctutils | 0.4.5 | Apache-2.0 OR MIT |
 | derive-where | 1.7.0 | MIT OR Apache-2.0 |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
 | digest | 0.11.3 | MIT OR Apache-2.0 |
@@ -214,7 +214,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
-| rustls-webpki | 0.103.15 | ISC |
+| rustls-webpki | 0.103.16 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
 | same-file | 1.0.6 | Unlicense/MIT |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
@@ -265,7 +265,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | throw_error | 0.3.1 | MIT |
 | tinystr | 0.8.4 | Unicode-3.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
-| tokio | 1.54.0 | MIT |
+| tokio | 1.54.1 | MIT |
 | tokio-macros | 2.7.2 | MIT |
 | tokio-stream | 0.1.19 | MIT |
 | toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 |
