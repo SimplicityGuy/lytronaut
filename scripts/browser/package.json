@@ -1,1 +1,1 @@
-{"name":"lytronaut-browser-tests","private":true,"license":"MIT","dependencies":{"pngjs":"7.0.0","puppeteer-core":"25.14.0"}}
+{"name":"lytronaut-browser-tests","private":true,"license":"MIT","dependencies":{"pngjs":"7.0.0","puppeteer-core":"25.16.0"}}
