@@ -24,5 +24,5 @@ libc = "=0.2.191"
 rustix = { version = "=1.1.5", features = ["fs"] }
 [dev-dependencies]
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
-crc32fast = "=1.5.2"
+crc32fast = "=1.5.3"
 sha1 = "=0.11.0"

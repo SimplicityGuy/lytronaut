@@ -58,7 +58,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
 | crc | 3.4.0 | MIT OR Apache-2.0 |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 |
-| crc32fast | 1.5.2 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.3 | MIT OR Apache-2.0 |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 |
 | crunchy | 0.2.4 | MIT |
