@@ -35622,7 +35622,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## rustix 1.1.5
+## rustix 1.1.6
 
 SPDX: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 Selected license: MIT

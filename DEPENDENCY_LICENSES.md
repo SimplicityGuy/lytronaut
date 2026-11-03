@@ -211,7 +211,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | rustc-hash | 1.1.0 | Apache-2.0/MIT |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
-| rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.16 | ISC |
