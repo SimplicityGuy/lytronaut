@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build independently inside each target Linux architecture (amd64 may use emulation).
-FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS build
+FROM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS build
 WORKDIR /src
 ENV CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2
 RUN rustup target add wasm32-unknown-unknown && cargo install --locked wasm-bindgen-cli --version 0.2.129
@@ -20,7 +20,7 @@ FROM build AS synthetic-fixture-build
 RUN cargo build --locked --release -p lytronaut-service --example synthetic_jpeg && mkdir /fixtures && target/release/examples/synthetic_jpeg /fixtures/synthetic.jpg
 FROM scratch AS synthetic-fixtures
 COPY --from=synthetic-fixture-build /fixtures /
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS runtime
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/SimplicityGuy/lytronaut" org.opencontainers.image.revision="${SOURCE_REVISION}"
 # No interpreter, media process, browser, GPU driver or compiler is installed at runtime.
