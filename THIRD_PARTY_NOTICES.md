@@ -8191,7 +8191,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## crc32fast 1.5.3
+## crc32fast 1.5.4
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -12775,7 +12775,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-## flate2 1.1.10
+## flate2 1.1.11
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -22789,7 +22789,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-## leptos 0.8.22
+## leptos 0.8.23
 
 SPDX: MIT
 Selected license: MIT
@@ -22921,7 +22921,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## leptos_macro 0.8.19
+## leptos_macro 0.8.20
 
 SPDX: MIT
 Selected license: MIT

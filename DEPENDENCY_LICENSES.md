@@ -58,7 +58,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
 | crc | 3.4.0 | MIT OR Apache-2.0 |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 |
-| crc32fast | 1.5.3 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.4 | MIT OR Apache-2.0 |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 |
 | crunchy | 0.2.4 | MIT |
@@ -82,7 +82,7 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
-| flate2 | 1.1.10 | MIT OR Apache-2.0 |
+| flate2 | 1.1.11 | MIT OR Apache-2.0 |
 | flume | 0.12.0 | Apache-2.0/MIT |
 | foldhash | 0.2.0 | Zlib |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
@@ -138,11 +138,11 @@ Tool executables installed by mise are not shipped with Lytronaut.
 | js-sys | 0.3.106 | MIT OR Apache-2.0 |
 | konst | 0.2.20 | Zlib |
 | konst_macro_rules | 0.2.19 | Zlib |
-| leptos | 0.8.22 | MIT |
+| leptos | 0.8.23 | MIT |
 | leptos_config | 0.8.10 | MIT |
 | leptos_dom | 0.8.8 | MIT |
 | leptos_hot_reload | 0.8.7 | MIT |
-| leptos_macro | 0.8.19 | MIT |
+| leptos_macro | 0.8.20 | MIT |
 | leptos_server | 0.8.8 | MIT |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
 | libloading | 0.8.9 | ISC |
