@@ -8191,7 +8191,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## crc32fast 1.5.4
+## crc32fast 1.5.5
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
@@ -51645,7 +51645,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-## wgpu 30.0.1
+## wgpu 30.0.2
 
 SPDX: MIT OR Apache-2.0
 Selected license: MIT
