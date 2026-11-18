@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build independently inside each target Linux architecture (amd64 may use emulation).
-FROM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS build
+FROM rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS build
 WORKDIR /src
 ENV CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2
 RUN rustup target add wasm32-unknown-unknown && cargo install --locked wasm-bindgen-cli --version 0.2.129
